@@ -191,6 +191,151 @@ async fn test_delete_nonexistent() {
 }
 
 #[tokio::test]
+async fn test_patch_overwrites_requested_range() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "bytes=7-11")
+        .header("content-length", "5")
+        .body(Body::from("Rust!"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("hello.txt")).unwrap(),
+        b"Hello, Rust!!"
+    );
+}
+
+#[tokio::test]
+async fn test_patch_appends_to_file() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "append")
+        .header("content-length", "9")
+        .body(Body::from(" appended"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("hello.txt")).unwrap(),
+        b"Hello, World! appended"
+    );
+}
+
+#[tokio::test]
+async fn test_patch_supports_negative_suffix_range() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "bytes=-5")
+        .header("content-length", "5")
+        .body(Body::from("Rust!"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("hello.txt")).unwrap(),
+        b"Hello, WRust!"
+    );
+}
+
+#[tokio::test]
+async fn test_patch_fills_gap_with_zeroes() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "bytes=16-")
+        .header("content-length", "3")
+        .body(Body::from("end"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("hello.txt")).unwrap(),
+        b"Hello, World!\0\0\0end"
+    );
+}
+
+#[tokio::test]
+async fn test_patch_requires_content_length_and_range() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "append")
+        .body(Body::from("data"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 411);
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("content-length", "4")
+        .body(Body::from("data"))
+        .unwrap();
+    let resp = make_test_router(dir.path(), rshs::AuthState::new())
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_patch_accepts_any_content_type() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("content-type", "text/plain")
+        .header("x-update-range", "append")
+        .header("content-length", "3")
+        .body(Body::from("bad"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("hello.txt")).unwrap(),
+        b"Hello, World!bad"
+    );
+}
+
+#[tokio::test]
+async fn test_patch_rejects_body_length_mismatch() {
+    let dir = temp_dir_with_files();
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "bytes=0-3")
+        .header("content-length", "8")
+        .body(Body::from("too long"))
+        .unwrap();
+    let resp = make_test_router(dir.path(), rshs::AuthState::new())
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 416);
+}
+
+#[tokio::test]
 async fn test_options_returns_allow_header() {
     let dir = temp_dir_with_files();
     let app = make_test_router(dir.path(), rshs::AuthState::new());
@@ -206,10 +351,11 @@ async fn test_options_returns_allow_header() {
     let allow = resp.headers().get("allow").unwrap().to_str().unwrap();
     assert!(allow.contains("GET"), "Allow should include GET");
     assert!(allow.contains("PUT"), "Allow should include PUT");
+    assert!(allow.contains("PATCH"), "Allow should include PATCH");
     assert!(allow.contains("PROPFIND"), "Allow should include PROPFIND");
 
     let dav = resp.headers().get("dav").unwrap().to_str().unwrap();
-    assert_eq!(dav, "1,2", "DAV header should be 1,2");
+    assert_eq!(dav, "1, 2", "DAV header should advertise DAV support");
 
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await

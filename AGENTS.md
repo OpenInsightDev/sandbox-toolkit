@@ -56,7 +56,7 @@ src/
 
   handlers/
     mod.rs
-    http.rs                     # GET/HEAD/PUT/DELETE/OPTIONS handler
+    http.rs                     # GET/HEAD/PUT/PATCH/DELETE/OPTIONS handler
     webdav.rs                   # PROPFIND/MKCOL/COPY/MOVE/PROPPATCH handler
     locks.rs                    # LOCK/UNLOCK handler
 
@@ -164,13 +164,14 @@ src/
   HealthCheck intercepts any request with `x-health-check: true` header
   (header name matched case-insensitively; value matched as the exact ASCII bytes `true`).
   Auth middleware authenticates the request (auto-skips when no users configured).
-  LockEnforce intercepts write methods: PUT, DELETE, MKCOL, PROPPATCH, MOVE, COPY.
+  LockEnforce intercepts write methods: PUT, PATCH, DELETE, MKCOL, PROPPATCH, MOVE, COPY.
   For COPY, only the destination is checked (source is read-only).
 - **Request dispatch**: `.fallback(any(dispatch))` routes all requests through a single
   `dispatch` function that converts `req.method()` to `webdav::Method` via
   `Method::try_from()` and matches on type-safe constants:
   `Ok(Method::GET)` | `Ok(Method::HEAD)` → `http::handle_get_head`,
   `Ok(Method::PUT)` → `http::handle_put`,
+  `Ok(Method::PATCH)` → `http::handle_patch` (partial update and append),
   `Ok(Method::DELETE)` → `http::handle_delete`,
   `Ok(Method::OPTIONS)` → `http::handle_options`,
   `Ok(Method::PROPFIND)` → `webdav::handle_propfind`,
@@ -220,7 +221,7 @@ src/
   Depth:infinity ancestor chain enforcement in `lock_enforce` + indirect refresh via
   ancestor lock discovery in `handle_lock`. Lock enforcement via tower Layer middleware
   (`middleware::lock::lock_enforce`), which converts the request method to `webdav::Method`
-  via `Method::try_from()` and intercepts `Method::PUT/DELETE/MKCOL/PROPPATCH/MOVE/COPY`
+  via `Method::try_from()` and intercepts `Method::PUT/PATCH/DELETE/MKCOL/PROPPATCH/MOVE/COPY`
   with `423 Locked` unless the request carries a matching condition.
   Expired locks and auth cache entries pruned every 30s by background task in `start_server()`.
   Default lock timeout is 300s (`--lock-timeout` / `AppState.lock_timeout`);
@@ -256,6 +257,7 @@ src/
 | --------- | ------------------ | ----------- |
 | GET/HEAD  | `handle_get_head`  | `http.rs`   |
 | PUT       | `handle_put`       | `http.rs`   |
+| PATCH     | `handle_patch`     | `http.rs`   |
 | DELETE    | `handle_delete`    | `http.rs`   |
 | OPTIONS   | `handle_options`   | `http.rs`   |
 | PROPFIND  | `handle_propfind`  | `webdav.rs` |

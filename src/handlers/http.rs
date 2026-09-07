@@ -1,4 +1,4 @@
-//! GET/HEAD (file serving + HTML directory listing), PUT, DELETE, and OPTIONS handlers.
+//! GET/HEAD (file serving + HTML directory listing), PUT, PATCH, DELETE, and OPTIONS handlers.
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::TryStreamExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::html::generate_dir_listing;
@@ -168,10 +168,158 @@ pub async fn handle_delete(State(state): State<Arc<AppState>>, req: Request) -> 
     }
 }
 
+/// PATCH handler for partial file updates.
+///
+/// Supports `X-Update-Range: append` and single `bytes=start-end` ranges.
+/// Bytes outside the current file are represented by zeroes. The request
+/// content type is not restricted; the update protocol is selected by the
+/// PATCH method and its range headers.
+///
+/// # Errors
+///
+/// Returns `411 Length Required` when `Content-Length` is absent, `400 Bad
+/// Request` for malformed headers, `404 Not Found` for a missing resource, or
+/// `416 Range Not Satisfiable` when the body length does not match the range.
+pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> AppResult {
+    let content_length = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .ok_or(StatusCode::LENGTH_REQUIRED)?
+        .to_str()
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .parse::<u64>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let range = req
+        .headers()
+        .get("x-update-range")
+        .ok_or(StatusCode::BAD_REQUEST)?
+        .to_str()
+        .map_err(|_| StatusCode::BAD_REQUEST)
+        .and_then(parse_patch_range)?;
+
+    let request_path = req.uri().path().to_owned();
+    let target = state.resolve_and_guard(&request_path).await;
+    let target = target.or_invalid(StatusCode::BAD_REQUEST)?;
+    let metadata = tokio::fs::metadata(&target)
+        .await
+        .or_404("resource not found for PATCH")?;
+    if !metadata.is_file() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .map_err(|_| StatusCode::RANGE_NOT_SATISFIABLE)?;
+    if body.len() as u64 != content_length {
+        return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+
+    let file_size = metadata.len();
+    let (offset, end, suffix_len) = match range {
+        PatchRange::Append => (file_size, None, None),
+        PatchRange::Bytes { start, end } => {
+            let (offset, suffix_len) = match start {
+                PatchStart::Positive(value) => (value, None),
+                PatchStart::Negative(value) => (file_size.saturating_sub(value), Some(value)),
+            };
+            (offset, end, suffix_len)
+        }
+    };
+
+    let body_len = body.len() as u64;
+    if let Some(suffix_len) = suffix_len
+        && suffix_len != body_len
+    {
+        return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+    if let Some(end) = end {
+        let range_len = end
+            .checked_sub(offset)
+            .and_then(|length| length.checked_add(1));
+        if range_len != Some(body_len) {
+            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+    }
+
+    let write_end = offset
+        .checked_add(body_len)
+        .ok_or(StatusCode::RANGE_NOT_SATISFIABLE)?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .await
+        .or_500("failed to open file for PATCH")?;
+
+    if offset > file_size {
+        file.set_len(offset)
+            .await
+            .or_500("failed to create PATCH zero-fill gap")?;
+    }
+    file.seek(std::io::SeekFrom::Start(offset))
+        .await
+        .or_500("failed to seek for PATCH")?;
+    file.write_all(&body)
+        .await
+        .or_500("failed to write PATCH body")?;
+    file.flush().await.or_500("failed to flush PATCH file")?;
+
+    tracing::debug!(
+        path = %target.display(), offset, end = ?end, size = body_len, final_end = write_end,
+        "PATCH completed"
+    );
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+enum PatchRange {
+    Append,
+    Bytes { start: PatchStart, end: Option<u64> },
+}
+
+enum PatchStart {
+    Positive(u64),
+    Negative(u64),
+}
+
+fn parse_patch_range(value: &str) -> Result<PatchRange, StatusCode> {
+    if value.trim() == "append" {
+        return Ok(PatchRange::Append);
+    }
+
+    let range = value
+        .strip_prefix("bytes=")
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    if range.is_empty() || range.contains(',') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if let Some(suffix) = range.strip_prefix('-') {
+        if suffix.is_empty() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        return Ok(PatchRange::Bytes {
+            start: PatchStart::Negative(
+                suffix.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST)?,
+            ),
+            end: None,
+        });
+    }
+
+    let (start, end) = range.split_once('-').ok_or(StatusCode::BAD_REQUEST)?;
+    let start = PatchStart::Positive(start.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST)?);
+    let end = if end.is_empty() {
+        None
+    } else {
+        Some(end.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST)?)
+    };
+
+    Ok(PatchRange::Bytes { start, end })
+}
+
 /// OPTIONS handler — returns supported HTTP/DAV methods in the `Allow` header.
 ///
-/// Includes the `DAV: 1,2` compliance level and `MS-Author-Via: DAV` header
-/// for compatibility with legacy clients.
+/// Includes the `DAV: 1, 2` compliance level and `MS-Author-Via: DAV`
+/// header for compatibility with legacy clients.
 ///
 /// # Panics
 ///
@@ -182,9 +330,9 @@ pub async fn handle_options() -> AppResult {
         .status(StatusCode::OK)
         .header(
             "allow",
-            "GET, HEAD, OPTIONS, PUT, DELETE, PROPFIND, MKCOL, COPY, MOVE, PROPPATCH, LOCK, UNLOCK",
+            "GET, HEAD, OPTIONS, PUT, PATCH, DELETE, PROPFIND, MKCOL, COPY, MOVE, PROPPATCH, LOCK, UNLOCK",
         )
-        .header("dav", "1,2")
+        .header("dav", "1, 2")
         .header("ms-author-via", "DAV")
         .header("content-length", "0")
         .body(Body::empty())
@@ -428,10 +576,11 @@ mod tests {
         let allow = resp.headers().get("allow").unwrap().to_str().unwrap();
         assert!(allow.contains("GET"));
         assert!(allow.contains("PUT"));
+        assert!(allow.contains("PATCH"));
         assert!(allow.contains("DELETE"));
         assert!(allow.contains("PROPFIND"));
         assert!(allow.contains("MKCOL"));
-        assert_eq!(resp.headers().get("dav").unwrap().to_str().unwrap(), "1,2");
+        assert_eq!(resp.headers().get("dav").unwrap().to_str().unwrap(), "1, 2");
         assert_eq!(
             resp.headers()
                 .get("ms-author-via")
