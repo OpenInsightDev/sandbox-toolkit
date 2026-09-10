@@ -198,6 +198,7 @@ async fn test_patch_overwrites_requested_range() {
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("x-update-range", "bytes=7-11")
         .header("content-length", "5")
         .body(Body::from("Rust!"))
@@ -218,6 +219,7 @@ async fn test_patch_appends_to_file() {
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("x-update-range", "append")
         .header("content-length", "9")
         .body(Body::from(" appended"))
@@ -238,6 +240,7 @@ async fn test_patch_supports_negative_suffix_range() {
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("x-update-range", "bytes=-5")
         .header("content-length", "5")
         .body(Body::from("Rust!"))
@@ -258,6 +261,7 @@ async fn test_patch_fills_gap_with_zeroes() {
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("x-update-range", "bytes=16-")
         .header("content-length", "3")
         .body(Body::from("end"))
@@ -278,6 +282,7 @@ async fn test_patch_requires_content_length_and_range() {
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("x-update-range", "append")
         .body(Body::from("data"))
         .unwrap();
@@ -287,6 +292,7 @@ async fn test_patch_requires_content_length_and_range() {
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("content-length", "4")
         .body(Body::from("data"))
         .unwrap();
@@ -298,7 +304,7 @@ async fn test_patch_requires_content_length_and_range() {
 }
 
 #[tokio::test]
-async fn test_patch_accepts_any_content_type() {
+async fn test_patch_rejects_unsupported_content_type() {
     let dir = temp_dir_with_files();
     let app = make_test_router(dir.path(), rshs::AuthState::new());
 
@@ -311,19 +317,33 @@ async fn test_patch_accepts_any_content_type() {
         .body(Body::from("bad"))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 204);
-    assert_eq!(
-        std::fs::read(dir.path().join("hello.txt")).unwrap(),
-        b"Hello, World!bad"
-    );
+    assert_eq!(resp.status(), 415);
+}
+
+#[tokio::test]
+async fn test_patch_rejects_missing_content_type() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), rshs::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/hello.txt")
+        .header("x-update-range", "append")
+        .header("content-length", "3")
+        .body(Body::from("bad"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 415);
 }
 
 #[tokio::test]
 async fn test_patch_rejects_body_length_mismatch() {
     let dir = temp_dir_with_files();
+
     let req = axum::http::Request::builder()
         .method(Method::PATCH)
         .uri("/hello.txt")
+        .header("content-type", "application/x-sabredav-partialupdate")
         .header("x-update-range", "bytes=0-3")
         .header("content-length", "8")
         .body(Body::from("too long"))

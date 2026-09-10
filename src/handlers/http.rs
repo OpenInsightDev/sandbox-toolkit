@@ -181,6 +181,14 @@ pub async fn handle_delete(State(state): State<Arc<AppState>>, req: Request) -> 
 /// Request` for malformed headers, `404 Not Found` for a missing resource, or
 /// `416 Range Not Satisfiable` when the body length does not match the range.
 pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> AppResult {
+    let content_type = req
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    if content_type != Some("application/x-sabredav-partialupdate") {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
     let content_length = req
         .headers()
         .get(axum::http::header::CONTENT_LENGTH)
@@ -332,7 +340,7 @@ pub async fn handle_options() -> AppResult {
             "allow",
             "GET, HEAD, OPTIONS, PUT, PATCH, DELETE, PROPFIND, MKCOL, COPY, MOVE, PROPPATCH, LOCK, UNLOCK",
         )
-        .header("dav", "1, 2")
+        .header("dav", "1, 2, sabredav-partialupdate")
         .header("ms-author-via", "DAV")
         .header("content-length", "0")
         .body(Body::empty())
@@ -580,7 +588,10 @@ mod tests {
         assert!(allow.contains("DELETE"));
         assert!(allow.contains("PROPFIND"));
         assert!(allow.contains("MKCOL"));
-        assert_eq!(resp.headers().get("dav").unwrap().to_str().unwrap(), "1, 2");
+        assert_eq!(
+            resp.headers().get("dav").unwrap().to_str().unwrap(),
+            "1, 2, sabredav-partialupdate"
+        );
         assert_eq!(
             resp.headers()
                 .get("ms-author-via")
