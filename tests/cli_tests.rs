@@ -1,9 +1,9 @@
 use clap::Parser;
-use rshs::Cli;
+use sbx::Cli;
 
 #[test]
 fn test_cli_default_values() {
-    let cli = Cli::try_parse_from(["rshs", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "/tmp/test"]).unwrap();
     assert_eq!(cli.root_dir, "/tmp/test");
     assert_eq!(cli.host, "0.0.0.0");
     assert_eq!(cli.port, None);
@@ -12,32 +12,32 @@ fn test_cli_default_values() {
 
 #[test]
 fn test_cli_custom_host_short() {
-    let cli = Cli::try_parse_from(["rshs", "-H", "127.0.0.1", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-H", "127.0.0.1", "/tmp/test"]).unwrap();
     assert_eq!(cli.host, "127.0.0.1");
 }
 
 #[test]
 fn test_cli_custom_host_long() {
-    let cli = Cli::try_parse_from(["rshs", "--host", "127.0.0.1", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--host", "127.0.0.1", "/tmp/test"]).unwrap();
     assert_eq!(cli.host, "127.0.0.1");
 }
 
 #[test]
 fn test_cli_custom_port_short() {
-    let cli = Cli::try_parse_from(["rshs", "-p", "3000", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-p", "3000", "/tmp/test"]).unwrap();
     assert_eq!(cli.port, Some(3000));
 }
 
 #[test]
 fn test_cli_custom_port_long() {
-    let cli = Cli::try_parse_from(["rshs", "--port", "3000", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--port", "3000", "/tmp/test"]).unwrap();
     assert_eq!(cli.port, Some(3000));
 }
 
 #[test]
 fn test_cli_full() {
     let cli = Cli::try_parse_from([
-        "rshs",
+        "sbx",
         "--host",
         "127.0.0.1",
         "--port",
@@ -52,19 +52,19 @@ fn test_cli_full() {
 
 #[test]
 fn test_cli_root_dir_default() {
-    let cli = Cli::try_parse_from(["rshs"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx"]).unwrap();
     assert_eq!(cli.root_dir, ".");
 }
 
 #[test]
 fn test_cli_root_dir_custom() {
-    let cli = Cli::try_parse_from(["rshs", "/custom/path"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "/custom/path"]).unwrap();
     assert_eq!(cli.root_dir, "/custom/path");
 }
 
 #[test]
 fn test_cli_user_single() {
-    let cli = Cli::try_parse_from(["rshs", "--user", "admin:secret", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--user", "admin:secret", "/tmp/test"]).unwrap();
     assert_eq!(cli.users.len(), 1);
     assert_eq!(cli.users[0], "admin:secret");
 }
@@ -72,7 +72,7 @@ fn test_cli_user_single() {
 #[test]
 fn test_cli_user_multiple() {
     let cli = Cli::try_parse_from([
-        "rshs",
+        "sbx",
         "--user",
         "admin:secret",
         "--user",
@@ -88,7 +88,7 @@ fn test_cli_user_multiple() {
 #[test]
 fn test_cli_to_auth_state() {
     let cli = Cli::try_parse_from([
-        "rshs",
+        "sbx",
         "--user",
         "alice:pass1",
         "--user",
@@ -106,15 +106,15 @@ fn test_cli_to_auth_state() {
 
 #[test]
 fn test_cli_to_auth_state_empty() {
-    let cli = Cli::try_parse_from(["rshs", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "/tmp/test"]).unwrap();
     let auth = cli.to_auth_state();
     assert!(auth.is_empty());
 }
 
 #[test]
 fn test_cli_to_auth_state_skips_malformed() {
-    let cli = Cli::try_parse_from(["rshs", "--user", "bob", "--user", "alice:pass", "/tmp/test"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["sbx", "--user", "bob", "--user", "alice:pass", "/tmp/test"]).unwrap();
     let auth = cli.to_auth_state();
     assert!(auth.validate("alice", "pass"));
     assert!(!auth.is_empty());
@@ -122,7 +122,7 @@ fn test_cli_to_auth_state_skips_malformed() {
 
 #[test]
 fn test_cli_to_auth_state_skips_empty_username() {
-    let cli = Cli::try_parse_from(["rshs", "--user", ":password", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--user", ":password", "/tmp/test"]).unwrap();
     let auth = cli.to_auth_state();
     assert!(auth.is_empty());
 }
@@ -130,7 +130,7 @@ fn test_cli_to_auth_state_skips_empty_username() {
 #[test]
 fn test_cli_combined_flags() {
     let cli = Cli::try_parse_from([
-        "rshs",
+        "sbx",
         "--user",
         "u:p",
         "-H",
@@ -148,7 +148,7 @@ fn test_cli_combined_flags() {
 
 #[test]
 fn test_cli_log_level_default() {
-    let cli = Cli::try_parse_from(["rshs", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "/tmp/test"]).unwrap();
     assert!(!cli.quiet);
     assert_eq!(cli.verbose, 0);
 
@@ -160,118 +160,112 @@ fn test_cli_log_level_default() {
 
 #[test]
 fn test_cli_log_level_verbose_short() {
-    let cli = Cli::try_parse_from(["rshs", "-v", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-v", "/tmp/test"]).unwrap();
     assert_eq!(cli.verbose, 1);
     assert_eq!(cli.log_level(), "debug");
 }
 
 #[test]
 fn test_cli_log_level_verbose_long() {
-    let cli = Cli::try_parse_from(["rshs", "--verbose", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--verbose", "/tmp/test"]).unwrap();
     assert_eq!(cli.verbose, 1);
     assert_eq!(cli.log_level(), "debug");
 }
 
 #[test]
 fn test_cli_log_level_very_verbose_short() {
-    let cli = Cli::try_parse_from(["rshs", "-vv", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-vv", "/tmp/test"]).unwrap();
     assert_eq!(cli.verbose, 2);
     assert_eq!(cli.log_level(), "trace");
 }
 
 #[test]
 fn test_cli_log_level_very_verbose_short_repeated() {
-    let cli = Cli::try_parse_from(["rshs", "-v", "-v", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-v", "-v", "/tmp/test"]).unwrap();
     assert_eq!(cli.verbose, 2);
     assert_eq!(cli.log_level(), "trace");
 }
 
 #[test]
 fn test_cli_log_level_very_verbose_excess() {
-    let cli = Cli::try_parse_from(["rshs", "-vvvv", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-vvvv", "/tmp/test"]).unwrap();
     assert_eq!(cli.verbose, 4);
     assert_eq!(cli.log_level(), "trace");
 }
 
 #[test]
 fn test_cli_log_level_quiet_short() {
-    let cli = Cli::try_parse_from(["rshs", "-q", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-q", "/tmp/test"]).unwrap();
     assert!(cli.quiet);
     assert_eq!(cli.log_level(), "off");
 }
 
 #[test]
 fn test_cli_log_level_quiet_long() {
-    let cli = Cli::try_parse_from(["rshs", "--quiet", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--quiet", "/tmp/test"]).unwrap();
     assert!(cli.quiet);
     assert_eq!(cli.log_level(), "off");
 }
 
 #[test]
 fn test_cli_log_level_verbose_conflicts_with_quiet() {
-    assert!(Cli::try_parse_from(["rshs", "-v", "-q", "/tmp/test"]).is_err());
+    assert!(Cli::try_parse_from(["sbx", "-v", "-q", "/tmp/test"]).is_err());
 }
 
 #[test]
 fn test_cli_log_level_verbose_long_conflicts_with_quiet() {
-    assert!(Cli::try_parse_from(["rshs", "--verbose", "--quiet", "/tmp/test"]).is_err());
+    assert!(Cli::try_parse_from(["sbx", "--verbose", "--quiet", "/tmp/test"]).is_err());
 }
 
 #[test]
 fn test_shadow_file_parse_default_rw() {
-    let cli = Cli::try_parse_from(["rshs", "--shadow-file", "/etc/rshs/shadow"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--shadow-file", "/etc/sbx/shadow"]).unwrap();
     let arg = cli.to_shadow_file_arg().unwrap();
-    assert_eq!(arg.path, "/etc/rshs/shadow");
+    assert_eq!(arg.path, "/etc/sbx/shadow");
     assert!(arg.writable);
 }
 
 #[test]
 fn test_shadow_file_parse_explicit_ro() {
-    let cli = Cli::try_parse_from(["rshs", "--shadow-file", "/etc/rshs/shadow:ro"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--shadow-file", "/etc/sbx/shadow:ro"]).unwrap();
     let arg = cli.to_shadow_file_arg().unwrap();
-    assert_eq!(arg.path, "/etc/rshs/shadow");
+    assert_eq!(arg.path, "/etc/sbx/shadow");
     assert!(!arg.writable);
 }
 
 #[test]
 fn test_shadow_file_parse_rw() {
-    let cli = Cli::try_parse_from(["rshs", "--shadow-file", "/etc/rshs/shadow:rw"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "--shadow-file", "/etc/sbx/shadow:rw"]).unwrap();
     let arg = cli.to_shadow_file_arg().unwrap();
-    assert_eq!(arg.path, "/etc/rshs/shadow");
+    assert_eq!(arg.path, "/etc/sbx/shadow");
     assert!(arg.writable);
 }
 
 #[test]
 fn test_shadow_file_none() {
-    let cli = Cli::try_parse_from(["rshs", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "/tmp/test"]).unwrap();
     assert!(cli.to_shadow_file_arg().is_none());
     assert!(!cli.shadow_write);
 }
 
 #[test]
 fn test_shadow_write_flag() {
-    let cli = Cli::try_parse_from([
-        "rshs",
-        "--shadow-file",
-        "/etc/rshs/shadow",
-        "--shadow-write",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["sbx", "--shadow-file", "/etc/sbx/shadow", "--shadow-write"]).unwrap();
     assert!(cli.shadow_write);
 }
 
 #[test]
 fn test_shadow_write_short_flags() {
-    let cli =
-        Cli::try_parse_from(["rshs", "-S", "/etc/rshs/shadow:rw", "-W", "/tmp/test"]).unwrap();
+    let cli = Cli::try_parse_from(["sbx", "-S", "/etc/sbx/shadow:rw", "-W", "/tmp/test"]).unwrap();
     let arg = cli.to_shadow_file_arg().unwrap();
-    assert_eq!(arg.path, "/etc/rshs/shadow");
+    assert_eq!(arg.path, "/etc/sbx/shadow");
     assert!(arg.writable);
     assert!(cli.shadow_write);
 }
 
 #[test]
 fn test_shadow_write_requires_shadow_file() {
-    let result = Cli::try_parse_from(["rshs", "--shadow-write", "/tmp/test"]);
+    let result = Cli::try_parse_from(["sbx", "--shadow-write", "/tmp/test"]);
     assert!(result.is_err());
 }

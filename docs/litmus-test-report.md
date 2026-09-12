@@ -4,7 +4,7 @@
 
 | Item     | Detail                              |
 | -------- | ----------------------------------- |
-| rshs     | v0.8.2                              |
+| sbx     | v0.8.2                              |
 | litmus   | 0.17                                |
 | neon     | 0.34.2                              |
 | Platform | macOS (arm64)                       |
@@ -198,7 +198,7 @@ Download and build [litmus](https://github.com/notroj/litmus) — the WebDAV pro
 ### 2. Run the tests
 
 ```sh
-# Terminal 1: Start rshs
+# Terminal 1: Start sbx
 cargo run --release -- ./data -vv
 
 # Terminal 2: Run litmus (from the litmus source directory)

@@ -8,7 +8,7 @@ clap derive CLI args. `Cli` struct with builder methods:
 - `to_tls_config()` — `Option<TlsConfig>`
 - `to_shadow_file_arg()` — `Option<ShadowFileArg>`
 - `to_auth_state()` — `AuthState` from `--user` entries
-- `log_level()` — `-q`/`-v`/`-vv`/`RSHS_LOG` resolution
+- `log_level()` — `-q`/`-v`/`-vv`/`SBX_LOG` resolution
 
 `ShadowFileArg`: `path` + `writable` (`:rw` default, `:ro` to disable writes). `--shadow-write` with `:ro` file exits with error.
 

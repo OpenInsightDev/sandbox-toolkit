@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
-use rshs::{AppState, AuthState, make_router};
+use sbx::{AppState, AuthState, make_router};
 
 pub fn temp_dir_with_files() -> tempfile::TempDir {
     let dir = tempfile::TempDir::new().expect("failed to create temp dir");

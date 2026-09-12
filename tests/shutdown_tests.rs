@@ -4,7 +4,7 @@ mod unix_tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    fn spawn_rshs() -> (std::process::Child, tempfile::TempDir) {
+    fn spawn_sbx() -> (std::process::Child, tempfile::TempDir) {
         let tmpdir = tempfile::TempDir::new().unwrap();
         let serve_dir = tmpdir.path().join("serve");
         std::fs::create_dir(&serve_dir).unwrap();
@@ -12,7 +12,7 @@ mod unix_tests {
         let out_file = std::fs::File::create(tmpdir.path().join("stdout.txt")).unwrap();
         let err_file = std::fs::File::create(tmpdir.path().join("stderr.txt")).unwrap();
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rshs"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sbx"))
             .arg(&serve_dir)
             .arg("--port")
             .arg("0")
@@ -68,7 +68,7 @@ mod unix_tests {
 
     #[test]
     fn test_graceful_shutdown_on_sigint() {
-        let (child, tmpdir) = spawn_rshs();
+        let (child, tmpdir) = spawn_sbx();
         unsafe {
             libc::kill(child.id() as i32, libc::SIGINT);
         }
@@ -77,7 +77,7 @@ mod unix_tests {
 
     #[test]
     fn test_graceful_shutdown_on_sigterm() {
-        let (child, tmpdir) = spawn_rshs();
+        let (child, tmpdir) = spawn_sbx();
         unsafe {
             libc::kill(child.id() as i32, libc::SIGTERM);
         }

@@ -8,7 +8,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn test_get_root_dir_listing() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -31,7 +31,7 @@ async fn test_get_root_dir_listing() {
 #[tokio::test]
 async fn test_get_file_content() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -61,7 +61,7 @@ async fn test_get_file_content() {
 #[tokio::test]
 async fn test_head_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::HEAD)
@@ -81,7 +81,7 @@ async fn test_head_file() {
 #[tokio::test]
 async fn test_get_not_found() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -95,7 +95,7 @@ async fn test_get_not_found() {
 #[tokio::test]
 async fn test_get_nested_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -114,7 +114,7 @@ async fn test_get_nested_file() {
 #[tokio::test]
 async fn test_get_path_traversal_blocked() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -128,7 +128,7 @@ async fn test_get_path_traversal_blocked() {
 #[tokio::test]
 async fn test_put_creates_new_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
@@ -146,7 +146,7 @@ async fn test_put_creates_new_file() {
 #[tokio::test]
 async fn test_put_overwrites_existing_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
@@ -164,7 +164,7 @@ async fn test_put_overwrites_existing_file() {
 #[tokio::test]
 async fn test_delete_existing_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
@@ -179,7 +179,7 @@ async fn test_delete_existing_file() {
 #[tokio::test]
 async fn test_delete_nonexistent() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
@@ -193,7 +193,7 @@ async fn test_delete_nonexistent() {
 #[tokio::test]
 async fn test_options_returns_allow_header() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::OPTIONS)
@@ -220,7 +220,7 @@ async fn test_options_returns_allow_header() {
 #[tokio::test]
 async fn test_unknown_method_returns_501() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::POST)

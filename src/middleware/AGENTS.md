@@ -8,7 +8,7 @@ Runtime order (outermost first): `HealthCheck` → `Auth` → `LockEnforce` → 
 
 ## auth.rs
 
-`auth_middleware` — validates HTTP Basic Auth against `AuthState`. No-op when `is_empty()`. Parses `Authorization: Basic <b64>` header, decodes, calls `AuthState::validate_cached()`. Returns `Result<Response, Unauthorized>` where `Unauthorized` attaches `WWW-Authenticate: Basic realm="rshs"`.
+`auth_middleware` — validates HTTP Basic Auth against `AuthState`. No-op when `is_empty()`. Parses `Authorization: Basic <b64>` header, decodes, calls `AuthState::validate_cached()`. Returns `Result<Response, Unauthorized>` where `Unauthorized` attaches `WWW-Authenticate: Basic realm="sbx"`.
 
 ## lock.rs
 

@@ -7,7 +7,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: rshs
+  name: sbx
 ```
 
 ## Persistent Volume Claim
@@ -19,8 +19,8 @@ Data PVC for the served files:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: rshs-data
-  namespace: rshs
+  name: sbx-data
+  namespace: sbx
 spec:
   accessModes:
     - ReadWriteOnce
@@ -38,7 +38,7 @@ Two approaches for managing credentials in Kubernetes.
 Generate the shadow file locally with `openssl`, then store it as a Secret.
 
 ```sh
-# Generate SHA-512 crypt hashes (compatible with rshs shadow format)
+# Generate SHA-512 crypt hashes (compatible with sbx shadow format)
 openssl passwd -6 "secret123"   # → $6$xxxxxxxx$yyyyyyyyyyyyyyyy...
 openssl passwd -6 "public"       # → $6$aaaaaaaa$bbbbbbbbbbbbbb...
 
@@ -47,26 +47,26 @@ echo "admin:\$6\$xxxxxxxx\$yyyyyyyyyyyyyyyy..." > shadow
 echo "viewer:\$6\$aaaaaaaa\$bbbbbbbbbbbbbb..." >> shadow
 
 # Create Secret from the shadow file
-kubectl create secret generic rshs-shadow --from-file=shadow -n rshs
+kubectl create secret generic sbx-shadow --from-file=shadow -n sbx
 ```
 
-The Deployment mounts this Secret as `readOnly: true` at `/etc/rshs/shadow`.
+The Deployment mounts this Secret as `readOnly: true` at `/etc/sbx/shadow`.
 No PVC, no `-W` flag needed — all credentials live in the encrypted shadow
 file. Update credentials by recreating the Secret and rolling the Deployment.
 
 ### Approach B: Environment Variable via Secret
 
-Simplest approach — pass credentials directly via `RSHS_USERS` env var.
+Simplest approach — pass credentials directly via `SBX_USERS` env var.
 
 ```yaml
 # secret-auth.yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  name: rshs-auth
-  namespace: rshs
+  name: sbx-auth
+  namespace: sbx
 stringData:
-  RSHS_USERS: "admin:secret123;viewer:public"
+  SBX_USERS: "admin:secret123;viewer:public"
 ```
 
 No shadow file, no PVC, no `-W` flag. Just inject the Secret and the server
@@ -81,21 +81,21 @@ validates against the env var value at runtime.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rshs
-  namespace: rshs
+  name: sbx
+  namespace: sbx
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: rshs
+      app: sbx
   template:
     metadata:
       labels:
-        app: rshs
+        app: sbx
     spec:
       containers:
-        - name: rshs
-          image: mogeko/rshs:latest
+        - name: sbx
+          image: mogeko/sbx:latest
           ports:
             - containerPort: 8080
           volumeMounts:
@@ -129,7 +129,7 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: rshs-data
+            claimName: sbx-data
 ```
 
 ### With Auth (Approach A: shadow file)
@@ -139,31 +139,31 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rshs
-  namespace: rshs
+  name: sbx
+  namespace: sbx
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: rshs
+      app: sbx
   template:
     metadata:
       labels:
-        app: rshs
+        app: sbx
     spec:
       containers:
-        - name: rshs
-          image: mogeko/rshs:latest
+        - name: sbx
+          image: mogeko/sbx:latest
           ports:
             - containerPort: 8080
           env:
-            - name: RSHS_SHADOW_FILE
-              value: "/etc/rshs/shadow:ro"
+            - name: SBX_SHADOW_FILE
+              value: "/etc/sbx/shadow:ro"
           volumeMounts:
             - name: data
               mountPath: /mnt/data
             - name: shadow
-              mountPath: /etc/rshs
+              mountPath: /etc/sbx
               readOnly: true
           livenessProbe:
             httpGet:
@@ -193,10 +193,10 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: rshs-data
+            claimName: sbx-data
         - name: shadow
           secret:
-            secretName: rshs-shadow
+            secretName: sbx-shadow
 ```
 
 ### With Auth (Approach B: env var)
@@ -206,26 +206,26 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rshs
-  namespace: rshs
+  name: sbx
+  namespace: sbx
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: rshs
+      app: sbx
   template:
     metadata:
       labels:
-        app: rshs
+        app: sbx
     spec:
       containers:
-        - name: rshs
-          image: mogeko/rshs:latest
+        - name: sbx
+          image: mogeko/sbx:latest
           ports:
             - containerPort: 8080
           envFrom:
             - secretRef:
-                name: rshs-auth
+                name: sbx-auth
           volumeMounts:
             - name: data
               mountPath: /mnt/data
@@ -257,7 +257,7 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: rshs-data
+            claimName: sbx-data
 ```
 
 ## Service
@@ -267,11 +267,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: rshs
-  namespace: rshs
+  name: sbx
+  namespace: sbx
 spec:
   selector:
-    app: rshs
+    app: sbx
   ports:
     - port: 80
       targetPort: 8080
@@ -284,8 +284,8 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: rshs
-  namespace: rshs
+  name: sbx
+  namespace: sbx
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
@@ -298,13 +298,13 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: rshs
+                name: sbx
                 port:
                   number: 80
   tls:
     - hosts:
         - files.example.com
-      secretName: rshs-tls
+      secretName: sbx-tls
 ```
 
 ## Deploy

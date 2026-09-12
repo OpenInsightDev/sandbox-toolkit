@@ -4,7 +4,7 @@
 
 | Item       | Detail                        |
 | ---------- | ----------------------------- |
-| rshs       | v0.9.1                        |
+| sbx       | v0.9.1                        |
 | Rust       | 1.87+ (edition 2024)          |
 | Criterion  | 0.8                           |
 | Platform   | macOS aarch64 (Apple Silicon) |

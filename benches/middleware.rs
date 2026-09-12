@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use axum::extract::Request;
 
 use common::*;
-use rshs::{AppState, AuthState, make_router};
+use sbx::{AppState, AuthState, make_router};
 use sha_crypt::PasswordHasher;
 
 fn bench_health_check(c: &mut Criterion) {
@@ -91,7 +91,7 @@ fn bench_auth(c: &mut Criterion) {
     let mut sha_auth = AuthState::new();
     sha_auth
         .users
-        .insert("admin".into(), rshs::auth::Credential::Sha512Crypt(hash));
+        .insert("admin".into(), sbx::auth::Credential::Sha512Crypt(hash));
     let router_sha = bench_router_with_auth(dir.path(), sha_auth);
 
     group.bench_function("sha512_valid", |b| {
@@ -158,13 +158,13 @@ fn bench_lock_enforce(c: &mut Criterion) {
                 AuthState::new(),
                 Duration::from_secs(300),
             ));
-            let lock = rshs::webdav::LockInfo::new(
-                rshs::webdav::LockScope::Exclusive,
+            let lock = sbx::webdav::LockInfo::new(
+                sbx::webdav::LockScope::Exclusive,
                 "opaquelocktoken:t1".into(),
                 None,
                 std::time::SystemTime::now(),
                 None,
-                rshs::webdav::Depth::Zero,
+                sbx::webdav::Depth::Zero,
             );
             rt.block_on(async {
                 let mut locks = state.locks.write().await;
@@ -187,13 +187,13 @@ fn bench_lock_enforce(c: &mut Criterion) {
                 AuthState::new(),
                 Duration::from_secs(300),
             ));
-            let lock = rshs::webdav::LockInfo::new(
-                rshs::webdav::LockScope::Exclusive,
+            let lock = sbx::webdav::LockInfo::new(
+                sbx::webdav::LockScope::Exclusive,
                 "opaquelocktoken:t1".into(),
                 None,
                 std::time::SystemTime::now(),
                 None,
-                rshs::webdav::Depth::Zero,
+                sbx::webdav::Depth::Zero,
             );
             rt.block_on(async {
                 let mut locks = state.locks.write().await;
@@ -223,13 +223,13 @@ fn bench_lock_enforce(c: &mut Criterion) {
                 AuthState::new(),
                 Duration::from_secs(300),
             ));
-            let lock = rshs::webdav::LockInfo::new(
-                rshs::webdav::LockScope::Exclusive,
+            let lock = sbx::webdav::LockInfo::new(
+                sbx::webdav::LockScope::Exclusive,
                 "opaquelocktoken:t1".into(),
                 None,
                 std::time::SystemTime::now(),
                 None,
-                rshs::webdav::Depth::Infinity,
+                sbx::webdav::Depth::Infinity,
             );
             rt.block_on(async {
                 let mut locks = state.locks.write().await;

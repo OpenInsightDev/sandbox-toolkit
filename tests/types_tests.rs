@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use rshs::webdav::{Depth, IfCondition, IfList, LockInfo, LockScope, Method};
-use rshs::{AuthState, ServerConfig, TlsConfig};
+use sbx::webdav::{Depth, IfCondition, IfList, LockInfo, LockScope, Method};
+use sbx::{AuthState, ServerConfig, TlsConfig};
 
 #[test]
 fn test_server_config_new() {

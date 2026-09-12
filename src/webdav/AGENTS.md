@@ -1,5 +1,7 @@
 # webdav/
 
+Crate references in documentation examples use the renamed `sbx` crate.
+
 ## mod.rs — Types & parsers
 
 - `DeadPropertyStore` = `HashMap<PathBuf, HashMap<String, String>>`

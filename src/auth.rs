@@ -21,7 +21,7 @@ pub(crate) type AuthCache = HashMap<u64, Instant>;
 /// A stored credential for Basic HTTP authentication.
 ///
 /// ```
-/// use rshs::auth::Credential;
+/// use sbx::auth::Credential;
 ///
 /// let pw = Credential::Plaintext("secret".into());
 /// let hash = Credential::Sha512Crypt("$6$...".into());
@@ -37,16 +37,16 @@ pub enum Credential {
 /// Determines the shadow file path and whether it is writable (`:rw` or `:ro`).
 ///
 /// ```
-/// use rshs::auth::ShadowFileArg;
+/// use sbx::auth::ShadowFileArg;
 ///
-/// let a = ShadowFileArg::from_arg("/etc/rshs/shadow:rw");
-/// assert_eq!(a.path, "/etc/rshs/shadow");
+/// let a = ShadowFileArg::from_arg("/etc/sbx/shadow:rw");
+/// assert_eq!(a.path, "/etc/sbx/shadow");
 /// assert!(a.writable);
 ///
-/// let a = ShadowFileArg::from_arg("/etc/rshs/shadow:ro");
+/// let a = ShadowFileArg::from_arg("/etc/sbx/shadow:ro");
 /// assert!(!a.writable);
 ///
-/// let a = ShadowFileArg::from_arg("/etc/rshs/shadow");
+/// let a = ShadowFileArg::from_arg("/etc/sbx/shadow");
 /// assert!(a.writable); // default
 /// ```
 #[derive(Debug, Clone)]
@@ -80,7 +80,7 @@ impl ShadowFileArg {
 /// credentials, and validating authentication attempts.
 ///
 /// ```
-/// use rshs::auth::AuthState;
+/// use sbx::auth::AuthState;
 ///
 /// let mut config = AuthState::new();
 /// assert!(config.is_empty());
@@ -134,7 +134,7 @@ impl AuthState {
     /// Supports both plaintext and SHA-512 crypt hash comparison.
     ///
     /// ```
-    /// use rshs::auth::{AuthState, Credential};
+    /// use sbx::auth::{AuthState, Credential};
     /// use std::collections::HashMap;
     ///
     /// let mut config = AuthState::new();
@@ -211,7 +211,7 @@ impl AuthState {
     /// Existing users with the same username are overwritten.
     ///
     /// ```
-    /// use rshs::auth::AuthState;
+    /// use sbx::auth::AuthState;
     ///
     /// let mut base = AuthState::new();
     /// base.add_user("admin", "old");

@@ -1210,35 +1210,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rshs"
-version = "0.9.3"
-dependencies = [
- "axum",
- "base64",
- "clap",
- "criterion",
- "futures-util",
- "io-uring",
- "libc",
- "mime_guess",
- "percent-encoding",
- "quick-xml",
- "rcgen",
- "rustls",
- "rustls-pemfile",
- "sha-crypt",
- "sha2",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1324,6 +1295,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "sbx"
+version = "0.9.3"
+dependencies = [
+ "axum",
+ "base64",
+ "clap",
+ "criterion",
+ "futures-util",
+ "io-uring",
+ "libc",
+ "mime_guess",
+ "percent-encoding",
+ "quick-xml",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "sha-crypt",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use axum::extract::Request;
 
 use common::*;
-use rshs::{AppState, AuthState, make_router};
+use sbx::{AppState, AuthState, make_router};
 
 const ALLPROP_BODY: &[u8] =
     br#"<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#;
@@ -226,14 +226,14 @@ fn bench_proppatch(c: &mut Criterion) {
 }
 
 fn make_router_with_lock(dir: &std::path::Path) -> (axum::Router, String) {
-    let token = rshs::webdav::generate_lock_token();
-    let lock = rshs::webdav::LockInfo::new(
-        rshs::webdav::LockScope::Exclusive,
+    let token = sbx::webdav::generate_lock_token();
+    let lock = sbx::webdav::LockInfo::new(
+        sbx::webdav::LockScope::Exclusive,
         token.clone(),
         None,
         std::time::SystemTime::now(),
         None,
-        rshs::webdav::Depth::Zero,
+        sbx::webdav::Depth::Zero,
     );
     let state = Arc::new(AppState::new(
         dir.to_path_buf(),
