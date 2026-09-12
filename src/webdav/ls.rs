@@ -14,7 +14,7 @@ use super::{Depth, LockInfo, LockStore};
 /// A single condition in an `If` header (RFC 4918 §10.4).
 ///
 /// ```
-/// use rshs::webdav::IfCondition;
+/// use sbx::webdav::IfCondition;
 ///
 /// let token = IfCondition::StateToken("opaquelocktoken:abc".into());
 /// let not = IfCondition::Not(Box::new(token.clone()));
@@ -64,7 +64,7 @@ impl IfCondition {
 /// Multiple lists are OR'd; multiple conditions within a list are AND'd.
 ///
 /// ```
-/// use rshs::webdav::{IfList, IfCondition};
+/// use sbx::webdav::{IfList, IfCondition};
 ///
 /// let list = IfList {
 ///     resource_tag: None,
@@ -94,7 +94,7 @@ impl IfList {
     /// Collect all non-negated state tokens.
     ///
     /// ```
-    /// use rshs::webdav::{IfList, IfCondition};
+    /// use sbx::webdav::{IfList, IfCondition};
     ///
     /// let list = IfList {
     ///     resource_tag: None,
@@ -121,7 +121,7 @@ impl IfList {
     /// Whether this list contains any actual lock token (excluding `DAV:no-lock`).
     ///
     /// ```
-    /// use rshs::webdav::{IfList, IfCondition};
+    /// use sbx::webdav::{IfList, IfCondition};
     ///
     /// let no_lock = IfList {
     ///     resource_tag: None,
@@ -153,7 +153,7 @@ impl IfList {
 ///
 /// ```
 /// use axum::http::HeaderMap;
-/// use rshs::webdav::{parse_if_header, IfCondition, IfList};
+/// use sbx::webdav::{parse_if_header, IfCondition, IfList};
 ///
 /// let mut h = HeaderMap::new();
 /// h.insert("if", "(<opaquelocktoken:t1>)".parse().unwrap());

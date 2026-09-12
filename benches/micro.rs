@@ -7,9 +7,9 @@ use axum::http::{HeaderMap, Method};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use quick_xml::Writer;
 
-use rshs::auth::{AuthState, Credential};
-use rshs::webdav::ls::{check_existing_exclusive, eval_if};
-use rshs::webdav::{
+use sbx::auth::{AuthState, Credential};
+use sbx::webdav::ls::{check_existing_exclusive, eval_if};
+use sbx::webdav::{
     Depth, IfCondition, IfList, LockInfo, LockScope, PropEntry, PropRequest, clark_key,
     generate_lock_token, parse_clark, parse_depth, parse_destination, parse_if_header,
     parse_lock_token_header, parse_overwrite, parse_propfind_request, parse_proppatch_request,
@@ -91,13 +91,13 @@ fn bench_parse_headers(c: &mut Criterion) {
 fn bench_method_try_from(c: &mut Criterion) {
     let mut group = c.benchmark_group("micro/method_try_from");
     group.bench_function("GET", |b| {
-        b.iter(|| rshs::webdav::Method::try_from(&Method::GET));
+        b.iter(|| sbx::webdav::Method::try_from(&Method::GET));
     });
     group.bench_function("PROPFIND", |b| {
-        b.iter(|| rshs::webdav::Method::try_from(&Method::from_bytes(b"PROPFIND").unwrap()));
+        b.iter(|| sbx::webdav::Method::try_from(&Method::from_bytes(b"PROPFIND").unwrap()));
     });
     group.bench_function("unknown", |b| {
-        b.iter(|| rshs::webdav::Method::try_from(&Method::from_bytes(b"X-CUSTOM").unwrap()));
+        b.iter(|| sbx::webdav::Method::try_from(&Method::from_bytes(b"X-CUSTOM").unwrap()));
     });
     group.finish();
 }

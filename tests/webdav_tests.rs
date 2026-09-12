@@ -22,7 +22,7 @@ fn make_request(method: &str, uri: &str, body: Body) -> axum::http::Request<Body
 #[tokio::test]
 async fn test_propfind_file_allprop() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("PROPFIND", "/hello.txt", make_propfind_body("<D:allprop/>"));
     let resp = app.oneshot(req).await.unwrap();
@@ -44,7 +44,7 @@ async fn test_propfind_file_allprop() {
 #[tokio::test]
 async fn test_propfind_dir_depth_zero() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("PROPFIND", "/", make_propfind_body("<D:allprop/>"));
     let resp = app.oneshot(req).await.unwrap();
@@ -60,7 +60,7 @@ async fn test_propfind_dir_depth_zero() {
 #[tokio::test]
 async fn test_propfind_dir_depth_one() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let mut req = make_request("PROPFIND", "/", make_propfind_body("<D:allprop/>"));
     req.headers_mut().insert("depth", "1".parse().unwrap());
@@ -78,7 +78,7 @@ async fn test_propfind_dir_depth_one() {
 #[tokio::test]
 async fn test_propfind_nonexistent_returns_404() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request(
         "PROPFIND",
@@ -92,7 +92,7 @@ async fn test_propfind_nonexistent_returns_404() {
 #[tokio::test]
 async fn test_mkcol_creates_directory() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("MKCOL", "/newdir", Body::empty());
     let resp = app.oneshot(req).await.unwrap();
@@ -103,7 +103,7 @@ async fn test_mkcol_creates_directory() {
 #[tokio::test]
 async fn test_mkcol_parent_not_exist_returns_409() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("MKCOL", "/a/b/c", Body::empty());
     let resp = app.oneshot(req).await.unwrap();
@@ -113,7 +113,7 @@ async fn test_mkcol_parent_not_exist_returns_409() {
 #[tokio::test]
 async fn test_mkcol_already_exists_returns_405() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("MKCOL", "/subdir", Body::empty());
     let resp = app.oneshot(req).await.unwrap();
@@ -123,7 +123,7 @@ async fn test_mkcol_already_exists_returns_405() {
 #[tokio::test]
 async fn test_copy_file_to_new_destination() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let mut req = make_request("COPY", "/hello.txt", Body::empty());
     req.headers_mut()
@@ -138,7 +138,7 @@ async fn test_copy_file_to_new_destination() {
 #[tokio::test]
 async fn test_move_file_to_new_destination() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let mut req = make_request("MOVE", "/hello.txt", Body::empty());
     req.headers_mut()
@@ -153,7 +153,7 @@ async fn test_move_file_to_new_destination() {
 #[tokio::test]
 async fn test_copy_overwrite_false_returns_412() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let mut req = make_request("COPY", "/hello.txt", Body::empty());
     req.headers_mut()
@@ -166,7 +166,7 @@ async fn test_copy_overwrite_false_returns_412() {
 #[tokio::test]
 async fn test_proppatch_set_and_propfind_read_back() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let xml = r#"<?xml version="1.0" encoding="utf-8"?><D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><X:myprop xmlns:X="http://example.com/">hello</X:myprop></D:prop></D:set></D:propertyupdate>"#;
     let req = make_request("PROPPATCH", "/hello.txt", Body::from(xml));

@@ -19,7 +19,7 @@ use crate::auth::{AuthState, hash_auth_header};
 /// For SHA-512 crypt credentials, uses an auth cache to avoid re-verifying the
 /// expensive password hash on every request. See [`AuthState::validate_cached`].
 ///
-/// Returns `401 Unauthorized` with `WWW-Authenticate: Basic realm="rshs"` on failure.
+/// Returns `401 Unauthorized` with `WWW-Authenticate: Basic realm="sbx"` on failure.
 ///
 /// # Panics
 ///
@@ -60,14 +60,14 @@ fn parse_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String, 
 }
 
 /// Error returned when authentication fails. Always renders a `401 Unauthorized`
-/// response with a `WWW-Authenticate: Basic realm="rshs"` header.
+/// response with a `WWW-Authenticate: Basic realm="sbx"` header.
 pub struct Unauthorized;
 
 impl IntoResponse for Unauthorized {
     fn into_response(self) -> Response {
         Response::builder()
             .status(StatusCode::UNAUTHORIZED)
-            .header("www-authenticate", r#"Basic realm="rshs""#)
+            .header("www-authenticate", r#"Basic realm="sbx""#)
             .body(Body::empty())
             .expect("a fresh response builder cannot fail")
     }

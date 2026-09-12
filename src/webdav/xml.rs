@@ -27,7 +27,7 @@ pub const SUPPORTED_PROPS: &[&str] = &[
 /// Zero-sized struct holding all `D:`-prefixed XML element name constants.
 ///
 /// ```
-/// use rshs::webdav::xml::El;
+/// use sbx::webdav::xml::El;
 /// assert_eq!(El::MULTI_STATUS, "D:multistatus");
 /// assert_eq!(El::PROP, "D:prop");
 /// ```
@@ -65,7 +65,7 @@ impl El {
     pub(crate) const GET_LAST_MODIFIED: &str = "D:getlastmodified";
 }
 
-/// Convenience alias for the XML writer used throughout `rshs`.
+/// Convenience alias for the XML writer used throughout `sbx`.
 ///
 /// `Writer<Cursor<Vec<u8>>>` backed by an in-memory byte buffer.
 pub type XmlWriter = Writer<Cursor<Vec<u8>>>;
@@ -84,7 +84,7 @@ pub type XmlWriter = Writer<Cursor<Vec<u8>>>;
 /// ```
 /// use std::io::Cursor;
 /// use quick_xml::{Writer, events::{BytesStart, BytesEnd, Event}};
-/// use rshs::webdav::xml::{XmlWriter, XmlWriterExt, El};
+/// use sbx::webdav::xml::{XmlWriter, XmlWriterExt, El};
 ///
 /// let mut w = Writer::new(Cursor::new(Vec::new()));
 /// w.ev(Event::Start(BytesStart::new(El::RESPONSE)));
@@ -111,7 +111,7 @@ impl XmlWriterExt for XmlWriter {
 /// already set), which cannot happen with a fresh builder.
 ///
 /// ```
-/// use rshs::webdav::xml::multistatus;
+/// use sbx::webdav::xml::multistatus;
 ///
 /// let response = multistatus("<D:multistatus xmlns:D='DAV:'/>".into());
 /// assert_eq!(response.status().as_u16(), 207);
@@ -141,8 +141,8 @@ pub fn multistatus(xml: String) -> Response {
 ///
 /// ```
 /// use std::time::{SystemTime, UNIX_EPOCH};
-/// use rshs::webdav::{PropEntry, PropRequest, Depth};
-/// use rshs::webdav::xml::build_multistatus;
+/// use sbx::webdav::{PropEntry, PropRequest, Depth};
+/// use sbx::webdav::xml::build_multistatus;
 ///
 /// let entry = PropEntry {
 ///     href: "/file.txt".into(),
@@ -398,8 +398,8 @@ fn write_propname(writer: &mut XmlWriter, props: &[&str]) {
 /// use std::time::{SystemTime, Duration};
 /// use std::io::Cursor;
 /// use quick_xml::Writer;
-/// use rshs::webdav::{LockInfo, LockScope, Depth};
-/// use rshs::webdav::xml::{XmlWriter, XmlWriterExt, write_activelock};
+/// use sbx::webdav::{LockInfo, LockScope, Depth};
+/// use sbx::webdav::xml::{XmlWriter, XmlWriterExt, write_activelock};
 ///
 /// let lock = LockInfo {
 ///     scope: LockScope::Exclusive,

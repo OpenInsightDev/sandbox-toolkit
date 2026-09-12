@@ -1,5 +1,5 @@
 [package]
-name = "rshs"
+name = "sbx"
 version = "0.9.3"
 description = "A lightweight HTTP + WebDAV file server"
 edition = "2024"
@@ -7,8 +7,8 @@ rust-version = "1.88"
 authors = ["Zheng Junyi <zhengjunyi@live.com>"]
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/mogeko/rshs"
-documentation = "https://docs.rs/rshs"
+repository = "https://github.com/mogeko/sbx"
+documentation = "https://docs.rs/sbx"
 keywords = ["http", "webdav", "file-server", "axum"]
 categories = ["web-programming::http-server"]
 

@@ -25,7 +25,7 @@ cargo bench -- "GET/tiny"
 
 ## Architecture
 
-Single crate `rshs` (binary + library targets). Edition 2024, requires Rust 1.88+.
+Single crate `sbx` (binary + library targets). Edition 2024, requires Rust 1.88+.
 
 ### Request Dispatch
 
@@ -67,31 +67,31 @@ Conveniences: `resolve_existing()`, `resolve_write_target()`, `resolve_and_guard
 ## Testing
 
 - Unit tests in `src/` (`#[cfg(test)]`), integration tests in `tests/`
-- External crates reference via `rshs` crate (not relative paths)
+- External crates reference via `sbx` crate (not relative paths)
 - `debug_assert!` for internal call-site invariants (compiled away in release)
 - Benchmarks use `tower::ServiceExt::oneshot()` against `make_router()`, no TCP binding
 
 ## Authentication
 
 ```sh
-rshs --user admin:secret --user viewer:public ./data
-RSHS_USERS="admin:secret;viewer:public" rshs ./data
+sbx --user admin:secret --user viewer:public ./data
+SBX_USERS="admin:secret;viewer:public" sbx ./data
 ```
 
 Shadow files (SHA-512 crypt):
 ```sh
-rshs -S ./shadow --user admin:secret ./data
-rshs -S /etc/rshs/shadow:rw -W --user admin:newpass ./data
+sbx -S ./shadow --user admin:secret ./data
+sbx -S /etc/sbx/shadow:rw -W --user admin:newpass ./data
 ```
 
 - Shadow path suffix: `:rw` (default) or `:ro`
 - `-W` writes CLI credentials to shadow file (requires writable)
-- `--auth-cache-ttl` / `RSHS_AUTH_CACHE_TTL`: default 60s, `0` = disabled
+- `--auth-cache-ttl` / `SBX_AUTH_CACHE_TTL`: default 60s, `0` = disabled
 
 ## TLS
 
 ```sh
-rshs --tls-cert cert.pem --tls-key key.pem ./data
+sbx --tls-cert cert.pem --tls-key key.pem ./data
 ```
 
 - Default port 8443 when TLS enabled (unless `--port` set)
@@ -101,27 +101,27 @@ rshs --tls-cert cert.pem --tls-key key.pem ./data
 ## Logging
 
 ```sh
-rshs              # info
-rshs -v           # debug
-rshs -vv          # trace
-rshs -q           # silent
-RSHS_LOG="rshs[status=500]=debug" rshs  # EnvFilter
+sbx              # info
+sbx -v           # debug
+sbx -vv          # trace
+sbx -q           # silent
+SBX_LOG="sbx[status=500]=debug" sbx  # EnvFilter
 ```
 
-`RSHS_LOG_STYLE`: `auto` (default), `always`, `never`
+`SBX_LOG_STYLE`: `auto` (default), `always`, `never`
 
 ## Environment Variables
 
 | Variable | Description |
 | -------- | ----------- |
-| `RSHS_ROOT_DIR` | Root directory (default `.`) |
-| `RSHS_HOST` | Bind address |
-| `RSHS_PORT` | Bind port |
-| `RSHS_TLS_CERT` | TLS certificate path (PEM) |
-| `RSHS_TLS_KEY` | TLS private key path (PEM) |
-| `RSHS_USERS` | Basic Auth credentials |
-| `RSHS_LOG` | Log level (EnvFilter) |
-| `RSHS_LOG_STYLE` | `auto` / `always` / `never` |
-| `RSHS_SHADOW_FILE` | Shadow file path, optional `:rw`/`:ro` |
-| `RSHS_LOCK_TIMEOUT` | Lock timeout seconds (default 300) |
-| `RSHS_AUTH_CACHE_TTL` | Auth cache TTL seconds (default 60, 0=disabled) |
+| `SBX_ROOT_DIR` | Root directory (default `.`) |
+| `SBX_HOST` | Bind address |
+| `SBX_PORT` | Bind port |
+| `SBX_TLS_CERT` | TLS certificate path (PEM) |
+| `SBX_TLS_KEY` | TLS private key path (PEM) |
+| `SBX_USERS` | Basic Auth credentials |
+| `SBX_LOG` | Log level (EnvFilter) |
+| `SBX_LOG_STYLE` | `auto` / `always` / `never` |
+| `SBX_SHADOW_FILE` | Shadow file path, optional `:rw`/`:ro` |
+| `SBX_LOCK_TIMEOUT` | Lock timeout seconds (default 300) |
+| `SBX_AUTH_CACHE_TTL` | Auth cache TTL seconds (default 60, 0=disabled) |
