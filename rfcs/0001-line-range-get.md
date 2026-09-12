@@ -4,7 +4,7 @@
 | --- | --- |
 | Number | RFC-0001 |
 | Title | WebDAV GET Line Ranges |
-| Status | Draft |
+| Status | Complete |
 | Authors | sandbox-toolkit contributors |
 | Created | 2026-09-12 |
 | Updated | 2026-09-12 |
@@ -136,6 +136,7 @@ This extension SHOULD initially be disabled or limited to configured text media 
 ## Changelog
 
 - 2026-09-12: Initial draft.
+- 2026-09-13: Implemented single-range line GET support and tests.
 
 ## References
 
