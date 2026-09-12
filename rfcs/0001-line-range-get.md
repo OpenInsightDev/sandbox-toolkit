@@ -32,13 +32,13 @@ Non-goals: multipart ranges, character/column ranges, server-side transcoding, o
 
 ### Discovery
 
-A server supporting this extension MUST advertise it:
+A server supporting this extension MUST advertise it per target representation, listing only units applicable to that representation:
 
 ```http
 Accept-Ranges: bytes, lines
 ```
 
-It MAY advertise only the range units it supports. Absence of `lines` does not promise support.
+A binary representation MUST NOT advertise `lines`. The header MAY list only the range units supported for the selected representation; absence of `lines` does not promise support.
 
 ### Request
 
@@ -50,7 +50,7 @@ Range: lines=10-19
 
 The syntax is one range, `lines=<first>-<last>`, where both values are decimal integers, `first >= 1`, and `last >= first`. An omitted `<last>` (`lines=10-`) means through the final line. Suffix ranges (`lines=-10`), comma-separated ranges, whitespace, and other parameters are not defined.
 
-A request without `Range` is unchanged. `Range: bytes=...` retains RFC 9110 semantics. A request MUST NOT mix `bytes` and `lines`; multiple units are invalid rather than precedence-ordered. Per RFC 9110, `Range` is processed only on `GET`; `HEAD` ignores `Range` and describes the complete current representation with the normal `200` response.
+A request without `Range` is unchanged. `Range: bytes=...` retains RFC 9110 semantics. A request MUST NOT mix `bytes` and `lines`; multiple units are invalid rather than precedence-ordered. Per RFC 9110, `Range` is processed only on `GET`; `HEAD` ignores `Range` and describes the complete current representation while still applying ordinary conditional-request processing (for example, it may return `304` or `412` rather than `200`).
 
 ### Successful response
 
@@ -76,7 +76,7 @@ Line boundaries are computed on the identity-coded representation. If content ne
 ### Unsatisfiable requests
 
 - An unknown or unsupported range unit MUST be ignored according to RFC 9110, producing the normal complete response (usually `200`).
-- For a non-text representation, malformed `lines` syntax, or mixed units, return `416 Range Not Satisfiable`.
+- For a non-text representation, malformed `lines` syntax, or mixed units, return `416 Range Not Satisfiable` with no `Content-Range` line extent; the body MAY use the server's normal error representation and MUST NOT contain the resource bytes.
 - A range is satisfiable when its first line exists. If `<last>` exceeds the final line, clip it to the final line and return `206` with the actual interval.
 - For a range whose first line is beyond the current line count, return `416` with `Content-Range: lines */<total>`.
 - For an empty file, return `416` with `Content-Range: lines */0`.
@@ -88,7 +88,7 @@ The server MUST NOT silently return the full file to satisfy a line-range reques
 
 `If-Range` MUST behave as for byte ranges: a matching validator permits `206`; a non-matching validator causes `Range` to be ignored and the current full representation (normally `200`) to be sent. Existing `If-Match`, `If-None-Match`, `If-Modified-Since`, and `If-Unmodified-Since` semantics are unchanged.
 
-Use validators for the same representation in line-range responses. Follow HTTP cache rules; a line-range response MUST NOT be marked or reused as a complete representation, or reused for a different range.
+Use validators for the same representation in line-range responses. The server MUST obtain the line count, selected bytes, and validators from one immutable representation snapshot, or revalidate and retry if the representation changes before the response is emitted. Follow HTTP cache rules; a line-range response MUST NOT be marked or reused as a complete representation, or reused for a different range.
 
 ## Grammar
 
@@ -101,19 +101,19 @@ HTTP range-unit names are case-insensitive. Examples use lowercase `lines`. Nume
 
 ## Examples
 
-For `notes.txt`:
+For `notes.txt`, the following notation denotes bytes (the backslash escapes are not literal bytes):
 
 ```text
-alpha\n
-bravo\r\n
-charlie
+line 1: alpha + LF (0A)
+line 2: bravo + CRLF (0D 0A)
+line 3: charlie (no final delimiter)
 ```
 
-`Range: lines=2-3` returns `206`, body `bravo\r\ncharlie`, and `Content-Range: lines 2-3/3`. `Range: lines=2-999` is clipped and returns `206` with `Content-Range: lines 2-3/3`. `Range: lines=4-5` returns `416` with `Content-Range: lines */3`. `Range: lines=2-` returns lines 2 and 3 with `Content-Range: lines 2-3/3`.
+`Range: lines=2-3` returns `206`, body `bravo` followed by `CRLF` and `charlie`, and `Content-Range: lines 2-3/3`. `Range: lines=2-999` is clipped and returns `206` with `Content-Range: lines 2-3/3`. `Range: lines=4-5` returns `416` with `Content-Range: lines */3`. `Range: lines=2-` returns lines 2 and 3 with `Content-Range: lines 2-3/3`.
 
 ## Security, performance, and observability
 
-Line scanning may require reading from the beginning, especially on non-seekable backends. Implementations SHOULD cap scanned bytes, selected lines, and response size, using existing resource-limit errors when exceeded. Line parsing MUST NOT execute file content. Logs SHOULD record unit, requested range, status, and duration, not file contents. Existing path canonicalization and authorization MUST apply.
+Line scanning may require reading from the beginning, especially on non-seekable backends. Implementations SHOULD cap scanned bytes, selected lines, and response size. When a cap is exceeded, return a documented `413 Content Too Large` or `416 Range Not Satisfiable` response according to the applicable limit; the implementation MUST use one policy consistently and MUST NOT return partial, mislabeled resource bytes. Line parsing MUST NOT execute file content. Logs SHOULD record unit, requested range, status, and duration, not file contents. Existing path canonicalization and authorization MUST apply.
 
 ## Implementation and rollout
 
