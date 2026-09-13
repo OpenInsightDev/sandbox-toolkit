@@ -293,7 +293,9 @@ yield* client.createDirectory("/data/system/storage", { recursive: true });
 
 #### createReadStream
 
-Create a stream over a remote file.
+Create a stream over a remote file. It supports the normal byte range and RFC-0001 line range
+forms (`lineRange` or `range: { unit: "lines", ... }`) and requires a `206` response whenever
+a range is requested.
 
 ```ts
 import { Effect, Stream } from "effect";
@@ -455,7 +457,17 @@ Names are decoded, so results match the names as they appear on the server even 
 
 #### getFileContents
 
-Fetch a remote file.
+Fetch a remote file. RFC-0001 line ranges are requested with `lineRange` (one-based, inclusive)
+or with a unit-aware `range: { unit: "lines", start, end? }`; the latter sends `Range: lines=...`.
+The response remains bytes or text according to `format`, and detailed responses preserve
+`Content-Range`, `Accept-Ranges`, and validators.
+
+```ts
+yield* client.getFileContents("/notes.txt", {
+  format: "text",
+  lineRange: { start: 10, end: 19 },
+});
+```
 
 ```ts
 const bytes: Uint8Array = yield* client.getFileContents("/package.zip");
@@ -468,11 +480,13 @@ const detailed = yield* client.getFileContents("/photo.jpg", { details: true });
   Effect<Uint8Array | string | DetailedHttpResponse, OperationError>;
 ```
 
-| Argument          | Required | Description                                                    |
-| ----------------- | -------- | -------------------------------------------------------------- |
-| `filename`        | Yes      | The file to fetch.                                             |
-| `options.format`  | No       | `"binary"` (default) returns bytes; `"text"` returns a string. |
-| `options.details` | No       | Return a `DetailedHttpResponse` instead of the body alone.     |
+| Argument            | Required | Description                                                    |
+| ------------------- | -------- | -------------------------------------------------------------- |
+| `filename`          | Yes      | The file to fetch.                                             |
+| `options.format`    | No       | `"binary"` (default) returns bytes; `"text"` returns a string. |
+| `options.range`     | No       | Byte range, or `{ unit: "lines", start, end? }` for RFC-0001.  |
+| `options.lineRange` | No       | One-based RFC-0001 line range; takes precedence over `range`.  |
+| `options.details`   | No       | Return a `DetailedHttpResponse` instead of the body alone.     |
 
 When `details` is set, `body` is always returned as bytes.
 Use [`createReadStream`](#createreadstream) for large files.
@@ -569,7 +583,10 @@ yield* client.moveFile("/a", "/b", { overwrite: false });
 
 #### partialUpdateFileContents
 
-Partially update a file using the HTTP PATCH method (RFC 5789).
+Partially update a file using this project's RFC-0002 `application/partial-update` PATCH profile.
+The client sends the required `Content-Length` and `X-Update-Range` headers and treats the
+request body as opaque bytes. Inclusive, open-ended, suffix, sparse, and append updates are
+supported; use `updateRange` for an explicit wire value when needed.
 
 **With byte range (uses PATCH):**
 
@@ -584,10 +601,18 @@ yield* client.partialUpdateFileContents("/file.txt", "appended data", {
   range: { start: 100 }
 });
 
-// With custom content type
+// Append at the current end, or replace the final four bytes
+yield* client.partialUpdateFileContents("/file.txt", "appended data", {
+  range: "append"
+});
+yield* client.partialUpdateFileContents("/file.txt", new Uint8Array([1, 2, 3, 4]), {
+  range: { suffix: 4 }
+});
+
+// RFC-0002 allows parameters on its media type
 yield* client.partialUpdateFileContents("/data.json", '{"key":"value"}', {
   range: { start: 0, end: 14 },
-  contentType: "application/json"
+  contentType: "application/partial-update; version=1"
 });
 ```
 
@@ -604,8 +629,9 @@ yield* client.partialUpdateFileContents("/log.txt", chunk);
 
 **Options:**
 
-- `range?: { start: number; end?: number }` - Byte range to update. If `end` is omitted, it's calculated as `start + dataLength - 1`
-- `contentType?: string` - Content type of the patch data (default: `"application/octet-stream"`)
+- `range?: { start: number; end?: number } | { suffix: number } | "append"` - RFC-0002 byte update form. An omitted `end` uses an open-ended range.
+- `updateRange?: string` - Explicit `X-Update-Range` value, for example `"bytes=-4"` or `"append"`.
+- `contentType?: string` - Content type (default: `"application/partial-update"`); parameters are allowed.
 - `headers?: Headers` - Additional HTTP headers
 - `signal?: AbortSignal` - Abort signal for cancellation
 
@@ -613,8 +639,9 @@ yield* client.partialUpdateFileContents("/log.txt", chunk);
 
 - Returns `UnsupportedFeatureError` if the server responds with 409 Conflict (PATCH not supported)
 - Accepts 200, 204, or 206 status codes as success
+- Invalid inclusive ranges and empty open-ended bodies fail before a request is sent
 
-**Note:** Without a `range`, this operation falls back to a full PUT request and replaces the entire file.
+**Note:** Without `range` or `updateRange`, this operation falls back to a full PUT request and replaces the entire file.
 
 #### putFileContents
 

@@ -123,13 +123,42 @@ export const Range = Schema.Struct({
             ),
         ),
     ),
+    unit: Schema.optional(Schema.Literals(["bytes", "lines"] as const)),
+}).pipe(
+    Schema.check(
+        Schema.makeFilter(
+            (range) =>
+                ((range.unit !== "lines" ||
+                    (range.start >= 1 && (range.end === undefined || range.end >= 1))) &&
+                    (range.end === undefined ||
+                        range.end >= range.start ||
+                        "Range end must be greater than or equal to start")) ||
+                "Line ranges must start at one",
+        ),
+    ),
+);
+
+/** A one-based inclusive line interval used by RFC-0001 GET requests. */
+export const LineRange = Schema.Struct({
+    start: Schema.Int.pipe(
+        Schema.check(
+            Schema.makeFilter((value) => value >= 1 || "Line range start must be positive"),
+        ),
+    ),
+    end: Schema.optional(
+        Schema.Int.pipe(
+            Schema.check(
+                Schema.makeFilter((value) => value >= 1 || "Line range end must be positive"),
+            ),
+        ),
+    ),
 }).pipe(
     Schema.check(
         Schema.makeFilter(
             (range) =>
                 range.end === undefined ||
                 range.end >= range.start ||
-                "Range end must be greater than or equal to start",
+                "Line range end must be greater than or equal to start",
         ),
     ),
 );
@@ -175,5 +204,6 @@ export type LockResponse = Schema.Schema.Type<typeof LockResponse>;
 export type Headers = Schema.Schema.Type<typeof Headers>;
 export type RequestData = Schema.Schema.Type<typeof RequestData>;
 export type Range = Schema.Schema.Type<typeof Range>;
+export type LineRange = Schema.Schema.Type<typeof LineRange>;
 export type ProgressEvent = Schema.Schema.Type<typeof ProgressEvent>;
 export type EntityDecoderOptions = Schema.Schema.Type<typeof EntityDecoderOptions>;
