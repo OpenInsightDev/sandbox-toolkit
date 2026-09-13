@@ -1,8 +1,17 @@
+# WebDAV Client TypeScript SDK
+
+This module provides the Effect-based WebDAV client. Public exports are assembled in `src/index.ts`; transport, authentication, XML, and WebDAV operations live in the adjacent source modules. Keep platform layers runtime-compatible with fetch-based environments.
+
+Validation and formatting from this directory:
+
+```sh
+vp check
+vp check --fix
+vp test
+vp pack
+```
+
 <!--VITE PLUS START-->
-
-# TypeScript SDK
-
-This package is managed by the root pnpm workspace and was scaffolded with `vp create vite:library --directory sdk/typescript`. Use `vp install`, `vp check`, `vp test`, and `vp pack` from this directory, or the corresponding root pnpm scripts.
 
 # Using Vite+, the Unified Toolchain for the Web
 
