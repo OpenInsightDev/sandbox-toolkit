@@ -4,6 +4,10 @@ When modifying any module's code, you MUST update the corresponding AGENTS.md.
 
 ## Build & Run
 
+Cargo uses the nightly toolchain with Cargo's `bindeps` support (configured in
+`rust-toolchain.toml` and `.cargo/config.toml`) to build the bundled `ripgrep`
+and `fd` artifact dependencies.
+
 ```sh
 cargo check
 cargo build --release

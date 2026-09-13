@@ -1,6 +1,9 @@
-FROM docker.io/library/rust:1-trixie AS builder
+FROM docker.io/library/rust:nightly-trixie AS builder
 
 WORKDIR /app/
+
+COPY ./rust-toolchain.toml /app/rust-toolchain.toml
+COPY ./.cargo/ /app/.cargo/
 
 COPY ./benches/ /app/benches/
 COPY ./src/ /app/src/
