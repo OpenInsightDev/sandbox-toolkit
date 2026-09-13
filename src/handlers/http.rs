@@ -49,9 +49,50 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
         let file_size = meta.len();
         let mime = mime_guess::from_path(&fs_path).first_or_octet_stream();
         tracing::debug!(mime = %mime.essence_str(), size = file_size, "file served");
+        let is_text = mime.essence_str().starts_with("text/");
+        let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+        if method == axum::http::Method::GET
+            && is_text
+            && range.is_some_and(|r| r.to_ascii_lowercase().starts_with("lines="))
+        {
+            let data = tokio::fs::read(&fs_path)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let (start, end) = match parse_line_range(range.unwrap(), &data) {
+                Ok(v) => v,
+                Err(total) => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header("content-range", format!("lines */{total}"))
+                        .body(Body::empty())
+                        .unwrap());
+                }
+            };
+            let (lo, hi) = line_offsets(&data)
+                .into_iter()
+                .skip(start - 1)
+                .take(end - start + 1)
+                .fold((usize::MAX, 0), |(lo, hi), (a, b)| (lo.min(a), hi.max(b)));
+            let body = &data[lo..hi];
+            return Ok(Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header("content-type", mime.as_ref())
+                .header("accept-ranges", "bytes, lines")
+                .header(
+                    "content-range",
+                    format!("lines {start}-{end}/{}", line_offsets(&data).len()),
+                )
+                .header("content-length", body.len())
+                .body(Body::from(body.to_vec()))
+                .unwrap());
+        }
         let resp = Response::builder()
             .status(StatusCode::OK)
             .header("content-type", mime.as_ref())
+            .header(
+                "accept-ranges",
+                if is_text { "bytes, lines" } else { "bytes" },
+            )
             .header("content-length", file_size);
         if method == axum::http::Method::HEAD {
             return Ok(resp.body(Body::empty()).unwrap());
@@ -67,6 +108,54 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
             }
         }
     }
+}
+
+fn line_offsets(data: &[u8]) -> Vec<(usize, usize)> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\n' || data[i] == b'\r' {
+            let end = if data[i] == b'\r' && data.get(i + 1) == Some(&b'\n') {
+                i + 2
+            } else {
+                i + 1
+            };
+            lines.push((start, end));
+            start = end;
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    if start < data.len() {
+        lines.push((start, data.len()));
+    }
+    lines
+}
+
+fn parse_line_range(value: &str, data: &[u8]) -> Result<(usize, usize), usize> {
+    let total = line_offsets(data).len();
+    let (unit, rest) = value.split_once('=').ok_or(total)?;
+    if !unit.eq_ignore_ascii_case("lines") || rest.contains(',') || rest.starts_with('-') {
+        return Err(total);
+    }
+    let mut parts = rest.split('-');
+    let start: usize = parts
+        .next()
+        .filter(|x| !x.is_empty())
+        .and_then(|x| x.parse().ok())
+        .filter(|x| *x > 0)
+        .ok_or(total)?;
+    let end = match parts.next() {
+        Some("") => total,
+        Some(x) => x.parse().map_err(|_| total)?,
+        None => return Err(total),
+    };
+    if parts.next().is_some() || end < start || start > total {
+        return Err(total);
+    }
+    Ok((start, end.min(total)))
 }
 
 /// PUT handler — accepts a request body and writes it to the filesystem.
