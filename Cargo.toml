@@ -14,6 +14,7 @@ categories = ["web-programming::http-server"]
 
 [features]
 default = []
+jaq = ["dep:jaq"]
 tgrep = ["dep:tgrep"]
 
 [dependencies]
@@ -21,6 +22,7 @@ axum = { version = "0.8", features = ["http2"] }
 base64 = "0.23"
 ripgrep = { version = "15.2.0", artifact = "bin:rg" }
 fd-find = { version = "10.5.0", artifact = "bin:fd" }
+jaq = { git = "https://github.com/01mf02/jaq", tag = "v3.1.1", artifact = "bin:jaq", optional = true }
 tgrep = { package = "tgrep-cli", git = "https://github.com/microsoft/tgrep", tag = "v1.0.8", artifact = "bin:tgrep", optional = true }
 clap = { version = "4.6", features = ["derive", "env"] }
 futures-util = "0.3"
