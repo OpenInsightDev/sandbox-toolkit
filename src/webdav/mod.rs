@@ -121,6 +121,31 @@ pub struct PropEntry {
 }
 
 impl PropEntry {
+    /// Construct a property entry from its basic representation metadata.
+    ///
+    /// ```
+    /// use std::time::UNIX_EPOCH;
+    /// use sbx::webdav::PropEntry;
+    ///
+    /// let entry = PropEntry::new("/file.txt".into(), UNIX_EPOCH, None, 4, false);
+    /// assert_eq!(entry.size, 4);
+    /// ```
+    pub fn new(
+        href: String, modified: SystemTime, created: Option<SystemTime>, size: u64, is_dir: bool,
+    ) -> Self {
+        Self {
+            href,
+            modified,
+            created,
+            size,
+            is_dir,
+            content_type: None,
+            dead_props: None,
+            active_locks: None,
+            canonical_path: None,
+        }
+    }
+
     /// Create a `PropEntry` from `std::fs::Metadata`.
     ///
     /// ```
@@ -196,6 +221,36 @@ pub struct LockInfo {
 }
 
 impl LockInfo {
+    /// Construct a lock with the supplied scope, token, owner, creation time, timeout, and depth.
+    ///
+    /// ```
+    /// use std::time::SystemTime;
+    /// use sbx::webdav::{Depth, LockInfo, LockScope};
+    ///
+    /// let lock = LockInfo::new(
+    ///     LockScope::Exclusive,
+    ///     "opaquelocktoken:example".into(),
+    ///     None,
+    ///     SystemTime::now(),
+    ///     None,
+    ///     Depth::Zero,
+    /// );
+    /// assert!(lock.is_exclusive());
+    /// ```
+    pub fn new(
+        scope: LockScope, token: String, owner: Option<String>, created: SystemTime,
+        timeout: Option<Duration>, depth: Depth,
+    ) -> Self {
+        Self {
+            scope,
+            token,
+            owner,
+            created,
+            timeout,
+            depth,
+        }
+    }
+
     /// Whether the lock has expired.
     ///
     /// A lock without a timeout never expires.

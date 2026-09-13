@@ -360,6 +360,9 @@ pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> A
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    if meta.len() > MAX_PATCH_SIZE as u64 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     let current = tokio::fs::read(&target)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
