@@ -1,13 +1,14 @@
 //! GET/HEAD (file serving + HTML directory listing), PUT, DELETE, and OPTIONS handlers.
 
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::TryStreamExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::html::generate_dir_listing;
@@ -51,36 +52,81 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
         tracing::debug!(mime = %mime.essence_str(), size = file_size, "file served");
         let is_text = mime.essence_str().starts_with("text/");
         let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+        let line_range = range.and_then(parse_line_range_request);
         if method == axum::http::Method::GET
-            && is_text
-            && range.is_some_and(|r| r.to_ascii_lowercase().starts_with("lines="))
+            && let Some(result) = line_range
         {
-            let data = tokio::fs::read(&fs_path)
+            if !is_text {
+                return Ok(range_not_satisfiable(0, false));
+            }
+            let mut file = tokio::fs::File::open(&fs_path)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let (start, end) = match parse_line_range(range.unwrap(), &data) {
-                Ok(v) => v,
-                Err(total) => {
-                    return Ok(Response::builder()
-                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                        .header("content-range", format!("lines */{total}"))
-                        .body(Body::empty())
-                        .unwrap());
-                }
+            let snapshot_meta = file
+                .metadata()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let mut data = Vec::with_capacity(snapshot_meta.len().min(usize::MAX as u64) as usize);
+            file.read_to_end(&mut data)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let end_meta = file
+                .metadata()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if end_meta.len() != snapshot_meta.len()
+                || end_meta.modified().unwrap_or(UNIX_EPOCH)
+                    != snapshot_meta.modified().unwrap_or(UNIX_EPOCH)
+                || data.len() as u64 != snapshot_meta.len()
+            {
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            let lines = line_offsets(&data);
+            let (start, requested_end) = match result {
+                Ok(range) => range,
+                Err(()) => return Ok(range_not_satisfiable(0, false)),
             };
-            let (lo, hi) = line_offsets(&data)
-                .into_iter()
-                .skip(start - 1)
-                .take(end - start + 1)
-                .fold((usize::MAX, 0), |(lo, hi), (a, b)| (lo.min(a), hi.max(b)));
+            if start == 0 || start > lines.len() {
+                return Ok(range_not_satisfiable(lines.len(), true));
+            }
+            let end = requested_end.unwrap_or(lines.len()).min(lines.len());
+            if end < start {
+                return Ok(range_not_satisfiable(0, false));
+            }
+            let (lo, hi) = lines[start - 1..end]
+                .iter()
+                .fold((usize::MAX, 0), |(lo, hi), (a, b)| (lo.min(*a), hi.max(*b)));
             let body = &data[lo..hi];
+            let etag = make_etag(&snapshot_meta);
+            let last_modified = snapshot_meta
+                .modified()
+                .map(crate::utils::time::format_rfc1123)
+                .unwrap_or_default();
+            if let Some(if_range) = req.headers().get("if-range").and_then(|v| v.to_str().ok())
+                && if_range != last_modified
+            {
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", mime.as_ref())
+                    .header(
+                        "accept-ranges",
+                        if is_text { "bytes, lines" } else { "bytes" },
+                    )
+                    .header("etag", etag)
+                    .header("last-modified", last_modified)
+                    .header("content-length", data.len())
+                    .body(Body::from(data))
+                    .unwrap());
+            }
             return Ok(Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header("content-type", mime.as_ref())
                 .header("accept-ranges", "bytes, lines")
+                .header("etag", etag)
+                .header("last-modified", last_modified)
                 .header(
                     "content-range",
-                    format!("lines {start}-{end}/{}", line_offsets(&data).len()),
+                    format!("lines {start}-{end}/{}", lines.len()),
                 )
                 .header("content-length", body.len())
                 .body(Body::from(body.to_vec()))
@@ -92,6 +138,13 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
             .header(
                 "accept-ranges",
                 if is_text { "bytes, lines" } else { "bytes" },
+            )
+            .header("etag", make_etag(&meta))
+            .header(
+                "last-modified",
+                meta.modified()
+                    .map(crate::utils::time::format_rfc1123)
+                    .unwrap_or_default(),
             )
             .header("content-length", file_size);
         if method == axum::http::Method::HEAD {
@@ -108,6 +161,68 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
             }
         }
     }
+}
+
+fn parse_line_range_request(value: &str) -> Option<Result<(usize, Option<usize>), ()>> {
+    let segments: Vec<_> = value.split(',').collect();
+    let has_lines = segments.iter().any(|segment| {
+        let unit = segment.split_once('=').map_or(*segment, |(unit, _)| unit);
+        unit.trim().eq_ignore_ascii_case("lines")
+    });
+    if !has_lines {
+        return None;
+    }
+    if segments.len() != 1 {
+        return Some(Err(()));
+    }
+    let (unit, rest) = match value.split_once('=') {
+        Some(parts) => parts,
+        None => return Some(Err(())),
+    };
+    if unit != "lines" && !unit.eq_ignore_ascii_case("lines") {
+        return Some(Err(()));
+    }
+    if unit.trim() != unit {
+        return Some(Err(()));
+    }
+    let mut parts = rest.split('-');
+    let start = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse::<usize>().ok())
+        .filter(|&part| part > 0);
+    let end = match parts.next() {
+        Some("") => Some(None),
+        Some(part) => part.parse::<usize>().ok().map(Some),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return Some(Err(()));
+    }
+    match (start, end) {
+        (Some(start), Some(end)) => Some(Ok((start, end))),
+        _ => Some(Err(())),
+    }
+}
+
+fn range_not_satisfiable(total: usize, include_total: bool) -> Response {
+    let mut response = Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE);
+    if include_total {
+        response = response.header("content-range", format!("lines */{total}"));
+    }
+    response.body(Body::empty()).unwrap()
+}
+
+fn make_etag(meta: &std::fs::Metadata) -> String {
+    format!(
+        "W/\"{:x}-{:x}\"",
+        meta.modified()
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        meta.len()
+    )
 }
 
 fn line_offsets(data: &[u8]) -> Vec<(usize, usize)> {
@@ -132,30 +247,6 @@ fn line_offsets(data: &[u8]) -> Vec<(usize, usize)> {
         lines.push((start, data.len()));
     }
     lines
-}
-
-fn parse_line_range(value: &str, data: &[u8]) -> Result<(usize, usize), usize> {
-    let total = line_offsets(data).len();
-    let (unit, rest) = value.split_once('=').ok_or(total)?;
-    if !unit.eq_ignore_ascii_case("lines") || rest.contains(',') || rest.starts_with('-') {
-        return Err(total);
-    }
-    let mut parts = rest.split('-');
-    let start: usize = parts
-        .next()
-        .filter(|x| !x.is_empty())
-        .and_then(|x| x.parse().ok())
-        .filter(|x| *x > 0)
-        .ok_or(total)?;
-    let end = match parts.next() {
-        Some("") => total,
-        Some(x) => x.parse().map_err(|_| total)?,
-        None => return Err(total),
-    };
-    if parts.next().is_some() || end < start || start > total {
-        return Err(total);
-    }
-    Ok((start, end.min(total)))
 }
 
 /// PUT handler — accepts a request body and writes it to the filesystem.
@@ -370,6 +461,117 @@ mod tests {
 
         assert!(body_str.contains("hello.txt") && body_str.contains("13"));
         assert!(body_str.contains("subdir/") && body_str.contains("-"));
+    }
+
+    #[tokio::test]
+    async fn test_get_line_range_preserves_line_endings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\r\ntwo\rthree\nfour").unwrap();
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/lines.txt")
+            .header("range", "lines=2-3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.headers()["content-range"], "lines 2-3/4");
+        assert_eq!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            &b"two\rthree\n"[..]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_line_range_clips_and_rejects_invalid_requests() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\ntwo\nthree").unwrap();
+        std::fs::write(dir.path().join("data.bin"), [0, 1, 2, 3]).unwrap();
+
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/lines.txt")
+            .header("range", "lines=2-999")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.headers()["content-range"], "lines 2-3/3");
+
+        for range in ["lines=-1", "lines=4-5", "bytes=0-1,lines=1-2"] {
+            let req = Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/lines.txt")
+                .header("range", range)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/data.bin")
+            .header("range", "lines=1-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::RANGE_NOT_SATISFIABLE);
+        assert!(resp.headers().get("content-range").is_none());
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_head_ignores_line_range_and_if_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\ntwo\nthree").unwrap();
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::HEAD)
+            .uri("/lines.txt")
+            .header("range", "lines=2-2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(resp.headers()["content-length"], "13");
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_if_range_mismatch_returns_full_representation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\ntwo\nthree").unwrap();
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/lines.txt")
+            .header("range", "lines=2-2")
+            .header("if-range", "\"stale\"")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            &b"one\ntwo\nthree"[..]
+        );
     }
 
     // -- PUT tests -----------------------------------------------------------
