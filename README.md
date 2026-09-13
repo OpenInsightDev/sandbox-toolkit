@@ -43,13 +43,14 @@ docker pull ghcr.io/mogeko/sbx:latest
 ### Optional bundled tools
 
 The default build packages `rg` and `fd`. To also package Microsoft's `tgrep`
-binary from its tagged source release, enable the `tgrep` feature:
+and `jaq` JSON query binaries from their tagged source releases, enable the
+corresponding features:
 
 ```sh
-cargo build --release --features tgrep
+cargo build --release --features tgrep,jaq
 ```
 
-For Docker builds, pass `--build-arg FEATURES=tgrep`.
+For Docker builds, pass `--build-arg FEATURES=tgrep,jaq`.
 
 ## Quick Start
 
