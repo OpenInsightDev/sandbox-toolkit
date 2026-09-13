@@ -25,7 +25,7 @@ cargo bench -- "GET/tiny"
 
 ## Architecture
 
-Single crate `sbx` (binary + library targets). Edition 2024, requires Rust 1.88+.
+A pnpm workspace manages the Rust Cargo workspace and the TypeScript SDK under `sdk/typescript`. Cargo dependencies are installed by pnpm when `cargo.enabled` is enabled in the root `pnpm-workspace.yaml`. The Rust package remains a single crate `sbx` (binary + library targets). Edition 2024, requires Rust 1.88+.
 
 ### Request Dispatch
 
