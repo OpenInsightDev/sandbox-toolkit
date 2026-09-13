@@ -2,6 +2,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import * as NetAddress from "effect/unstable/net/NetAddress";
 import {
     Transport,
     FetchHttpTransport,
@@ -385,10 +386,10 @@ describe("Effect WebDAV HTTP transport", () => {
 
         return Effect.gen(function* () {
             const server = yield* HttpServer.HttpServer;
-            if (server.address._tag === "UnixAddress") {
+            if (server.address._tag === "UnixPathAddress") {
                 return yield* Effect.die("Node HTTP fixture did not expose a TCP address");
             }
-            const baseUrl = `http://${server.address.hostname}:${server.address.port}`;
+            const baseUrl = NetAddress.formatUrlUnsafe(server.address, "http");
             const transport = yield* Transport;
             const getResponse = yield* transport.execute({
                 url: `${baseUrl}/fixture`,

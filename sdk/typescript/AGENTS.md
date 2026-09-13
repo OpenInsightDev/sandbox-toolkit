@@ -1,6 +1,6 @@
 # WebDAV Client TypeScript SDK
 
-This module provides the Effect-based WebDAV client. Public exports are assembled in `src/index.ts`; transport, authentication, XML, and WebDAV operations live in the adjacent source modules. Keep platform layers runtime-compatible with fetch-based environments.
+This module provides the Effect-based WebDAV client. Public exports are assembled in `src/index.ts`; transport, authentication, XML, and WebDAV operations live in the adjacent source modules. Effect dependencies are pinned to the same release candidate version.
 
 Validation and formatting from this directory:
 
