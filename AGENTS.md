@@ -7,7 +7,7 @@ When modifying any module's code, you MUST update the corresponding AGENTS.md.
 Cargo uses the nightly toolchain with Cargo's `bindeps` support (configured in
 `rust-toolchain.toml` and `.cargo/config.toml`) to build the bundled `ripgrep`
 and `fd` artifact dependencies. CI and release builds enable every Cargo feature;
-the Docker image defaults to `FEATURES=jaq,tgrep`.
+the Docker image uses the Rust 1.88 Bookworm builder and defaults to `FEATURES=jaq,tgrep`.
 
 ```sh
 cargo check --all-features

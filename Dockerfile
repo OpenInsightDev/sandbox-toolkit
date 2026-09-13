@@ -1,4 +1,4 @@
-FROM docker.io/library/rust:nightly-trixie AS builder
+FROM docker.io/library/rust:1.88-bookworm AS builder
 
 WORKDIR /app/
 
