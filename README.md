@@ -69,13 +69,14 @@ small command-line tools that agents commonly use to understand a codebase:
 - **`jaq`** (optional) for querying and transforming JSON
 
 This means a new sandbox can be made useful without a long provisioning script
-or a separate package-installation step. Build the optional tools when needed:
+or a separate package-installation step. The default build includes all optional
+tools:
 
 ```sh
-cargo build --release --features tgrep,jaq
+cargo build --release --all-features
 ```
 
-For Docker builds, pass `--build-arg FEATURES=tgrep,jaq`.
+Docker images include all optional tools by default; use `--build-arg FEATURES=...` only to build a custom subset.
 
 ### A deployable sandbox foundation
 
@@ -93,19 +94,22 @@ hard to reuse and forces every integration to reinvent workspace support.
 
 Sandbox Toolkit moves that responsibility into a small, provider-independent
 server. The agent talks to one stable interface, while the sandbox can change
-underneath it. This gives local agents the reach of a full remote development
-environment without placing the agent runtime in the sandbox.
+underneath it. Because the interface is an open standard (WebDAV) rather than
+a vendor-specific SDK, it avoids vendor lock-in and lets the same agent work
+with any sandbox provider unchanged. This gives local agents the reach of a
+full remote development environment without placing the agent runtime in the
+sandbox.
 
 ## Quick start
 
 Pull the image and expose a sandbox directory:
 
 ```sh
-docker pull ghcr.io/mogeko/sbx:latest
+docker pull ghcr.io/openinsightdev/sandbox-toolkit:latest
 
 docker run --rm -p 8080:8080 \
   -v "$PWD:/mnt/data" \
-  ghcr.io/mogeko/sbx:latest
+  ghcr.io/openinsightdev/sandbox-toolkit:latest
 ```
 
 Or run the binary directly:
