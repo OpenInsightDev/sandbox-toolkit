@@ -4,6 +4,7 @@ import {
     EntityDecoderOptions,
     Headers,
     HttpMethod,
+    LineRange,
     Path,
     ProgressEvent,
     Range,
@@ -82,6 +83,8 @@ export const GetFileContentsOptions = Schema.Struct({
     ...methodOptionFields,
     details: Schema.optional(Schema.Boolean),
     format: Schema.optional(Schema.Literals(["binary", "text"] as const)),
+    range: Schema.optional(Range),
+    lineRange: Schema.optional(LineRange),
 });
 export const CreateDirectoryOptions = Schema.Struct({
     ...methodOptionFields,
@@ -90,6 +93,7 @@ export const CreateDirectoryOptions = Schema.Struct({
 export const CreateReadStreamOptions = Schema.Struct({
     ...methodOptionFields,
     range: Schema.optional(Range),
+    lineRange: Schema.optional(LineRange),
 });
 export const CreateWriteStreamOptions = Schema.Struct({
     ...methodOptionFields,
@@ -114,9 +118,22 @@ export const PutFileContentsOptions = Schema.Struct({
     contentLength: Schema.optional(Schema.Union([Schema.Boolean, Schema.Number])),
     overwrite: Schema.optional(Schema.Boolean),
 });
+export const PartialUpdateRange = Schema.Union([
+    Range,
+    Schema.Literals(["append"] as const),
+    Schema.Struct({ append: Schema.Literal(true) }),
+    Schema.Struct({
+        suffix: Schema.Int.pipe(
+            Schema.check(
+                Schema.makeFilter((value) => value > 0 || "Suffix length must be positive"),
+            ),
+        ),
+    }),
+]);
 export const PartialUpdateOptions = Schema.Struct({
     ...methodOptionFields,
-    range: Schema.optional(Range),
+    range: Schema.optional(PartialUpdateRange),
+    updateRange: Schema.optional(Schema.Union([PartialUpdateRange, Schema.String])),
     contentType: Schema.optional(Schema.String),
 });
 

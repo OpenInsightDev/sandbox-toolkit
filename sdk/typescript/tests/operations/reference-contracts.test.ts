@@ -98,6 +98,47 @@ describe("reference operation contracts", () => {
         }).pipe(Effect.provide(layer));
     });
 
+    it.effect("sends RFC-0001 line ranges and preserves response headers in details", () => {
+        const requests: Array<{ headers?: Record<string, string> }> = [];
+        const layer = makeLayer((request) => {
+            requests.push(request);
+            return Effect.succeed(
+                responseFromText({
+                    url: request.url,
+                    status: 206,
+                    body: "line two\\nline three",
+                    headers: { "Content-Range": "lines 2-3/4", ETag: '"v1"' },
+                }),
+            );
+        });
+        return Effect.gen(function* () {
+            const get = yield* GetFileContents;
+            const first = yield* get.execute("notes.txt", {
+                format: "text",
+                lineRange: { start: 2, end: 3 },
+                details: true,
+            });
+            const second = yield* get.execute("notes.txt", {
+                format: "text",
+                range: { unit: "lines", start: 2 },
+            });
+
+            expect(requests.map((request) => request.headers?.Range)).toEqual([
+                "lines=2-3",
+                "lines=2-",
+            ]);
+            expect(second).toBe("line two\\nline three");
+            expect(first).toMatchObject({
+                status: 206,
+                body: new TextEncoder().encode("line two\\nline three"),
+            });
+            expect((first as { headers: Record<string, string> }).headers).toMatchObject({
+                "Content-Range": "lines 2-3/4",
+                ETag: '"v1"',
+            });
+        }).pipe(Effect.provide(layer));
+    });
+
     it.effect("returns JSON payloads as text without parsing them", () => {
         const layer = makeLayer((request) =>
             Effect.succeed(
