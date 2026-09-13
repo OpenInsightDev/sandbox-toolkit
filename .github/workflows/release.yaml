@@ -19,7 +19,7 @@ jobs:
     with:
       output: image
       push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-      platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x
+      platforms: linux/amd64,linux/arm64
       build-args: |
         FEATURES=jaq,tgrep
       set-meta-labels: true
