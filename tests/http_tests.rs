@@ -209,12 +209,82 @@ async fn test_options_returns_allow_header() {
     assert!(allow.contains("PROPFIND"), "Allow should include PROPFIND");
 
     let dav = resp.headers().get("dav").unwrap().to_str().unwrap();
-    assert_eq!(dav, "1,2", "DAV header should be 1,2");
+    assert_eq!(
+        dav, "1, 2, 3, partial-update",
+        "DAV header should advertise partial updates"
+    );
 
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
     assert!(body.is_empty(), "OPTIONS body should be empty");
+}
+
+#[tokio::test]
+async fn test_patch_replaces_append_and_suffix_bytes() {
+    let dir = temp_dir_with_files();
+    std::fs::write(dir.path().join("patch.bin"), b"1234567890").unwrap();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    for (range, body, expected) in [
+        ("bytes=3-6", b"----".as_slice(), b"123----890".as_slice()),
+        ("append", b"!!".as_slice(), b"123----890!!".as_slice()),
+        ("bytes=-2", b"??".as_slice(), b"123----890??".as_slice()),
+    ] {
+        let req = axum::http::Request::builder()
+            .method(Method::PATCH)
+            .uri("/patch.bin")
+            .header("content-type", "application/partial-update; profile=test")
+            .header("content-length", body.len())
+            .header("x-update-range", range)
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 204);
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("patch.bin")).unwrap(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_patch_fills_sparse_gap_and_rejects_bad_length_without_mutation() {
+    let dir = temp_dir_with_files();
+    std::fs::write(dir.path().join("patch.bin"), b"abc").unwrap();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/patch.bin")
+        .header("content-type", "application/partial-update")
+        .header("content-length", "2")
+        .header("x-update-range", "bytes=5-")
+        .body(Body::from("XY"))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("patch.bin")).unwrap(),
+        b"abc\0\0XY"
+    );
+
+    let before = std::fs::read(dir.path().join("patch.bin")).unwrap();
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/patch.bin")
+        .header("content-type", "application/partial-update")
+        .header("content-length", "1")
+        .header("x-update-range", "bytes=0-2")
+        .body(Body::from("Z"))
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), 416);
+    assert_eq!(std::fs::read(dir.path().join("patch.bin")).unwrap(), before);
 }
 
 #[tokio::test]

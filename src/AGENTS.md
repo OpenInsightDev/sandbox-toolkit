@@ -26,6 +26,10 @@ Shadow file: `username:$6$...` (SHA-512 crypt). CLI `--user` credentials merged 
 
 `build_auth_state()` — main entry point: parses shadow file + CLI users, returns `AuthState`.
 
+## handlers/http.rs
+
+Adds RFC-0002 `PATCH` partial byte updates with strict range/content-length parsing, conditional checks, lock enforcement through middleware, and atomic replacement.
+
 ## html.rs
 
 `generate_dir_listing(dir_path, request_path) → (String, usize)` — async. Reads entries via `scandir::batch_read_dir_entries`, sorts dirs-first then alphabetically, renders HTML with navigable links. Includes `../` parent link for non-root paths. Returns `(html, entry_count)`.

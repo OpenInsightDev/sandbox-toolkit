@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Error, ErrorKind};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,6 +36,8 @@ pub struct AppState {
     pub dead_props: Arc<RwLock<DeadPropertyStore>>,
     pub locks: Arc<RwLock<LockStore>>,
     pub canonical_cache: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,
+    pub patch_lock: Arc<tokio::sync::Mutex<()>>,
+    pub etag_versions: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub lock_timeout: Duration,
 }
 
@@ -49,12 +51,33 @@ impl AppState {
             dead_props: Arc::new(RwLock::new(DeadPropertyStore::new())),
             locks: Arc::new(RwLock::new(LockStore::new())),
             canonical_cache: Arc::new(Mutex::new(HashMap::new())),
+            patch_lock: Arc::new(tokio::sync::Mutex::new(())),
+            etag_versions: Arc::new(Mutex::new(HashMap::new())),
             lock_timeout,
         }
     }
 
     pub(crate) async fn resolve_existing(&self, request_path: &str) -> Option<PathBuf> {
         path::resolve_existing(&self.root_dir, &self.root_canonical, request_path).await
+    }
+
+    pub(crate) fn etag_version(&self, path: &Path) -> u64 {
+        *self
+            .etag_versions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(path)
+            .unwrap_or(&0)
+    }
+
+    pub(crate) fn bump_etag_version(&self, path: &Path) -> u64 {
+        let mut versions = self
+            .etag_versions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let version = versions.entry(path.to_path_buf()).or_default();
+        *version = version.wrapping_add(1);
+        *version
     }
 
     pub(crate) fn resolve_write_target(&self, request_path: &str) -> Option<PathBuf> {
@@ -178,6 +201,7 @@ async fn dispatch(State(state): State<Arc<AppState>>, req: Request) -> impl Into
     match Method::try_from(req.method()) {
         Ok(Method::GET) | Ok(Method::HEAD) => http::handle_get_head(State(state), req).await,
         Ok(Method::PUT) => http::handle_put(State(state), req).await,
+        Ok(Method::PATCH) => http::handle_patch(State(state), req).await,
         Ok(Method::DELETE) => http::handle_delete(State(state), req).await,
         Ok(Method::OPTIONS) => http::handle_options().await,
         Ok(Method::PROPFIND) => webdav_handler::handle_propfind(State(state), req).await,

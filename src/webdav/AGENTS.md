@@ -24,7 +24,7 @@ Crate references in documentation examples use the renamed `sbx` crate.
 
 ## method.rs — Method type
 
-Type-safe method enum with `TryFrom<&axum::http::Method>`. Supports all HTTP + WebDAV extension methods (PROPFIND, MKCOL, COPY, MOVE, LOCK, UNLOCK, REPORT, PROPPATCH).
+Type-safe method enum with `TryFrom<&axum::http::Method>`. Supports all HTTP + WebDAV extension methods (including RFC-0002 `PATCH`, PROPFIND, MKCOL, COPY, MOVE, LOCK, UNLOCK, REPORT, PROPPATCH).
 
 ## xml.rs — XML generation
 

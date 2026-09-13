@@ -1,5 +1,5 @@
 //! WebDAV lock enforcement middleware.
-//! Intercepts write requests (`PUT`, `DELETE`, `MKCOL`, `PROPPATCH`, `MOVE`, `COPY`)
+//! Intercepts write requests (`PUT`, `PATCH`, `DELETE`, `MKCOL`, `PROPPATCH`, `MOVE`, `COPY`)
 //! and rejects them with `423 Locked` unless the request presents a matching lock token.
 
 use std::path::Path;
@@ -12,7 +12,7 @@ use axum::middleware::Next;
 use crate::server::{AppResult, AppState};
 use crate::webdav::{self, Method};
 
-/// Rejects write requests (`PUT`, `DELETE`, `MKCOL`, `PROPPATCH`, `MOVE`, `COPY`)
+/// Rejects write requests (`PUT`, `PATCH`, `DELETE`, `MKCOL`, `PROPPATCH`, `MOVE`, `COPY`)
 /// with `423 Locked` if the target resource or an ancestor with `Depth::Infinity` is
 /// locked and the request does not present a valid lock token.
 ///
@@ -33,6 +33,7 @@ pub async fn lock_enforce(
     };
 
     if method != Method::PUT
+        && method != Method::PATCH
         && method != Method::DELETE
         && method != Method::MKCOL
         && method != Method::PROPPATCH
@@ -43,12 +44,10 @@ pub async fn lock_enforce(
     }
 
     let request_path = req.uri().path().trim_end_matches('/').to_owned();
+    let lock_token = webdav::parse_lock_token_header(req.headers());
     let lists = webdav::parse_if_header(req.headers());
 
-    if !lists.is_empty()
-        && !lists.iter().any(|l| l.has_lock_token())
-        && !req.headers().contains_key("lock-token")
-    {
+    if !lists.is_empty() && !lists.iter().any(|l| l.has_lock_token()) && lock_token.is_none() {
         return Err(StatusCode::PRECONDITION_FAILED);
     }
 
@@ -57,7 +56,14 @@ pub async fn lock_enforce(
     // Source check (skip for COPY — source is read-only)
     if method != Method::COPY
         && let Ok(src) = state.resolve_and_guard(&request_path).await
-        && is_path_locked(&locks, &src, &lists, &state.root_canonical, &request_path)
+        && is_path_locked(
+            &locks,
+            &src,
+            &lists,
+            lock_token.as_deref(),
+            &state.root_canonical,
+            &request_path,
+        )
     {
         tracing::debug!(path = %src.display(), "source locked, rejecting write");
         return Err(StatusCode::LOCKED);
@@ -69,7 +75,14 @@ pub async fn lock_enforce(
     {
         let dest_norm = dest.trim_end_matches('/');
         if let Ok(dest_path) = state.resolve_and_guard(dest_norm).await
-            && is_path_locked(&locks, &dest_path, &lists, &state.root_canonical, dest_norm)
+            && is_path_locked(
+                &locks,
+                &dest_path,
+                &lists,
+                lock_token.as_deref(),
+                &state.root_canonical,
+                dest_norm,
+            )
         {
             tracing::debug!(path = %dest_norm, "destination locked, rejecting COPY/MOVE");
             return Err(StatusCode::LOCKED);
@@ -81,20 +94,32 @@ pub async fn lock_enforce(
 }
 
 fn is_path_locked(
-    locks: &webdav::LockStore, path: &Path, lists: &[webdav::IfList], root_canonical: &Path,
-    request_path: &str,
+    locks: &webdav::LockStore, path: &Path, lists: &[webdav::IfList], lock_token: Option<&str>,
+    root_canonical: &Path, request_path: &str,
 ) -> bool {
     let infos = match locks.get(path) {
         Some(v) => v.as_slice(),
         None => &[],
     };
+    let token_matches = |infos: &[webdav::LockInfo]| {
+        lock_token
+            .is_some_and(|token| webdav::ls::active_slice(infos).any(|lock| lock.token == token))
+    };
 
-    if !webdav::ls::eval_if(lists, infos, request_path) {
+    let conditions_pass = |infos: &[webdav::LockInfo]| {
+        if lists.is_empty() {
+            token_matches(infos) || webdav::ls::eval_if(lists, infos, request_path)
+        } else {
+            webdav::ls::eval_if(lists, infos, request_path)
+        }
+    };
+
+    if !conditions_pass(infos) {
         return true;
     }
 
     webdav::ls::walk_locked_ancestors(locks, path, root_canonical, |infos| {
         webdav::ls::active_slice(infos).any(|l| l.depth == webdav::Depth::Infinity)
-            && !webdav::ls::eval_if(lists, infos, request_path)
+            && !conditions_pass(infos)
     })
 }

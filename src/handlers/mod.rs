@@ -1,4 +1,4 @@
-//! Request handlers for HTTP (`GET`/`HEAD`/`PUT`/`DELETE`/`OPTIONS`) and WebDAV
+//! Request handlers for HTTP (`GET`/`HEAD`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`) and WebDAV
 //! (`PROPFIND`/`MKCOL`/`COPY`/`MOVE`/`PROPPATCH`/`LOCK`/`UNLOCK`) methods.
 
 pub mod http;
