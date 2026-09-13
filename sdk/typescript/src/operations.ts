@@ -683,13 +683,13 @@ const makeLive = (config: NormalizedWebDavConfig) => {
                         ...requestOptions(config, options),
                         data: uploadData,
                         headers: {
+                            ...options.headers,
                             "Content-Type": options.contentType ?? "application/partial-update",
                             "Content-Length": `${dataLength}`,
                             "X-Update-Range": updateRangeHeader,
                             ...(compatibilityContentRange === undefined
                                 ? {}
                                 : { "Content-Range": compatibilityContentRange }),
-                            ...options.headers,
                         },
                     });
                 },

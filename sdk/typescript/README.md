@@ -609,10 +609,10 @@ yield* client.partialUpdateFileContents("/file.txt", new Uint8Array([1, 2, 3, 4]
   range: { suffix: 4 }
 });
 
-// With custom content type parameters
+// RFC-0002 allows parameters on its media type
 yield* client.partialUpdateFileContents("/data.json", '{"key":"value"}', {
   range: { start: 0, end: 14 },
-  contentType: "application/json"
+  contentType: "application/partial-update; version=1"
 });
 ```
 
@@ -641,7 +641,7 @@ yield* client.partialUpdateFileContents("/log.txt", chunk);
 - Accepts 200, 204, or 206 status codes as success
 - Invalid inclusive ranges and empty open-ended bodies fail before a request is sent
 
-**Note:** Without a `range`, this operation falls back to a full PUT request and replaces the entire file.
+**Note:** Without `range` or `updateRange`, this operation falls back to a full PUT request and replaces the entire file.
 
 #### putFileContents
 

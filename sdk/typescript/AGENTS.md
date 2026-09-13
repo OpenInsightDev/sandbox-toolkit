@@ -2,7 +2,7 @@
 
 This module provides the Effect-based WebDAV client. Public exports are assembled in `src/index.ts`; transport, authentication, XML, and WebDAV operations live in the adjacent source modules. Effect dependencies are pinned to the same release candidate version.
 
-The SDK supports the repository's private RFC-0001 line ranges through `lineRange`/unit-aware GET ranges and RFC-0002 partial updates through `application/partial-update` PATCH requests with `X-Update-Range` and `Content-Length`. Keep these protocol headers and range forms covered by operation tests when changing the client.
+The SDK supports the repository's private RFC-0001 line ranges through `lineRange`/unit-aware GET ranges and RFC-0002 partial updates through `application/partial-update` PATCH requests with `X-Update-Range` and `Content-Length`. Keep these protocol headers and range forms covered by operation tests when changing the client. For partial updates, computed `Content-Type`, `Content-Length`, `X-Update-Range`, and compatibility `Content-Range` headers must override generic headers; use the dedicated `contentType` and range options for intentional overrides.
 
 Validation and formatting from this directory:
 
