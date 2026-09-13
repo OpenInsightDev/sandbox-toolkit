@@ -23,7 +23,7 @@ fn lock_body(exclusive: bool) -> Body {
 #[tokio::test]
 async fn test_lock_existing_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(true));
     let resp = app.oneshot(req).await.unwrap();
@@ -43,7 +43,7 @@ async fn test_lock_existing_file() {
 #[tokio::test]
 async fn test_lock_nonexistent_creates_locknull() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/nonexistent.txt", lock_body(true));
     let resp = app.oneshot(req).await.unwrap();
@@ -54,7 +54,7 @@ async fn test_lock_nonexistent_creates_locknull() {
 #[tokio::test]
 async fn test_shared_lock_succeeds() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(false));
     let resp = app.oneshot(req).await.unwrap();
@@ -71,8 +71,8 @@ async fn test_shared_lock_succeeds() {
 async fn test_double_shared_lock_succeeds() {
     let dir = temp_dir_with_files();
     // Two separate routers — separate state, so no conflict
-    let app1 = make_test_router(dir.path(), rshs::AuthState::new());
-    let app2 = make_test_router(dir.path(), rshs::AuthState::new());
+    let app1 = make_test_router(dir.path(), sbx::AuthState::new());
+    let app2 = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(false));
     let resp = app1.oneshot(req).await.unwrap();
@@ -86,7 +86,7 @@ async fn test_double_shared_lock_succeeds() {
 #[tokio::test]
 async fn test_exclusive_lock_blocks_second_lock() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(true));
     let _resp = app.clone().oneshot(req).await.unwrap();
@@ -99,7 +99,7 @@ async fn test_exclusive_lock_blocks_second_lock() {
 #[tokio::test]
 async fn test_unlock_with_correct_token() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     // Lock
     let req = make_request("LOCK", "/hello.txt", lock_body(true));
@@ -124,7 +124,7 @@ async fn test_unlock_with_correct_token() {
 #[tokio::test]
 async fn test_unlock_with_wrong_token_returns_403() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(true));
     let _resp = app.clone().oneshot(req).await.unwrap();
@@ -139,7 +139,7 @@ async fn test_unlock_with_wrong_token_returns_403() {
 #[tokio::test]
 async fn test_put_on_locked_resource_without_token_returns_423() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(true));
     let _resp = app.clone().oneshot(req).await.unwrap();
@@ -154,9 +154,29 @@ async fn test_put_on_locked_resource_without_token_returns_423() {
 }
 
 #[tokio::test]
+async fn test_patch_on_locked_resource_returns_423() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    let req = make_request("LOCK", "/hello.txt", lock_body(true));
+    let _resp = app.clone().oneshot(req).await.unwrap();
+
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::PATCH)
+        .uri("/hello.txt")
+        .header("content-type", "application/partial-update")
+        .header("content-length", "1")
+        .header("x-update-range", "bytes=0-0")
+        .body(Body::from("x"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 423);
+}
+
+#[tokio::test]
 async fn test_delete_on_locked_resource_returns_423() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = make_request("LOCK", "/hello.txt", lock_body(true));
     let _resp = app.clone().oneshot(req).await.unwrap();

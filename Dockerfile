@@ -14,21 +14,21 @@ RUN cargo build --features "${FEATURES}" --locked --release && \
     cargo install \
         --features "${FEATURES}" --locked \
         --path . --root /app/ \
-        --bin rshs
+        --bin sbx
 
 FROM gcr.io/distroless/cc-debian13
 
-COPY --from=builder /app/bin/rshs /usr/bin/rshs
-COPY --from=builder /app/LICENSE /usr/share/doc/rshs/LICENSE
-COPY --from=builder /app/README.md /usr/share/doc/rshs/README.md
+COPY --from=builder /app/bin/sbx /usr/bin/sbx
+COPY --from=builder /app/LICENSE /usr/share/doc/sbx/LICENSE
+COPY --from=builder /app/README.md /usr/share/doc/sbx/README.md
 
 WORKDIR /mnt/data/
 
-ENV RSHS_ROOT_DIR=/mnt/data/
-ENV RSHS_SHADOW_FILE=/etc/rshs/shadow:rw
-ENV RSHS_LOG=info
+ENV SBX_ROOT_DIR=/mnt/data/
+ENV SBX_SHADOW_FILE=/etc/sbx/shadow:rw
+ENV SBX_LOG=info
 
 EXPOSE 8080/tcp 8443/tcp
 VOLUME /mnt/data/
 
-ENTRYPOINT ["/usr/bin/rshs"]
+ENTRYPOINT ["/usr/bin/sbx"]

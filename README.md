@@ -1,13 +1,13 @@
 <div align="center">
-  <h1>RSHS</h1>
+  <h1>SBX</h1>
 </div>
 
 <div align="center">
   <h3>WebDAV, simplified</h3>
-  <a href="https://github.com/mogeko/rshs/blob/master/docs/usage.md">Guide</a> •
-  <a href="https://docs.rs/rshs">API&nbsp;Docs</a> •
-  <a href="https://github.com/mogeko/rshs/blob/master/docs/benchmark-report.md">Benchmark</a> •
-  <a href="https://github.com/mogeko/rshs/blob/master/docs/litmus-test-report.md">Litmus&nbsp;Test</a> •
+  <a href="https://github.com/mogeko/sbx/blob/master/docs/usage.md">Guide</a> •
+  <a href="https://docs.rs/sbx">API&nbsp;Docs</a> •
+  <a href="https://github.com/mogeko/sbx/blob/master/docs/benchmark-report.md">Benchmark</a> •
+  <a href="https://github.com/mogeko/sbx/blob/master/docs/litmus-test-report.md">Litmus&nbsp;Test</a> •
   <a href="https://www.rfc-editor.org/info/rfc4918">RFC&nbsp;4918</a>
 </div>
 
@@ -15,8 +15,8 @@
 
 <div align="center">
 
-[![crates.io](https://img.shields.io/crates/v/rshs)](https://crates.io/crates/rshs)
-[![Build & Test](https://github.com/mogeko/rshs/actions/workflows/build+test.yaml/badge.svg)](https://github.com/mogeko/rshs/actions/workflows/build+test.yaml)
+[![crates.io](https://img.shields.io/crates/v/sbx)](https://crates.io/crates/sbx)
+[![Build & Test](https://github.com/mogeko/sbx/actions/workflows/build+test.yaml/badge.svg)](https://github.com/mogeko/sbx/actions/workflows/build+test.yaml)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 </div>
@@ -35,25 +35,25 @@ A WebDAV server that Just Works — zero config, [litmus 100%](./docs/litmus-tes
 ## Installation
 
 ```sh
-docker pull docker.io/mogeko/rshs:latest
+docker pull docker.io/mogeko/sbx:latest
 # or
-docker pull ghcr.io/mogeko/rshs:latest
+docker pull ghcr.io/mogeko/sbx:latest
 ```
 
 ## Quick Start
 
 ```sh
 # Serve ./data on port 8080
-docker run --rm -p 8080:8080 -v ./data:/mnt/data mogeko/rshs
+docker run --rm -p 8080:8080 -v ./data:/mnt/data mogeko/sbx
 
 # With TLS (default port 8443)
 docker run --rm -p 8443:8443 \
   -v ./certs:/certs -v ./data:/mnt/data \
-  mogeko/rshs --tls-cert /certs/cert.pem --tls-key /certs/key.pem
+  mogeko/sbx --tls-cert /certs/cert.pem --tls-key /certs/key.pem
 
 # With authentication
 docker run --rm -p 8080:8080 -v ./data:/mnt/data \
-  mogeko/rshs --user admin:secret123
+  mogeko/sbx --user admin:secret123
 ```
 
 Open `http://localhost:8080` in a browser, or mount as WebDAV:
@@ -89,16 +89,16 @@ Map Network Drive → `http://localhost:8080`
 
 | Variable            | Description                                           | Default   |
 | ------------------- | ----------------------------------------------------- | --------- |
-| `RSHS_ROOT_DIR`     | Root directory to serve                               | `.`       |
-| `RSHS_HOST`         | Bind address                                          | `0.0.0.0` |
-| `RSHS_PORT`         | Bind port (8080 plain, 8443 with TLS)                 | —         |
-| `RSHS_TLS_CERT`     | TLS certificate file path (PEM)                       | —         |
-| `RSHS_TLS_KEY`      | TLS private key file path (PEM)                       | —         |
-| `RSHS_USERS`        | `user:pass;...` auth pairs                            | —         |
-| `RSHS_SHADOW_FILE`  | Shadow file path                                      | —         |
-| `RSHS_LOCK_TIMEOUT` | Default WebDAV lock timeout in seconds (default: 300) | `300`     |
-| `RSHS_LOG`          | Log filter (e.g. `debug`, `rshs[status=500]=trace`)   | —         |
-| `RSHS_LOG_STYLE`    | Log output style                                      | `auto`    |
+| `SBX_ROOT_DIR`     | Root directory to serve                               | `.`       |
+| `SBX_HOST`         | Bind address                                          | `0.0.0.0` |
+| `SBX_PORT`         | Bind port (8080 plain, 8443 with TLS)                 | —         |
+| `SBX_TLS_CERT`     | TLS certificate file path (PEM)                       | —         |
+| `SBX_TLS_KEY`      | TLS private key file path (PEM)                       | —         |
+| `SBX_USERS`        | `user:pass;...` auth pairs                            | —         |
+| `SBX_SHADOW_FILE`  | Shadow file path                                      | —         |
+| `SBX_LOCK_TIMEOUT` | Default WebDAV lock timeout in seconds (default: 300) | `300`     |
+| `SBX_LOG`          | Log filter (e.g. `debug`, `sbx[status=500]=trace`)   | —         |
+| `SBX_LOG_STYLE`    | Log output style                                      | `auto`    |
 
 ## License
 

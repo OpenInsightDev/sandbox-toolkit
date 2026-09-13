@@ -10,7 +10,7 @@ use axum::Router;
 use axum::body::{self, Body};
 use axum::extract::Request;
 use axum::http::Method;
-use rshs::{AppState, AuthState, make_router};
+use sbx::{AppState, AuthState, make_router};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 

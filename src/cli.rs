@@ -10,50 +10,50 @@ use crate::server::tls::TlsConfig;
 /// A hybrid HTTP file server and WebDAV server
 #[derive(Parser)]
 #[command(
-    name = "rshs", version = env!("CARGO_PKG_VERSION"),
+    name = "sbx", version = env!("CARGO_PKG_VERSION"),
     long_about = "A hybrid HTTP file server and WebDAV server with optional TLS and Basic Auth",
     after_help = concat!(
         "Logging environment variables:\n",
-        "  RSHS_LOG          Tracing filter (e.g. info, rshs=debug, rshs[status=500]=trace)\n",
+        "  SBX_LOG          Tracing filter (e.g. info, sbx=debug, sbx[status=500]=trace)\n",
         "                    Only used when no -v/-q flags are given\n",
         "                    Supports per-target and per-field filtering\n",
-        "  RSHS_LOG_STYLE    Log style (always, never, auto), controls ANSI color output\n",
+        "  SBX_LOG_STYLE    Log style (always, never, auto), controls ANSI color output\n",
         "                    Defaults to auto (enabled when output is a terminal)",
     ),
 )]
 pub struct Cli {
     /// Root directory to serve
-    #[arg(default_value = ".", env = "RSHS_ROOT_DIR")]
+    #[arg(default_value = ".", env = "SBX_ROOT_DIR")]
     pub root_dir: String,
 
     /// Host address to bind to
-    #[arg(short = 'H', long, default_value = "0.0.0.0", env = "RSHS_HOST")]
+    #[arg(short = 'H', long, default_value = "0.0.0.0", env = "SBX_HOST")]
     pub host: String,
 
     /// Port to bind to (default: 8080, or 8443 with TLS)
     ///
     /// Explicit --port always overrides these defaults.
-    #[arg(short, long, env = "RSHS_PORT")]
+    #[arg(short, long, env = "SBX_PORT")]
     pub port: Option<u16>,
 
     /// TLS certificate file path (PEM format)
-    #[arg(long = "tls-cert", env = "RSHS_TLS_CERT", requires = "tls_key")]
+    #[arg(long = "tls-cert", env = "SBX_TLS_CERT", requires = "tls_key")]
     pub tls_cert: Option<String>,
 
     /// TLS private key file path (PEM format)
-    #[arg(long = "tls-key", env = "RSHS_TLS_KEY", requires = "tls_cert")]
+    #[arg(long = "tls-key", env = "SBX_TLS_KEY", requires = "tls_cert")]
     pub tls_key: Option<String>,
 
     /// Basic Auth credentials as username:password (repeatable)
     ///
-    /// Use ; to separate multiple values via the RSHS_USERS env var.
+    /// Use ; to separate multiple values via the SBX_USERS env var.
     #[arg(
         short = 'u',
         long = "user",
         value_name = "USER:PASS",
         value_delimiter = ';',
         hide_env_values = true,
-        env = "RSHS_USERS"
+        env = "SBX_USERS"
     )]
     pub users: Vec<String>,
 
@@ -62,7 +62,7 @@ pub struct Cli {
         short = 'S',
         long = "shadow-file",
         value_name = "PATH[:rw|:ro]",
-        env = "RSHS_SHADOW_FILE"
+        env = "SBX_SHADOW_FILE"
     )]
     pub shadow_file: Option<String>,
 
@@ -78,7 +78,7 @@ pub struct Cli {
     #[arg(
         long = "auth-cache-ttl",
         default_value = "60",
-        env = "RSHS_AUTH_CACHE_TTL",
+        env = "SBX_AUTH_CACHE_TTL",
         value_parser = clap::value_parser!(u64)
     )]
     pub auth_cache_ttl: u64,
@@ -89,7 +89,7 @@ pub struct Cli {
     #[arg(
         long = "lock-timeout",
         default_value = "300",
-        env = "RSHS_LOCK_TIMEOUT",
+        env = "SBX_LOCK_TIMEOUT",
         value_parser = clap::value_parser!(u64)
     )]
     pub lock_timeout: u64,
@@ -142,13 +142,13 @@ impl Cli {
     }
 
     /// Resolves the log level: `-q` → `"off"`, `-v` → `"debug"`, `-vv` → `"trace"`,
-    /// otherwise the `RSHS_LOG` env var or `DEFAULT_LOG_LEVEL`.
+    /// otherwise the `SBX_LOG` env var or `DEFAULT_LOG_LEVEL`.
     pub fn log_level(&self) -> String {
         if self.quiet {
             "off".into()
         } else {
             match self.verbose {
-                0 => std::env::var("RSHS_LOG").unwrap_or_else(|_| DEFAULT_LOG_LEVEL.into()),
+                0 => std::env::var("SBX_LOG").unwrap_or_else(|_| DEFAULT_LOG_LEVEL.into()),
                 1 => "debug".into(),
                 _ => "trace".into(),
             }

@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     tags: [v*]
   pull_request:
     paths: ["./Dockerfile"]
@@ -24,8 +24,8 @@ jobs:
       set-meta-labels: true
       set-meta-annotations: true
       meta-images: |
-        docker.io/mogeko/rshs
-        ghcr.io/mogeko/rshs
+        docker.io/mogeko/sbx
+        ghcr.io/mogeko/sbx
       meta-tags: |
         type=semver,pattern={{version}}
         type=semver,pattern={{major}}.{{minor}}

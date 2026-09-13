@@ -6,11 +6,11 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let cli = rshs::Cli::parse();
+    let cli = sbx::Cli::parse();
 
     let filter = EnvFilter::new(cli.log_level());
 
-    let ansi = match std::env::var("RSHS_LOG_STYLE").as_deref() {
+    let ansi = match std::env::var("SBX_LOG_STYLE").as_deref() {
         Ok("always") => true,
         Ok("never") => false,
         _ => io::stderr().is_terminal(),
@@ -22,7 +22,7 @@ async fn main() -> std::io::Result<()> {
         .with_writer(io::stderr)
         .init();
 
-    let auth_state = rshs::build_auth_state(&cli);
+    let auth_state = sbx::build_auth_state(&cli);
 
     let port = cli.effective_port();
     let tls_config = cli.to_tls_config();
@@ -30,7 +30,7 @@ async fn main() -> std::io::Result<()> {
     let root_dir = PathBuf::from(cli.root_dir);
     let lock_timeout = cli.lock_timeout;
 
-    rshs::start_server(rshs::ServerConfig {
+    sbx::start_server(sbx::ServerConfig {
         root_dir,
         host,
         port,

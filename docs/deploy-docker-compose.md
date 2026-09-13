@@ -5,12 +5,12 @@
 ```yaml
 # docker-compose.yml
 services:
-  rshs:
-    image: mogeko/rshs:latest
+  sbx:
+    image: mogeko/sbx:latest
     ports:
       - "8080:8080"
     volumes:
-      - ./rshs/data:/mnt/data
+      - ./sbx/data:/mnt/data
     restart: unless-stopped
 ```
 
@@ -19,14 +19,14 @@ services:
 ```yaml
 # docker-compose.yml
 services:
-  rshs:
-    image: mogeko/rshs:latest
+  sbx:
+    image: mogeko/sbx:latest
     ports:
       - "8080:8080"
     volumes:
       - ./data:/mnt/data
     environment:
-      RSHS_USERS: "admin:secret123;viewer:public"
+      SBX_USERS: "admin:secret123;viewer:public"
     restart: unless-stopped
 ```
 
@@ -41,32 +41,32 @@ openssl passwd -6 "secret123"
 # → $6$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyyyyyyyyy...
 
 # Write the shadow file (one user per line: username:hash)
-echo 'admin:$6$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyyyyyyyyy...' > ./rshs/shadow
-echo 'viewer:$6$aaaaaaaa$bbbbbbbbbbbbbbbbbbbbbb...' >> ./rshs/shadow
+echo 'admin:$6$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyyyyyyyyy...' > ./sbx/shadow
+echo 'viewer:$6$aaaaaaaa$bbbbbbbbbbbbbbbbbbbbbb...' >> ./sbx/shadow
 ```
 
 ```yaml
 # docker-compose.yml
 services:
-  rshs:
-    image: docker.io/mogeko/rshs:latest
+  sbx:
+    image: docker.io/mogeko/sbx:latest
     ports:
       - "8080:8080"
     volumes:
       - ./data:/mnt/data
     environment:
-      RSHS_SHADOW_FILE: /run/secrets/rshs-shadow:ro
+      SBX_SHADOW_FILE: /run/secrets/sbx-shadow:ro
     secrets:
-      - rshs-shadow
+      - sbx-shadow
     restart: unless-stopped
 
 secrets:
-  rshs-shadow:
-    file: ./rshs/shadow
+  sbx-shadow:
+    file: ./sbx/shadow
 ```
 
 Docker Compose mounts secrets into `/run/secrets/<name>` in the container.
-`RSHS_SHADOW_FILE` points to the secret mount with `:ro` (read-only).
+`SBX_SHADOW_FILE` points to the secret mount with `:ro` (read-only).
 To update credentials, regenerate the shadow file and restart the service.
 
 ## Health Check
@@ -74,8 +74,8 @@ To update credentials, regenerate the shadow file and restart the service.
 ```yaml
 # docker-compose.yml
 services:
-  rshs:
-    image: mogeko/rshs:latest
+  sbx:
+    image: mogeko/sbx:latest
     ports:
       - "8080:8080"
     volumes:
@@ -96,5 +96,5 @@ services:
     restart: unless-stopped
 ```
 
-The `x-health-check: true` header triggers rshs's health check middleware,
+The `x-health-check: true` header triggers sbx's health check middleware,
 which returns `200 OK` without touching the file system or requiring auth.

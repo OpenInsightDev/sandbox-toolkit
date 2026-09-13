@@ -41,7 +41,7 @@ pub struct PropPatchOp {
 /// PROPFIND traversal depth.
 ///
 /// ```
-/// use rshs::webdav::Depth;
+/// use sbx::webdav::Depth;
 ///
 /// assert_eq!(Depth::Zero.to_string(), "0");
 /// assert_eq!(Depth::Infinity.to_string(), "infinity");
@@ -69,7 +69,7 @@ impl fmt::Display for Depth {
 /// Body of a PROPFIND request.
 ///
 /// ```
-/// use rshs::webdav::PropRequest;
+/// use sbx::webdav::PropRequest;
 ///
 /// let all = PropRequest::AllProp;
 /// let named = PropRequest::Named(vec!["getcontentlength".into(), "getetag".into()]);
@@ -91,7 +91,7 @@ pub enum PropRequest {
 ///
 /// ```
 /// use std::time::UNIX_EPOCH;
-/// use rshs::webdav::PropEntry;
+/// use sbx::webdav::PropEntry;
 ///
 /// let e = PropEntry {
 ///     href: "/docs/readme.md".into(),
@@ -121,11 +121,36 @@ pub struct PropEntry {
 }
 
 impl PropEntry {
+    /// Construct a property entry from its basic representation metadata.
+    ///
+    /// ```
+    /// use std::time::UNIX_EPOCH;
+    /// use sbx::webdav::PropEntry;
+    ///
+    /// let entry = PropEntry::new("/file.txt".into(), UNIX_EPOCH, None, 4, false);
+    /// assert_eq!(entry.size, 4);
+    /// ```
+    pub fn new(
+        href: String, modified: SystemTime, created: Option<SystemTime>, size: u64, is_dir: bool,
+    ) -> Self {
+        Self {
+            href,
+            modified,
+            created,
+            size,
+            is_dir,
+            content_type: None,
+            dead_props: None,
+            active_locks: None,
+            canonical_path: None,
+        }
+    }
+
     /// Create a `PropEntry` from `std::fs::Metadata`.
     ///
     /// ```
     /// use std::fs;
-    /// use rshs::webdav::PropEntry;
+    /// use sbx::webdav::PropEntry;
     ///
     /// let meta = fs::metadata("Cargo.toml").unwrap();
     /// let entry = PropEntry::from_meta(&meta, "/Cargo.toml".into(), false);
@@ -172,7 +197,7 @@ pub type LockStore = HashMap<PathBuf, Vec<LockInfo>>;
 ///
 /// ```
 /// use std::time::{SystemTime, Duration};
-/// use rshs::webdav::{LockInfo, LockScope, Depth};
+/// use sbx::webdav::{LockInfo, LockScope, Depth};
 ///
 /// let lock = LockInfo {
 ///     scope: LockScope::Exclusive,
@@ -196,13 +221,43 @@ pub struct LockInfo {
 }
 
 impl LockInfo {
+    /// Construct a lock with the supplied scope, token, owner, creation time, timeout, and depth.
+    ///
+    /// ```
+    /// use std::time::SystemTime;
+    /// use sbx::webdav::{Depth, LockInfo, LockScope};
+    ///
+    /// let lock = LockInfo::new(
+    ///     LockScope::Exclusive,
+    ///     "opaquelocktoken:example".into(),
+    ///     None,
+    ///     SystemTime::now(),
+    ///     None,
+    ///     Depth::Zero,
+    /// );
+    /// assert!(lock.is_exclusive());
+    /// ```
+    pub fn new(
+        scope: LockScope, token: String, owner: Option<String>, created: SystemTime,
+        timeout: Option<Duration>, depth: Depth,
+    ) -> Self {
+        Self {
+            scope,
+            token,
+            owner,
+            created,
+            timeout,
+            depth,
+        }
+    }
+
     /// Whether the lock has expired.
     ///
     /// A lock without a timeout never expires.
     ///
     /// ```
     /// use std::time::{SystemTime, Duration};
-    /// use rshs::webdav::{LockInfo, LockScope, Depth};
+    /// use sbx::webdav::{LockInfo, LockScope, Depth};
     ///
     /// let active = LockInfo {
     ///     scope: LockScope::Exclusive,
@@ -235,7 +290,7 @@ impl LockInfo {
     ///
     /// ```
     /// use std::time::SystemTime;
-    /// use rshs::webdav::{LockInfo, LockScope, Depth};
+    /// use sbx::webdav::{LockInfo, LockScope, Depth};
     ///
     /// let lock = LockInfo {
     ///     scope: LockScope::Shared,
@@ -255,7 +310,7 @@ impl LockInfo {
 /// Lock scope: exclusive (write) or shared (read).
 ///
 /// ```
-/// use rshs::webdav::LockScope;
+/// use sbx::webdav::LockScope;
 ///
 /// let s = LockScope::Shared;
 /// let e = LockScope::Exclusive;
@@ -269,7 +324,7 @@ pub enum LockScope {
 /// Generate a new unique lock token string (`opaquelocktoken:`-prefixed hex).
 ///
 /// ```
-/// use rshs::webdav::generate_lock_token;
+/// use sbx::webdav::generate_lock_token;
 ///
 /// let t = generate_lock_token();
 /// assert!(t.starts_with("opaquelocktoken:"));
@@ -292,7 +347,7 @@ pub fn generate_lock_token() -> String {
 ///
 /// ```
 /// use axum::http::HeaderMap;
-/// use rshs::webdav::parse_lock_token_header;
+/// use sbx::webdav::parse_lock_token_header;
 ///
 /// let mut h = HeaderMap::new();
 /// h.insert("lock-token", "<opaquelocktoken:abc>".parse().unwrap());
@@ -315,7 +370,7 @@ pub fn parse_lock_token_header(headers: &HeaderMap) -> Option<String> {
 /// ```
 /// use axum::http::HeaderMap;
 /// use std::time::Duration;
-/// use rshs::webdav::parse_timeout;
+/// use sbx::webdav::parse_timeout;
 ///
 /// let mut h = HeaderMap::new();
 /// h.insert("timeout", "Second-3600".parse().unwrap());
@@ -333,7 +388,7 @@ pub fn parse_timeout(headers: &HeaderMap) -> Option<std::time::Duration> {
 ///
 /// ```
 /// use axum::http::HeaderMap;
-/// use rshs::webdav::{parse_depth, Depth};
+/// use sbx::webdav::{parse_depth, Depth};
 ///
 /// let h = HeaderMap::new();
 /// assert_eq!(parse_depth(&h), Depth::Infinity); // default
@@ -380,7 +435,7 @@ impl From<quick_xml::Error> for ParseError {
 /// Build a Clark notation key from namespace and local name.
 ///
 /// ```
-/// use rshs::webdav::clark_key;
+/// use sbx::webdav::clark_key;
 ///
 /// assert_eq!(clark_key("http://example.com", "prop0"), "{http://example.com}prop0");
 /// assert_eq!(clark_key("", "prop0"), "prop0");
@@ -396,7 +451,7 @@ pub fn clark_key(ns: &str, local: &str) -> String {
 /// Parse a Clark notation key into (namespace, localname).
 ///
 /// ```
-/// use rshs::webdav::parse_clark;
+/// use sbx::webdav::parse_clark;
 ///
 /// assert_eq!(
 ///     parse_clark("{http://example.com}prop0"),
@@ -462,7 +517,7 @@ fn extract_element_ns(e: &BytesStart) -> Result<(String, String), ParseError> {
 /// or has an unsupported document structure.
 ///
 /// ```
-/// use rshs::webdav::{parse_propfind_request, PropRequest};
+/// use sbx::webdav::{parse_propfind_request, PropRequest};
 ///
 /// let all = parse_propfind_request(
 ///     br#"<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>"#
@@ -529,7 +584,7 @@ pub fn parse_propfind_request(xml: &[u8]) -> Result<PropRequest, ParseError> {
 ///
 /// ```
 /// use axum::http::HeaderMap;
-/// use rshs::webdav::parse_destination;
+/// use sbx::webdav::parse_destination;
 ///
 /// let mut h = HeaderMap::new();
 /// h.insert("destination", "http://localhost:8080/docs/file.txt".parse().unwrap());
@@ -562,7 +617,7 @@ pub fn parse_destination(headers: &HeaderMap) -> Option<String> {
 ///
 /// ```
 /// use axum::http::HeaderMap;
-/// use rshs::webdav::parse_overwrite;
+/// use sbx::webdav::parse_overwrite;
 ///
 /// assert!(parse_overwrite(&HeaderMap::new())); // default
 ///
@@ -620,7 +675,7 @@ fn decode_xml_char_refs(text: &str) -> String {
 /// structurally invalid input that bypasses the parser's normal error paths.
 ///
 /// ```
-/// use rshs::webdav::{parse_proppatch_request, PropPatchAction};
+/// use sbx::webdav::{parse_proppatch_request, PropPatchAction};
 ///
 /// let op = parse_proppatch_request(
 ///     br#"<?xml version="1.0"?><D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><X:p>val</X:p></D:prop></D:set><D:remove><D:prop><X:q/></D:prop></D:remove></D:propertyupdate>"#

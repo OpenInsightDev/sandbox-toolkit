@@ -1,18 +1,23 @@
 //! GET/HEAD (file serving + HTML directory listing), PUT, PATCH, DELETE, and OPTIONS handlers.
 
+use std::num::IntErrorKind;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::UNIX_EPOCH;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::TryStreamExt;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::html::generate_dir_listing;
 use crate::server::{AppResult, AppState};
 use crate::utils::error::{IntoResolved, OrStatus};
+
+const MAX_PATCH_SIZE: usize = 64 * 1024 * 1024;
 
 /// GET / HEAD handler — serves files and generates HTML directory listings.
 ///
@@ -49,9 +54,102 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
         let file_size = meta.len();
         let mime = mime_guess::from_path(&fs_path).first_or_octet_stream();
         tracing::debug!(mime = %mime.essence_str(), size = file_size, "file served");
+        let is_text = mime.essence_str().starts_with("text/");
+        let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+        let line_range = range.and_then(parse_line_range_request);
+        if method == axum::http::Method::GET
+            && let Some(result) = line_range
+        {
+            if !is_text {
+                return Ok(range_not_satisfiable(0, false));
+            }
+            let mut file = tokio::fs::File::open(&fs_path)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let snapshot_meta = file
+                .metadata()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let mut data = Vec::with_capacity(snapshot_meta.len().min(usize::MAX as u64) as usize);
+            file.read_to_end(&mut data)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let end_meta = file
+                .metadata()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if end_meta.len() != snapshot_meta.len()
+                || end_meta.modified().unwrap_or(UNIX_EPOCH)
+                    != snapshot_meta.modified().unwrap_or(UNIX_EPOCH)
+                || data.len() as u64 != snapshot_meta.len()
+            {
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            let lines = line_offsets(&data);
+            let (start, requested_end) = match result {
+                Ok(range) => range,
+                Err(()) => return Ok(range_not_satisfiable(0, false)),
+            };
+            if start == 0 || start > lines.len() {
+                return Ok(range_not_satisfiable(lines.len(), true));
+            }
+            let end = requested_end.unwrap_or(lines.len()).min(lines.len());
+            if end < start {
+                return Ok(range_not_satisfiable(0, false));
+            }
+            let (lo, hi) = lines[start - 1..end]
+                .iter()
+                .fold((usize::MAX, 0), |(lo, hi), (a, b)| (lo.min(*a), hi.max(*b)));
+            let body = &data[lo..hi];
+            let etag = make_etag(&snapshot_meta, state.etag_version(&fs_path));
+            let last_modified = snapshot_meta
+                .modified()
+                .map(crate::utils::time::format_rfc1123)
+                .unwrap_or_default();
+            if let Some(if_range) = req.headers().get("if-range").and_then(|v| v.to_str().ok())
+                && if_range != last_modified
+            {
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", mime.as_ref())
+                    .header(
+                        "accept-ranges",
+                        if is_text { "bytes, lines" } else { "bytes" },
+                    )
+                    .header("etag", etag)
+                    .header("last-modified", last_modified)
+                    .header("content-length", data.len())
+                    .body(Body::from(data))
+                    .unwrap());
+            }
+            return Ok(Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header("content-type", mime.as_ref())
+                .header("accept-ranges", "bytes, lines")
+                .header("etag", etag)
+                .header("last-modified", last_modified)
+                .header(
+                    "content-range",
+                    format!("lines {start}-{end}/{}", lines.len()),
+                )
+                .header("content-length", body.len())
+                .body(Body::from(body.to_vec()))
+                .unwrap());
+        }
         let resp = Response::builder()
             .status(StatusCode::OK)
             .header("content-type", mime.as_ref())
+            .header(
+                "accept-ranges",
+                if is_text { "bytes, lines" } else { "bytes" },
+            )
+            .header("etag", make_etag(&meta, state.etag_version(&fs_path)))
+            .header(
+                "last-modified",
+                meta.modified()
+                    .map(crate::utils::time::format_rfc1123)
+                    .unwrap_or_default(),
+            )
             .header("content-length", file_size);
         if method == axum::http::Method::HEAD {
             return Ok(resp.body(Body::empty()).unwrap());
@@ -67,6 +165,93 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
             }
         }
     }
+}
+
+fn parse_line_range_request(value: &str) -> Option<Result<(usize, Option<usize>), ()>> {
+    let segments: Vec<_> = value.split(',').collect();
+    let has_lines = segments.iter().any(|segment| {
+        let unit = segment.split_once('=').map_or(*segment, |(unit, _)| unit);
+        unit.trim().eq_ignore_ascii_case("lines")
+    });
+    if !has_lines {
+        return None;
+    }
+    if segments.len() != 1 {
+        return Some(Err(()));
+    }
+    let (unit, rest) = match value.split_once('=') {
+        Some(parts) => parts,
+        None => return Some(Err(())),
+    };
+    if unit != "lines" && !unit.eq_ignore_ascii_case("lines") {
+        return Some(Err(()));
+    }
+    if unit.trim() != unit {
+        return Some(Err(()));
+    }
+    let mut parts = rest.split('-');
+    let start = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse::<usize>().ok())
+        .filter(|&part| part > 0);
+    let end = match parts.next() {
+        Some("") => Some(None),
+        Some(part) => part.parse::<usize>().ok().map(Some),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return Some(Err(()));
+    }
+    match (start, end) {
+        (Some(start), Some(end)) => Some(Ok((start, end))),
+        _ => Some(Err(())),
+    }
+}
+
+fn range_not_satisfiable(total: usize, include_total: bool) -> Response {
+    let mut response = Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE);
+    if include_total {
+        response = response.header("content-range", format!("lines */{total}"));
+    }
+    response.body(Body::empty()).unwrap()
+}
+
+fn make_etag(meta: &std::fs::Metadata, version: u64) -> String {
+    format!(
+        "W/\"{:x}-{:x}-{:x}\"",
+        meta.modified()
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        meta.len(),
+        version
+    )
+}
+
+fn line_offsets(data: &[u8]) -> Vec<(usize, usize)> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\n' || data[i] == b'\r' {
+            let end = if data[i] == b'\r' && data.get(i + 1) == Some(&b'\n') {
+                i + 2
+            } else {
+                i + 1
+            };
+            lines.push((start, end));
+            start = end;
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    if start < data.len() {
+        lines.push((start, data.len()));
+    }
+    lines
 }
 
 /// PUT handler — accepts a request body and writes it to the filesystem.
@@ -122,6 +307,269 @@ pub async fn handle_put(State(state): State<Arc<AppState>>, req: Request) -> App
     }
 }
 
+/// PATCH handler implementing RFC-0002 partial byte updates.
+///
+/// Requires `Content-Type: application/partial-update`, `Content-Length`, and
+/// `X-Update-Range`. Updates are applied to an in-memory snapshot and replaced
+/// atomically via a temporary file in the target directory.
+pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> AppResult {
+    let _patch_guard = state.patch_lock.lock().await;
+    let request_path = req.uri().path().to_owned();
+    let target = state
+        .resolve_existing(&request_path)
+        .await
+        .or_404("path resolution failed for PATCH")?;
+    let meta = tokio::fs::metadata(&target)
+        .await
+        .or_404("metadata failed for PATCH")?;
+    if meta.is_dir() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    let Some(content_type) = content_type else {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    };
+    if !content_type
+        .split(';')
+        .next()
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/partial-update"))
+    {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    let content_length = parse_content_length(req.headers())?;
+    if content_length > MAX_PATCH_SIZE as u64 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let Some(range_header) = req
+        .headers()
+        .get("x-update-range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+    else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    validate_preconditions(&req, &meta, state.etag_version(&target))?;
+    let body = axum::body::to_bytes(req.into_body(), MAX_PATCH_SIZE)
+        .await
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+    if body.len() as u64 != content_length {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if meta.len() > MAX_PATCH_SIZE as u64 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let current = tokio::fs::read(&target)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if current.len() > MAX_PATCH_SIZE {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let parsed = parse_update_range(&range_header, current.len() as u64, content_length)?;
+    let updated = match parsed {
+        UpdateRange::Append => {
+            let new_len = current
+                .len()
+                .checked_add(body.len())
+                .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
+            if new_len > MAX_PATCH_SIZE {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            let mut v = Vec::new();
+            v.try_reserve_exact(new_len)
+                .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+            v.extend_from_slice(&current);
+            v.extend_from_slice(&body);
+            v
+        }
+        UpdateRange::Noop => current.clone(),
+        UpdateRange::Interval { start, end } => {
+            let end_usize = usize::try_from(end).map_err(|_| StatusCode::RANGE_NOT_SATISFIABLE)?;
+            let start_usize =
+                usize::try_from(start).map_err(|_| StatusCode::RANGE_NOT_SATISFIABLE)?;
+            let new_len = current.len().max(
+                end_usize
+                    .checked_add(1)
+                    .ok_or(StatusCode::RANGE_NOT_SATISFIABLE)?,
+            );
+            if new_len > MAX_PATCH_SIZE {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            let mut v = Vec::new();
+            v.try_reserve_exact(new_len)
+                .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+            v.resize(new_len, 0);
+            v[..current.len()].copy_from_slice(&current);
+            v.drain(start_usize..=end_usize);
+            v.splice(start_usize..start_usize, body.iter().copied());
+            v
+        }
+    };
+
+    let end_meta = tokio::fs::metadata(&target)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if end_meta.len() != meta.len()
+        || end_meta.modified().unwrap_or(UNIX_EPOCH) != meta.modified().unwrap_or(UNIX_EPOCH)
+    {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+    if updated == current {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let temp = target.with_file_name(format!(
+        ".sbx-patch-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    if tokio::fs::write(&temp, &updated).await.is_err() {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    if tokio::fs::rename(&temp, &target).await.is_err() {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let new_meta = tokio::fs::metadata(&target)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header(
+            "etag",
+            make_etag(&new_meta, state.bump_etag_version(&target)),
+        )
+        .header(
+            "last-modified",
+            new_meta
+                .modified()
+                .map(crate::utils::time::format_rfc1123)
+                .unwrap_or_default(),
+        )
+        .body(Body::empty())
+        .unwrap())
+}
+
+enum UpdateRange {
+    Append,
+    Noop,
+    Interval { start: u64, end: u64 },
+}
+
+fn parse_update_range(
+    value: &str, current_len: u64, body_len: u64,
+) -> Result<UpdateRange, StatusCode> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("append") {
+        return Ok(UpdateRange::Append);
+    }
+    if value.contains(',') || value.chars().any(char::is_whitespace) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let Some((unit, spec)) = value.split_once('=') else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if !unit.eq_ignore_ascii_case("bytes") || spec.contains('=') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let Some((left, right)) = spec.split_once('-') else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if right.contains('-') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if left.is_empty() {
+        let len = parse_range_number(right)?;
+        if len == 0 || body_len != len.min(current_len) {
+            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+        if current_len == 0 {
+            return Ok(UpdateRange::Noop);
+        }
+        let selected_len = len.min(current_len);
+        return Ok(UpdateRange::Interval {
+            start: current_len - selected_len,
+            end: current_len - 1,
+        });
+    }
+    let start = parse_range_number(left)?;
+    if right.is_empty() {
+        if body_len == 0 {
+            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+        let end = start
+            .checked_add(body_len - 1)
+            .ok_or(StatusCode::RANGE_NOT_SATISFIABLE)?;
+        return Ok(UpdateRange::Interval { start, end });
+    }
+    let end = parse_range_number(right)?;
+    let expected = end.checked_sub(start).and_then(|n| n.checked_add(1));
+    if expected != Some(body_len) {
+        return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+    Ok(UpdateRange::Interval { start, end })
+}
+
+fn parse_content_length(headers: &axum::http::HeaderMap) -> Result<u64, StatusCode> {
+    let mut values = headers.get_all("content-length").iter();
+    let Some(first) = values.next() else {
+        return Err(StatusCode::LENGTH_REQUIRED);
+    };
+    let length = first
+        .to_str()
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .parse::<u64>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    for value in values {
+        let other = value
+            .to_str()
+            .map_err(|_| StatusCode::BAD_REQUEST)?
+            .parse::<u64>()
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        if other != length {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    Ok(length)
+}
+
+fn parse_range_number(value: &str) -> Result<u64, StatusCode> {
+    value.parse::<u64>().map_err(|error| match error.kind() {
+        IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => StatusCode::RANGE_NOT_SATISFIABLE,
+        IntErrorKind::InvalidDigit | IntErrorKind::Empty => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_REQUEST,
+    })
+}
+
+fn validate_preconditions(
+    req: &Request, meta: &std::fs::Metadata, version: u64,
+) -> Result<(), StatusCode> {
+    if let Some(if_match) = req.headers().get("if-match").and_then(|v| v.to_str().ok()) {
+        let current = make_etag(meta, version);
+        let matches = if_match.trim() == "*"
+            || (!current.starts_with("W/") && if_match.split(',').any(|v| v.trim() == current));
+        if !matches {
+            return Err(StatusCode::PRECONDITION_FAILED);
+        }
+    }
+    if let Some(unmodified) = req
+        .headers()
+        .get("if-unmodified-since")
+        .and_then(|v| v.to_str().ok())
+        && let Ok(date) = httpdate::parse_http_date(unmodified)
+        && meta.modified().is_ok_and(|modified| modified > date)
+    {
+        return Err(StatusCode::PRECONDITION_FAILED);
+    }
+    Ok(())
+}
+
 /// DELETE handler — removes a file or recursively deletes a directory.
 ///
 /// Returns `204 No Content` on success, `404 Not Found` if the target
@@ -168,166 +616,10 @@ pub async fn handle_delete(State(state): State<Arc<AppState>>, req: Request) -> 
     }
 }
 
-/// PATCH handler for partial file updates.
-///
-/// Supports `X-Update-Range: append` and single `bytes=start-end` ranges.
-/// Bytes outside the current file are represented by zeroes. The request
-/// content type is not restricted; the update protocol is selected by the
-/// PATCH method and its range headers.
-///
-/// # Errors
-///
-/// Returns `411 Length Required` when `Content-Length` is absent, `400 Bad
-/// Request` for malformed headers, `404 Not Found` for a missing resource, or
-/// `416 Range Not Satisfiable` when the body length does not match the range.
-pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> AppResult {
-    let content_type = req
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok());
-    if content_type != Some("application/x-sabredav-partialupdate") {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    let content_length = req
-        .headers()
-        .get(axum::http::header::CONTENT_LENGTH)
-        .ok_or(StatusCode::LENGTH_REQUIRED)?
-        .to_str()
-        .map_err(|_| StatusCode::BAD_REQUEST)?
-        .parse::<u64>()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let range = req
-        .headers()
-        .get("x-update-range")
-        .ok_or(StatusCode::BAD_REQUEST)?
-        .to_str()
-        .map_err(|_| StatusCode::BAD_REQUEST)
-        .and_then(parse_patch_range)?;
-
-    let request_path = req.uri().path().to_owned();
-    let target = state.resolve_and_guard(&request_path).await;
-    let target = target.or_invalid(StatusCode::BAD_REQUEST)?;
-    let metadata = tokio::fs::metadata(&target)
-        .await
-        .or_404("resource not found for PATCH")?;
-    if !metadata.is_file() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let body = axum::body::to_bytes(req.into_body(), usize::MAX)
-        .await
-        .map_err(|_| StatusCode::RANGE_NOT_SATISFIABLE)?;
-    if body.len() as u64 != content_length {
-        return Err(StatusCode::RANGE_NOT_SATISFIABLE);
-    }
-
-    let file_size = metadata.len();
-    let (offset, end, suffix_len) = match range {
-        PatchRange::Append => (file_size, None, None),
-        PatchRange::Bytes { start, end } => {
-            let (offset, suffix_len) = match start {
-                PatchStart::Positive(value) => (value, None),
-                PatchStart::Negative(value) => (file_size.saturating_sub(value), Some(value)),
-            };
-            (offset, end, suffix_len)
-        }
-    };
-
-    let body_len = body.len() as u64;
-    if let Some(suffix_len) = suffix_len
-        && suffix_len != body_len
-    {
-        return Err(StatusCode::RANGE_NOT_SATISFIABLE);
-    }
-    if let Some(end) = end {
-        let range_len = end
-            .checked_sub(offset)
-            .and_then(|length| length.checked_add(1));
-        if range_len != Some(body_len) {
-            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
-        }
-    }
-
-    let write_end = offset
-        .checked_add(body_len)
-        .ok_or(StatusCode::RANGE_NOT_SATISFIABLE)?;
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(&target)
-        .await
-        .or_500("failed to open file for PATCH")?;
-
-    if offset > file_size {
-        file.set_len(offset)
-            .await
-            .or_500("failed to create PATCH zero-fill gap")?;
-    }
-    file.seek(std::io::SeekFrom::Start(offset))
-        .await
-        .or_500("failed to seek for PATCH")?;
-    file.write_all(&body)
-        .await
-        .or_500("failed to write PATCH body")?;
-    file.flush().await.or_500("failed to flush PATCH file")?;
-
-    tracing::debug!(
-        path = %target.display(), offset, end = ?end, size = body_len, final_end = write_end,
-        "PATCH completed"
-    );
-    Ok(StatusCode::NO_CONTENT.into_response())
-}
-
-enum PatchRange {
-    Append,
-    Bytes { start: PatchStart, end: Option<u64> },
-}
-
-enum PatchStart {
-    Positive(u64),
-    Negative(u64),
-}
-
-fn parse_patch_range(value: &str) -> Result<PatchRange, StatusCode> {
-    if value.trim() == "append" {
-        return Ok(PatchRange::Append);
-    }
-
-    let range = value
-        .strip_prefix("bytes=")
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    if range.is_empty() || range.contains(',') {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    if let Some(suffix) = range.strip_prefix('-') {
-        if suffix.is_empty() {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        return Ok(PatchRange::Bytes {
-            start: PatchStart::Negative(
-                suffix.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST)?,
-            ),
-            end: None,
-        });
-    }
-
-    let (start, end) = range.split_once('-').ok_or(StatusCode::BAD_REQUEST)?;
-    let start = PatchStart::Positive(start.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST)?);
-    let end = if end.is_empty() {
-        None
-    } else {
-        Some(end.parse::<u64>().map_err(|_| StatusCode::BAD_REQUEST)?)
-    };
-
-    Ok(PatchRange::Bytes { start, end })
-}
-
 /// OPTIONS handler — returns supported HTTP/DAV methods in the `Allow` header.
 ///
-/// Includes the `DAV: 1, 2` compliance level and `MS-Author-Via: DAV`
-/// header for compatibility with legacy clients.
+/// Includes the `DAV: 1, 2, 3, partial-update` capabilities and `MS-Author-Via: DAV` header
+/// for compatibility with legacy clients.
 ///
 /// # Panics
 ///
@@ -340,7 +632,7 @@ pub async fn handle_options() -> AppResult {
             "allow",
             "GET, HEAD, OPTIONS, PUT, PATCH, DELETE, PROPFIND, MKCOL, COPY, MOVE, PROPPATCH, LOCK, UNLOCK",
         )
-        .header("dav", "1, 2, sabredav-partialupdate")
+        .header("dav", "1, 2, 3, partial-update")
         .header("ms-author-via", "DAV")
         .header("content-length", "0")
         .body(Body::empty())
@@ -437,6 +729,117 @@ mod tests {
 
         assert!(body_str.contains("hello.txt") && body_str.contains("13"));
         assert!(body_str.contains("subdir/") && body_str.contains("-"));
+    }
+
+    #[tokio::test]
+    async fn test_get_line_range_preserves_line_endings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\r\ntwo\rthree\nfour").unwrap();
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/lines.txt")
+            .header("range", "lines=2-3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.headers()["content-range"], "lines 2-3/4");
+        assert_eq!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            &b"two\rthree\n"[..]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_line_range_clips_and_rejects_invalid_requests() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\ntwo\nthree").unwrap();
+        std::fs::write(dir.path().join("data.bin"), [0, 1, 2, 3]).unwrap();
+
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/lines.txt")
+            .header("range", "lines=2-999")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.headers()["content-range"], "lines 2-3/3");
+
+        for range in ["lines=-1", "lines=4-5", "bytes=0-1,lines=1-2"] {
+            let req = Request::builder()
+                .method(axum::http::Method::GET)
+                .uri("/lines.txt")
+                .header("range", range)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/data.bin")
+            .header("range", "lines=1-1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::RANGE_NOT_SATISFIABLE);
+        assert!(resp.headers().get("content-range").is_none());
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_head_ignores_line_range_and_if_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\ntwo\nthree").unwrap();
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::HEAD)
+            .uri("/lines.txt")
+            .header("range", "lines=2-2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(resp.headers()["content-length"], "13");
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_if_range_mismatch_returns_full_representation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("lines.txt"), b"one\ntwo\nthree").unwrap();
+        let app = make_app_get(&dir);
+        let req = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/lines.txt")
+            .header("range", "lines=2-2")
+            .header("if-range", "\"stale\"")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+            &b"one\ntwo\nthree"[..]
+        );
     }
 
     // -- PUT tests -----------------------------------------------------------
@@ -584,13 +987,12 @@ mod tests {
         let allow = resp.headers().get("allow").unwrap().to_str().unwrap();
         assert!(allow.contains("GET"));
         assert!(allow.contains("PUT"));
-        assert!(allow.contains("PATCH"));
         assert!(allow.contains("DELETE"));
         assert!(allow.contains("PROPFIND"));
         assert!(allow.contains("MKCOL"));
         assert_eq!(
             resp.headers().get("dav").unwrap().to_str().unwrap(),
-            "1, 2, sabredav-partialupdate"
+            "1, 2, 3, partial-update"
         );
         assert_eq!(
             resp.headers()

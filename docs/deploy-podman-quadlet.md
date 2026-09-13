@@ -11,11 +11,11 @@ For system-wide deployments, use `/etc/containers/systemd/` instead.
 
 ## Basic
 
-Create `~/.config/containers/systemd/rshs.container`:
+Create `~/.config/containers/systemd/sbx.container`:
 
 ```ini
 [Container]
-Image=docker.io/mogeko/rshs:latest
+Image=docker.io/mogeko/sbx:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
 
@@ -32,10 +32,10 @@ WantedBy=default.target
 
 ```ini
 [Container]
-Image=docker.io/mogeko/rshs:latest
+Image=docker.io/mogeko/sbx:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
-Environment=RSHS_USERS=admin:secret123;viewer:public
+Environment=SBX_USERS=admin:secret123;viewer:public
 
 [Service]
 Restart=always
@@ -59,24 +59,24 @@ openssl passwd -6 "secret123"
 # → $6$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyyyyyyyyy...
 
 # Write the shadow file (one user per line: username:hash)
-echo 'admin:$6$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyyyyyyyyy...' > ~/rshs-shadow
+echo 'admin:$6$xxxxxxxx$yyyyyyyyyyyyyyyyyyyyyyyyyyyy...' > ~/sbx-shadow
 
 # Create a Podman secret
-podman secret create rshs-shadow ~/rshs-shadow
+podman secret create sbx-shadow ~/sbx-shadow
 
 # Remove the plaintext local copy
-rm ~/rshs-shadow
+rm ~/sbx-shadow
 ```
 
 Then reference it in the Quadlet:
 
 ```ini
 [Container]
-Image=docker.io/mogeko/rshs:latest
+Image=docker.io/mogeko/sbx:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
-Secret=rshs-shadow,type=mount,target=/etc/rshs/shadow,mode=0400
-Environment=RSHS_SHADOW_FILE=/etc/rshs/shadow:ro
+Secret=sbx-shadow,type=mount,target=/etc/sbx/shadow,mode=0400
+Environment=SBX_SHADOW_FILE=/etc/sbx/shadow:ro
 
 [Service]
 Restart=always
@@ -87,22 +87,22 @@ WantedBy=default.target
 
 - `type=mount` mounts the secret as a regular file (default is `env` which exposes it as an env var)
 - `mode=0400` restricts the file to read-only for the owner
-- `:ro` in `RSHS_SHADOW_FILE` ensures rshs won't attempt to write back
+- `:ro` in `SBX_SHADOW_FILE` ensures sbx won't attempt to write back
 
 To update credentials later, recreate the secret and restart:
 
 ```sh
-podman secret rm rshs-shadow
-echo 'admin:$6$newhash...' > ~/rshs-shadow
-podman secret create rshs-shadow ~/rshs-shadow
-systemctl --user restart rshs
+podman secret rm sbx-shadow
+echo 'admin:$6$newhash...' > ~/sbx-shadow
+podman secret create sbx-shadow ~/sbx-shadow
+systemctl --user restart sbx
 ```
 
 ## Health Check
 
 ```ini
 [Container]
-Image=docker.io/mogeko/rshs:latest
+Image=docker.io/mogeko/sbx:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
 HealthCmd=curl -f -H "x-health-check: true" http://localhost:8080/
@@ -117,7 +117,7 @@ Restart=always
 WantedBy=default.target
 ```
 
-The `x-health-check: true` header triggers rshs's health check middleware,
+The `x-health-check: true` header triggers sbx's health check middleware,
 which returns `200 OK` without touching the file system or requiring auth.
 
 ## Deploy
@@ -126,15 +126,15 @@ which returns `200 OK` without touching the file system or requiring auth.
 # Create the systemd directory if it doesn't exist
 mkdir -p ~/.config/containers/systemd
 
-# Place your rshs.container file there, then:
+# Place your sbx.container file there, then:
 systemctl --user daemon-reload
-systemctl --user start rshs
+systemctl --user start sbx
 
 # Enable auto-start at login
-systemctl --user enable rshs
+systemctl --user enable sbx
 
 # Check status
-systemctl --user status rshs
+systemctl --user status sbx
 ```
 
 > [!TIP]

@@ -1,5 +1,5 @@
 use rcgen::{CertificateParams, KeyPair};
-use rshs::TlsConfig;
+use sbx::TlsConfig;
 use tempfile::TempDir;
 
 fn write_cert_and_key(dir: &TempDir) -> (String, String) {

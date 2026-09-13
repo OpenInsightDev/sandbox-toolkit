@@ -1,5 +1,5 @@
 use axum::http::HeaderMap;
-use rshs::webdav::{
+use sbx::webdav::{
     Depth, IfCondition, parse_clark, parse_depth, parse_destination, parse_if_header,
     parse_lock_token_header, parse_overwrite, parse_timeout,
 };

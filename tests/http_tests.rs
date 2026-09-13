@@ -8,7 +8,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn test_get_root_dir_listing() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -31,7 +31,7 @@ async fn test_get_root_dir_listing() {
 #[tokio::test]
 async fn test_get_file_content() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -61,7 +61,7 @@ async fn test_get_file_content() {
 #[tokio::test]
 async fn test_head_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::HEAD)
@@ -81,7 +81,7 @@ async fn test_head_file() {
 #[tokio::test]
 async fn test_get_not_found() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -95,7 +95,7 @@ async fn test_get_not_found() {
 #[tokio::test]
 async fn test_get_nested_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -114,7 +114,7 @@ async fn test_get_nested_file() {
 #[tokio::test]
 async fn test_get_path_traversal_blocked() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::GET)
@@ -128,7 +128,7 @@ async fn test_get_path_traversal_blocked() {
 #[tokio::test]
 async fn test_put_creates_new_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
@@ -146,7 +146,7 @@ async fn test_put_creates_new_file() {
 #[tokio::test]
 async fn test_put_overwrites_existing_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::PUT)
@@ -164,7 +164,7 @@ async fn test_put_overwrites_existing_file() {
 #[tokio::test]
 async fn test_delete_existing_file() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
@@ -179,7 +179,7 @@ async fn test_delete_existing_file() {
 #[tokio::test]
 async fn test_delete_nonexistent() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::DELETE)
@@ -191,174 +191,9 @@ async fn test_delete_nonexistent() {
 }
 
 #[tokio::test]
-async fn test_patch_overwrites_requested_range() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("x-update-range", "bytes=7-11")
-        .header("content-length", "5")
-        .body(Body::from("Rust!"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 204);
-    assert_eq!(
-        std::fs::read(dir.path().join("hello.txt")).unwrap(),
-        b"Hello, Rust!!"
-    );
-}
-
-#[tokio::test]
-async fn test_patch_appends_to_file() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("x-update-range", "append")
-        .header("content-length", "9")
-        .body(Body::from(" appended"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 204);
-    assert_eq!(
-        std::fs::read(dir.path().join("hello.txt")).unwrap(),
-        b"Hello, World! appended"
-    );
-}
-
-#[tokio::test]
-async fn test_patch_supports_negative_suffix_range() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("x-update-range", "bytes=-5")
-        .header("content-length", "5")
-        .body(Body::from("Rust!"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 204);
-    assert_eq!(
-        std::fs::read(dir.path().join("hello.txt")).unwrap(),
-        b"Hello, WRust!"
-    );
-}
-
-#[tokio::test]
-async fn test_patch_fills_gap_with_zeroes() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("x-update-range", "bytes=16-")
-        .header("content-length", "3")
-        .body(Body::from("end"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 204);
-    assert_eq!(
-        std::fs::read(dir.path().join("hello.txt")).unwrap(),
-        b"Hello, World!\0\0\0end"
-    );
-}
-
-#[tokio::test]
-async fn test_patch_requires_content_length_and_range() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("x-update-range", "append")
-        .body(Body::from("data"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 411);
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("content-length", "4")
-        .body(Body::from("data"))
-        .unwrap();
-    let resp = make_test_router(dir.path(), rshs::AuthState::new())
-        .oneshot(req)
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
-}
-
-#[tokio::test]
-async fn test_patch_rejects_unsupported_content_type() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "text/plain")
-        .header("x-update-range", "append")
-        .header("content-length", "3")
-        .body(Body::from("bad"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 415);
-}
-
-#[tokio::test]
-async fn test_patch_rejects_missing_content_type() {
-    let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("x-update-range", "append")
-        .header("content-length", "3")
-        .body(Body::from("bad"))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 415);
-}
-
-#[tokio::test]
-async fn test_patch_rejects_body_length_mismatch() {
-    let dir = temp_dir_with_files();
-
-    let req = axum::http::Request::builder()
-        .method(Method::PATCH)
-        .uri("/hello.txt")
-        .header("content-type", "application/x-sabredav-partialupdate")
-        .header("x-update-range", "bytes=0-3")
-        .header("content-length", "8")
-        .body(Body::from("too long"))
-        .unwrap();
-    let resp = make_test_router(dir.path(), rshs::AuthState::new())
-        .oneshot(req)
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 416);
-}
-
-#[tokio::test]
 async fn test_options_returns_allow_header() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::OPTIONS)
@@ -371,11 +206,13 @@ async fn test_options_returns_allow_header() {
     let allow = resp.headers().get("allow").unwrap().to_str().unwrap();
     assert!(allow.contains("GET"), "Allow should include GET");
     assert!(allow.contains("PUT"), "Allow should include PUT");
-    assert!(allow.contains("PATCH"), "Allow should include PATCH");
     assert!(allow.contains("PROPFIND"), "Allow should include PROPFIND");
 
     let dav = resp.headers().get("dav").unwrap().to_str().unwrap();
-    assert_eq!(dav, "1, 2", "DAV header should advertise DAV support");
+    assert_eq!(
+        dav, "1, 2, 3, partial-update",
+        "DAV header should advertise partial updates"
+    );
 
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
@@ -384,9 +221,76 @@ async fn test_options_returns_allow_header() {
 }
 
 #[tokio::test]
+async fn test_patch_replaces_append_and_suffix_bytes() {
+    let dir = temp_dir_with_files();
+    std::fs::write(dir.path().join("patch.bin"), b"1234567890").unwrap();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    for (range, body, expected) in [
+        ("bytes=3-6", b"----".as_slice(), b"123----890".as_slice()),
+        ("append", b"!!".as_slice(), b"123----890!!".as_slice()),
+        ("bytes=-2", b"??".as_slice(), b"123----890??".as_slice()),
+    ] {
+        let req = axum::http::Request::builder()
+            .method(Method::PATCH)
+            .uri("/patch.bin")
+            .header("content-type", "application/partial-update; profile=test")
+            .header("content-length", body.len())
+            .header("x-update-range", range)
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 204);
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("patch.bin")).unwrap(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_patch_fills_sparse_gap_and_rejects_bad_length_without_mutation() {
+    let dir = temp_dir_with_files();
+    std::fs::write(dir.path().join("patch.bin"), b"abc").unwrap();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/patch.bin")
+        .header("content-type", "application/partial-update")
+        .header("content-length", "2")
+        .header("x-update-range", "bytes=5-")
+        .body(Body::from("XY"))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), 204);
+    assert_eq!(
+        std::fs::read(dir.path().join("patch.bin")).unwrap(),
+        b"abc\0\0XY"
+    );
+
+    let before = std::fs::read(dir.path().join("patch.bin")).unwrap();
+    let req = axum::http::Request::builder()
+        .method(Method::PATCH)
+        .uri("/patch.bin")
+        .header("content-type", "application/partial-update")
+        .header("content-length", "1")
+        .header("x-update-range", "bytes=0-2")
+        .body(Body::from("Z"))
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), 416);
+    assert_eq!(std::fs::read(dir.path().join("patch.bin")).unwrap(), before);
+}
+
+#[tokio::test]
 async fn test_unknown_method_returns_501() {
     let dir = temp_dir_with_files();
-    let app = make_test_router(dir.path(), rshs::AuthState::new());
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
 
     let req = axum::http::Request::builder()
         .method(Method::POST)

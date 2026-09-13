@@ -12,7 +12,7 @@ pub use axum::http::method::InvalidMethod;
 ///
 /// ```
 /// use axum::http::Method as HttpMethod;
-/// use rshs::webdav::Method;
+/// use sbx::webdav::Method;
 ///
 /// let m = Method::try_from(&HttpMethod::GET).unwrap();
 /// assert!(matches!(m, Method::GET));
