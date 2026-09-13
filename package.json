@@ -1,0 +1,10 @@
+{
+  "name": "sandbox-toolkit",
+  "private": true,
+  "packageManager": "pnpm@12.4.1",
+  "scripts": {
+    "check": "pnpm --dir sdk/typescript check",
+    "test": "pnpm --dir sdk/typescript test",
+    "build": "pnpm --dir sdk/typescript build"
+  }
+}

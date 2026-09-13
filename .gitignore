@@ -24,3 +24,8 @@ target
 **/*shadow*
 !**/shadow.rs
 **/*.pem
+
+# pnpm workspace generated files
+node_modules
+.pnpm
+.cargo/config.toml
