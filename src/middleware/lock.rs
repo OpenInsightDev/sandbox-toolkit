@@ -106,13 +106,20 @@ fn is_path_locked(
             .is_some_and(|token| webdav::ls::active_slice(infos).any(|lock| lock.token == token))
     };
 
-    if !token_matches(infos) && !webdav::ls::eval_if(lists, infos, request_path) {
+    let conditions_pass = |infos: &[webdav::LockInfo]| {
+        if lists.is_empty() {
+            token_matches(infos) || webdav::ls::eval_if(lists, infos, request_path)
+        } else {
+            webdav::ls::eval_if(lists, infos, request_path)
+        }
+    };
+
+    if !conditions_pass(infos) {
         return true;
     }
 
     webdav::ls::walk_locked_ancestors(locks, path, root_canonical, |infos| {
         webdav::ls::active_slice(infos).any(|l| l.depth == webdav::Depth::Infinity)
-            && !token_matches(infos)
-            && !webdav::ls::eval_if(lists, infos, request_path)
+            && !conditions_pass(infos)
     })
 }

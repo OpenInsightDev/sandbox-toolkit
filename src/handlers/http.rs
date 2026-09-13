@@ -17,6 +17,8 @@ use crate::html::generate_dir_listing;
 use crate::server::{AppResult, AppState};
 use crate::utils::error::{IntoResolved, OrStatus};
 
+const MAX_PATCH_SIZE: usize = 64 * 1024 * 1024;
+
 /// GET / HEAD handler — serves files and generates HTML directory listings.
 ///
 /// Supports conditional `If-Modified-Since` via the `Last-Modified` header.
@@ -99,7 +101,7 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
                 .iter()
                 .fold((usize::MAX, 0), |(lo, hi), (a, b)| (lo.min(*a), hi.max(*b)));
             let body = &data[lo..hi];
-            let etag = make_etag(&snapshot_meta);
+            let etag = make_etag(&snapshot_meta, state.etag_version(&fs_path));
             let last_modified = snapshot_meta
                 .modified()
                 .map(crate::utils::time::format_rfc1123)
@@ -141,7 +143,7 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
                 "accept-ranges",
                 if is_text { "bytes, lines" } else { "bytes" },
             )
-            .header("etag", make_etag(&meta))
+            .header("etag", make_etag(&meta, state.etag_version(&fs_path)))
             .header(
                 "last-modified",
                 meta.modified()
@@ -215,15 +217,16 @@ fn range_not_satisfiable(total: usize, include_total: bool) -> Response {
     response.body(Body::empty()).unwrap()
 }
 
-fn make_etag(meta: &std::fs::Metadata) -> String {
+fn make_etag(meta: &std::fs::Metadata, version: u64) -> String {
     format!(
-        "W/\"{:x}-{:x}\"",
+        "W/\"{:x}-{:x}-{:x}\"",
         meta.modified()
             .unwrap_or(UNIX_EPOCH)
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs(),
-        meta.len()
+            .as_nanos(),
+        meta.len(),
+        version
     )
 }
 
@@ -310,6 +313,7 @@ pub async fn handle_put(State(state): State<Arc<AppState>>, req: Request) -> App
 /// `X-Update-Range`. Updates are applied to an in-memory snapshot and replaced
 /// atomically via a temporary file in the target directory.
 pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> AppResult {
+    let _patch_guard = state.patch_lock.lock().await;
     let request_path = req.uri().path().to_owned();
     let target = state
         .resolve_existing(&request_path)
@@ -337,6 +341,9 @@ pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> A
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
     let content_length = parse_content_length(req.headers())?;
+    if content_length > MAX_PATCH_SIZE as u64 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     let Some(range_header) = req
         .headers()
         .get("x-update-range")
@@ -345,10 +352,10 @@ pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> A
     else {
         return Err(StatusCode::BAD_REQUEST);
     };
-    validate_preconditions(&req, &meta)?;
-    let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+    validate_preconditions(&req, &meta, state.etag_version(&target))?;
+    let body = axum::body::to_bytes(req.into_body(), MAX_PATCH_SIZE)
         .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
     if body.len() as u64 != content_length {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -356,10 +363,23 @@ pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> A
     let current = tokio::fs::read(&target)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if current.len() > MAX_PATCH_SIZE {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     let parsed = parse_update_range(&range_header, current.len() as u64, content_length)?;
     let updated = match parsed {
         UpdateRange::Append => {
-            let mut v = current.clone();
+            let new_len = current
+                .len()
+                .checked_add(body.len())
+                .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
+            if new_len > MAX_PATCH_SIZE {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            let mut v = Vec::new();
+            v.try_reserve_exact(new_len)
+                .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+            v.extend_from_slice(&current);
             v.extend_from_slice(&body);
             v
         }
@@ -373,6 +393,9 @@ pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> A
                     .checked_add(1)
                     .ok_or(StatusCode::RANGE_NOT_SATISFIABLE)?,
             );
+            if new_len > MAX_PATCH_SIZE {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
             let mut v = Vec::new();
             v.try_reserve_exact(new_len)
                 .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
@@ -415,7 +438,10 @@ pub async fn handle_patch(State(state): State<Arc<AppState>>, req: Request) -> A
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Response::builder()
         .status(StatusCode::NO_CONTENT)
-        .header("etag", make_etag(&new_meta))
+        .header(
+            "etag",
+            make_etag(&new_meta, state.bump_etag_version(&target)),
+        )
         .header(
             "last-modified",
             new_meta
@@ -518,9 +544,11 @@ fn parse_range_number(value: &str) -> Result<u64, StatusCode> {
     })
 }
 
-fn validate_preconditions(req: &Request, meta: &std::fs::Metadata) -> Result<(), StatusCode> {
+fn validate_preconditions(
+    req: &Request, meta: &std::fs::Metadata, version: u64,
+) -> Result<(), StatusCode> {
     if let Some(if_match) = req.headers().get("if-match").and_then(|v| v.to_str().ok()) {
-        let current = make_etag(meta);
+        let current = make_etag(meta, version);
         let matches = if_match.trim() == "*"
             || (!current.starts_with("W/") && if_match.split(',').any(|v| v.trim() == current));
         if !matches {
@@ -531,10 +559,8 @@ fn validate_preconditions(req: &Request, meta: &std::fs::Metadata) -> Result<(),
         .headers()
         .get("if-unmodified-since")
         .and_then(|v| v.to_str().ok())
-        && meta
-            .modified()
-            .map(crate::utils::time::format_rfc1123)
-            .is_ok_and(|v| v != unmodified.trim())
+        && let Ok(date) = httpdate::parse_http_date(unmodified)
+        && meta.modified().is_ok_and(|modified| modified > date)
     {
         return Err(StatusCode::PRECONDITION_FAILED);
     }

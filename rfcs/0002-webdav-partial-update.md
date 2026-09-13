@@ -205,8 +205,8 @@ The executable suite in `tests/rfc_0002_webdav_partial_update.rs` is normative a
 - Verify replacement, append, growth, and `0x00` gap filling against known byte sequences, including empty append.
 - Reject missing headers, unsupported media types, malformed ranges, overflow, multiple ranges, whitespace, invalid ordering, zero suffixes, and body-length mismatches with the specified status.
 - Verify rejected requests never partially modify the resource, including failures before and during interval validation.
-- Verify `404`, `411`, `412`, `415`, `416`, `423`, authentication, authorization, lock tokens, path protection, and concurrent-update preconditions. The implementation has no user-configurable size limit; allocation refusal is mapped to `413` through the handler's fallible reservation path.
-- Verify successful responses are `204` with no body, produce a new validator when available, and invalidate stale cached representations.
+- Verify `404`, `411`, `412`, `415`, `416`, `423`, `413`, authentication, authorization, lock tokens, path protection, HTTP-date ordering, and concurrent-update preconditions. This implementation caps request bodies and resulting resources at 64 MiB; oversized requests/resources and allocation refusal return `413`.
+- Verify successful responses are `204` with no body, produce a changed validator for same-size replacements, return the new validator on both PATCH and GET, and invalidate stale cached representations.
 - Verify `OPTIONS` advertises `PATCH` and `partial-update` only when enabled, and ordinary `PATCH` behavior remains unchanged for other media types.
 
 Traceability matrix:
@@ -220,7 +220,8 @@ Traceability matrix:
 | Empty append and opaque bytes | `empty_append_and_binary_payload_are_supported` |
 | Syntax, overflow, ordering, and body mismatches | `malformed_and_inconsistent_ranges_are_rejected_without_writes` |
 | Missing target, path protection, and auth | `not_found_traversal_and_auth_are_preserved` |
-| Preconditions and locks | `if_match_and_lock_tokens_are_enforced` |
+| Preconditions and locks | `if_match_and_lock_tokens_are_enforced` and `if_unmodified_since_uses_http_date_ordering` |
+| Size limits | `oversized_patch_is_rejected_before_body_processing` |
 | No partial writes and response body | `malformed_and_inconsistent_ranges_are_rejected_without_writes` and `interval_append_open_ended_and_suffix_updates` |
 | Validator/cache/concurrency behavior | `successful_update_changes_validator_and_serializes_writes` |
 

@@ -2,7 +2,7 @@
 
 ## mod.rs — AppState, Router, dispatch
 
-`AppState` struct (behind `Arc`): `auth_state`, `root_dir`, `root_canonical`, `dead_props`, `locks`, `canonical_cache`, `lock_timeout`. Provides `resolve_existing()`, `resolve_write_target()`, `resolve_and_guard()` delegates to `utils::path`.
+`AppState` struct (behind `Arc`): `auth_state`, `root_dir`, `root_canonical`, `dead_props`, `locks`, `canonical_cache`, `patch_lock`, `etag_versions`, `lock_timeout`. Provides path-resolution delegates plus PATCH serialization and per-path validator-version helpers.
 
 `make_router(state) → Router` — builds the full middleware stack and dispatch. Used by both `start_server` and integration tests (no TCP binding needed).
 

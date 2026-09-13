@@ -74,6 +74,21 @@ mod conditional {
             StatusCode::NO_CONTENT
         );
 
+        let mut false_if = Request::builder()
+            .method(Method::PATCH)
+            .uri("/file.bin")
+            .header("content-type", "application/partial-update")
+            .header("content-length", "1")
+            .header("x-update-range", "bytes=0-0")
+            .header("if", "(<opaquelocktoken:wrong>)")
+            .body(Body::from("y"))
+            .unwrap();
+        false_if.headers_mut().insert("lock-token", token);
+        assert_eq!(
+            app.clone().oneshot(false_if).await.unwrap().status(),
+            StatusCode::LOCKED
+        );
+
         let wrong_token = Request::builder()
             .method(Method::PATCH)
             .uri("/file.bin")
@@ -439,17 +454,38 @@ async fn successful_update_changes_validator_and_serializes_writes() {
         .await
         .unwrap();
     let old_etag = before.headers().get("etag").cloned();
-    let response = app
+    let (first, second) = tokio::join!(
+        app.clone().oneshot(patch(
+            "/file.bin",
+            Some("application/partial-update"),
+            Some("append"),
+            b"A",
+        )),
+        app.clone().oneshot(patch(
+            "/file.bin",
+            Some("application/partial-update"),
+            Some("append"),
+            b"B",
+        )),
+    );
+    assert_eq!(first.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(second.unwrap().status(), StatusCode::NO_CONTENT);
+    assert_eq!(std::fs::read(dir.path().join("file.bin")).unwrap().len(), 6);
+
+    let same_size = app
         .clone()
         .oneshot(patch(
             "/file.bin",
             Some("application/partial-update"),
-            Some("append"),
-            b"x",
+            Some("bytes=0-0"),
+            b"Z",
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(same_size.status(), StatusCode::NO_CONTENT);
+    let response_etag = same_size.headers().get("etag").cloned();
+    assert_ne!(response_etag, old_etag);
+
     let after = app
         .oneshot(
             Request::builder()
@@ -460,5 +496,65 @@ async fn successful_update_changes_validator_and_serializes_writes() {
         )
         .await
         .unwrap();
-    assert_ne!(after.headers().get("etag"), old_etag.as_ref());
+    assert_eq!(after.headers().get("etag"), response_etag.as_ref());
+}
+
+#[tokio::test]
+async fn if_unmodified_since_uses_http_date_ordering() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("file.bin"), b"1234").unwrap();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    let future = patch(
+        "/file.bin",
+        Some("application/partial-update"),
+        Some("bytes=0-0"),
+        b"x",
+    );
+    let mut future = future;
+    future.headers_mut().insert(
+        "if-unmodified-since",
+        "Sun, 06 Nov 2094 08:49:37 GMT".parse().unwrap(),
+    );
+    assert_eq!(
+        app.clone().oneshot(future).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let stale = patch(
+        "/file.bin",
+        Some("application/partial-update"),
+        Some("bytes=0-0"),
+        b"y",
+    );
+    let mut stale = stale;
+    stale.headers_mut().insert(
+        "if-unmodified-since",
+        "Sun, 06 Nov 1994 08:49:37 GMT".parse().unwrap(),
+    );
+    assert_eq!(
+        app.clone().oneshot(stale).await.unwrap().status(),
+        StatusCode::PRECONDITION_FAILED
+    );
+    assert_eq!(std::fs::read(dir.path().join("file.bin")).unwrap(), b"x234");
+}
+
+#[tokio::test]
+async fn oversized_patch_is_rejected_before_body_processing() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("file.bin"), b"1234").unwrap();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+    let request = Request::builder()
+        .method(Method::PATCH)
+        .uri("/file.bin")
+        .header("content-type", "application/partial-update")
+        .header("content-length", 64 * 1024 * 1024 + 1)
+        .header("x-update-range", "append")
+        .body(Body::from("x"))
+        .unwrap();
+    assert_eq!(
+        app.oneshot(request).await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(std::fs::read(dir.path().join("file.bin")).unwrap(), b"1234");
 }
