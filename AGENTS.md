@@ -6,7 +6,8 @@ When modifying any module's code, you MUST update the corresponding AGENTS.md.
 
 Cargo uses the nightly toolchain with Cargo's `bindeps` support (configured in
 `rust-toolchain.toml` and `.cargo/config.toml`) to build the bundled `ripgrep`
-and `fd` artifact dependencies.
+and `fd` artifact dependencies. The optional `tgrep` artifact is enabled with
+`--features tgrep` (or Docker's `FEATURES=tgrep` build argument).
 
 ```sh
 cargo check
