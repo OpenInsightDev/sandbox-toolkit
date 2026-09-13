@@ -121,7 +121,7 @@ This extension SHOULD initially be disabled or limited to configured text media 
 
 ## Test plan and acceptance criteria
 
-The executable suite in `tests/rfcs/0001-line-range-get/` is normative acceptance coverage for this RFC. Each test name cites the behavior it verifies; additions to this RFC MUST add a corresponding test before the RFC can be marked complete.
+The executable suite in `tests/rfc_0001_line_range_get.rs` is normative acceptance coverage for this RFC. Each test name cites the behavior it verifies; additions to this RFC MUST add a corresponding test before the RFC can be marked complete.
 
 - Correct counts and original bytes for CRLF, LF, CR, unterminated final lines, and empty files.
 - Correct `206`, `Content-Range`, and byte-based `Content-Length` for `1-1`, middle, and open-ended ranges.

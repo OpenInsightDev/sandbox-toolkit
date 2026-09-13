@@ -199,7 +199,7 @@ No language-level interface is required. An implementation may expose an interna
 
 ## Test plan and acceptance criteria
 
-The executable suite in `tests/rfcs/0002-webdav-partial-update/` is normative acceptance coverage for this RFC. Every normative request form, response status, safety property, and corner case below is represented by a named test; changes to this RFC MUST update that suite in the same change.
+The executable suite in `tests/rfc_0002_webdav_partial_update.rs` is normative acceptance coverage for this RFC. Every normative request form, response status, safety property, and corner case below is represented by a named test; changes to this RFC MUST update that suite in the same change.
 
 - Accept exact inclusive intervals, open-ended intervals, suffix intervals, and `append`.
 - Verify replacement, append, growth, and `0x00` gap filling against known byte sequences, including empty append.
@@ -233,7 +233,7 @@ Traceability matrix:
 ## Changelog
 
 - 2026-09-13: Initial draft based on the neutralized partial-update behavior described in the [reference documentation](https://sabre.io/dav/http-patch/).
-- 2026-09-13: Marked complete after implementing PATCH dispatch, validation, atomic updates, lock enforcement, and the RFC acceptance suite under `tests/rfcs/0002-webdav-partial-update/`.
+- 2026-09-13: Marked complete after implementing PATCH dispatch, validation, atomic updates, lock enforcement, and the RFC acceptance suite in `tests/rfc_0002_webdav_partial_update.rs`.
 
 ## References
 
