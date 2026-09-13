@@ -6,20 +6,19 @@ When modifying any module's code, you MUST update the corresponding AGENTS.md.
 
 Cargo uses the nightly toolchain with Cargo's `bindeps` support (configured in
 `rust-toolchain.toml` and `.cargo/config.toml`) to build the bundled `ripgrep`
-and `fd` artifact dependencies. The optional `tgrep` and `jaq` artifacts are
-enabled with `--features tgrep,jaq` (or Docker's `FEATURES=tgrep,jaq` build
-argument).
+and `fd` artifact dependencies. CI and release builds enable every Cargo feature;
+the Docker image uses the Rust 1.88 Bookworm builder and defaults to `FEATURES=jaq,tgrep`.
 
 ```sh
-cargo check
-cargo build --release
-cargo run --release -- ./data -v
+cargo check --all-features
+cargo build --release --all-features
+cargo run --release --all-features -- ./data -v
 
 # Pre-commit checklist (must produce zero warnings)
-cargo fmt && cargo clippy -- -D warnings && cargo test
+cargo fmt && cargo clippy --all-features -- -D warnings && cargo test --all-features
 
 # Litmus WebDAV compliance
-cargo run --release -- ./data -vv
+cargo run --release --all-features -- ./data -vv
 TESTS="basic http copymove locks props" TESTROOT=. ./litmus http://localhost:8080
 
 # Benchmarks (6 suites, 52 benchmarks)

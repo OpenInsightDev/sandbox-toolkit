@@ -1,4 +1,4 @@
-FROM docker.io/library/rust:nightly-trixie AS builder
+FROM docker.io/library/rust:1.88-bookworm AS builder
 
 WORKDIR /app/
 
@@ -12,7 +12,7 @@ COPY ./Cargo.lock /app/Cargo.lock
 COPY ./LICENSE /app/LICENSE
 COPY ./README.md /app/README.md
 
-ARG FEATURES="default"
+ARG FEATURES="jaq,tgrep"
 RUN cargo build --features "${FEATURES}" --locked --release && \
     cargo install \
         --features "${FEATURES}" --locked \

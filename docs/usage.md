@@ -4,18 +4,18 @@
 
 ```sh
 # Serve the current directory
-docker run --rm -p 8080:8080 -v .:/mnt/data mogeko/sbx
+docker run --rm -p 8080:8080 -v .:/mnt/data ghcr.io/openinsightdev/sandbox-toolkit
 
 # Serve a specific directory
-docker run --rm -p 8080:8080 -v /path/to/serve:/mnt/data mogeko/sbx
+docker run --rm -p 8080:8080 -v /path/to/serve:/mnt/data ghcr.io/openinsightdev/sandbox-toolkit
 
 # Custom host and port
-docker run --rm -p 3000:3000 -v .:/mnt/data mogeko/sbx --port 3000
+docker run --rm -p 3000:3000 -v .:/mnt/data ghcr.io/openinsightdev/sandbox-toolkit --port 3000
 
 # With TLS
 docker run --rm -p 8443:8443 \
   -v ./certs:/certs -v .:/mnt/data \
-  mogeko/sbx --tls-cert /certs/cert.pem --tls-key /certs/key.pem
+  ghcr.io/openinsightdev/sandbox-toolkit --tls-cert /certs/cert.pem --tls-key /certs/key.pem
 ```
 
 ## Authentication
@@ -24,17 +24,17 @@ Basic HTTP Authentication (RFC 7617) is supported via `--user` / `-u` and `SBX_U
 
 ```sh
 # Single user
-docker run --rm -p 8080:8080 -v ./private:/mnt/data mogeko/sbx --user admin:secret123
+docker run --rm -p 8080:8080 -v ./private:/mnt/data ghcr.io/openinsightdev/sandbox-toolkit --user admin:secret123
 
 # Multiple users
 docker run --rm -p 8080:8080 -v ./private:/mnt/data \
-  mogeko/sbx --user admin:secret --user viewer:public
+  ghcr.io/openinsightdev/sandbox-toolkit --user admin:secret --user viewer:public
 
 # Using environment variables
 docker run --rm -p 3000:3000 \
   -e SBX_USERS="admin:secret;viewer:public" \
   -v .:/mnt/data \
-  mogeko/sbx
+  ghcr.io/openinsightdev/sandbox-toolkit
 ```
 
 Credentials format: `username:password`, separated by `;` for multiple users.
@@ -93,7 +93,7 @@ SBX_AUTH_CACHE_TTL=120 sbx --user admin:secret ./data
 > docker run --rm -p 8080:8080 \
 >   -e SBX_SHADOW_FILE=/etc/sbx/shadow:ro \
 >   -v /etc/shadow:/etc/sbx/shadow:ro \
->   mogeko/sbx
+>   ghcr.io/openinsightdev/sandbox-toolkit
 > ```
 
 ## TLS / HTTPS
@@ -175,19 +175,19 @@ sbx uses the [`tracing`](https://crates.io/crates/tracing) ecosystem for structu
 
 ```sh
 # Default: info level
-docker run --rm -p 8080:8080 mogeko/sbx
+docker run --rm -p 8080:8080 ghcr.io/openinsightdev/sandbox-toolkit
 
 # Debug level
-docker run --rm -p 8080:8080 mogeko/sbx -v
+docker run --rm -p 8080:8080 ghcr.io/openinsightdev/sandbox-toolkit -v
 
 # Trace level (most verbose)
-docker run --rm -p 8080:8080 mogeko/sbx -vv
+docker run --rm -p 8080:8080 ghcr.io/openinsightdev/sandbox-toolkit -vv
 
 # Suppress all logs
-docker run --rm -p 8080:8080 mogeko/sbx -q
+docker run --rm -p 8080:8080 ghcr.io/openinsightdev/sandbox-toolkit -q
 
 # Using environment variable for log level
-docker run --rm -p 8080:8080 -e SBX_LOG="debug" mogeko/sbx
+docker run --rm -p 8080:8080 -e SBX_LOG="debug" ghcr.io/openinsightdev/sandbox-toolkit
 ```
 
 ### Structured Filtering

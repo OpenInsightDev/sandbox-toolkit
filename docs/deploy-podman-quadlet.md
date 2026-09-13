@@ -15,7 +15,7 @@ Create `~/.config/containers/systemd/sbx.container`:
 
 ```ini
 [Container]
-Image=docker.io/mogeko/sbx:latest
+Image=ghcr.io/openinsightdev/sandbox-toolkit:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
 
@@ -32,7 +32,7 @@ WantedBy=default.target
 
 ```ini
 [Container]
-Image=docker.io/mogeko/sbx:latest
+Image=ghcr.io/openinsightdev/sandbox-toolkit:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
 Environment=SBX_USERS=admin:secret123;viewer:public
@@ -72,7 +72,7 @@ Then reference it in the Quadlet:
 
 ```ini
 [Container]
-Image=docker.io/mogeko/sbx:latest
+Image=ghcr.io/openinsightdev/sandbox-toolkit:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
 Secret=sbx-shadow,type=mount,target=/etc/sbx/shadow,mode=0400
@@ -102,7 +102,7 @@ systemctl --user restart sbx
 
 ```ini
 [Container]
-Image=docker.io/mogeko/sbx:latest
+Image=ghcr.io/openinsightdev/sandbox-toolkit:latest
 PublishPort=8080:8080
 Volume=%h/data:/mnt/data
 HealthCmd=curl -f -H "x-health-check: true" http://localhost:8080/
