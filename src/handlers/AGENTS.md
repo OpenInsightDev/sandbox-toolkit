@@ -4,8 +4,9 @@
 
 - `handle_get_head` — serves files and directory listings; supports text line ranges (`Range: lines=`), advertises applicable range units, emits weak metadata-based ETags, honors date-based `If-Range`, and streams full responses. Line-range parsing rejects malformed, overflowed, suffix, and multi-range syntax.
 - `handle_put` — body streamed to file via `StreamReader` + `tokio::io::copy` (zero-copy). Creates parent dirs as needed. Checks lock via middleware.
+- `handle_patch` — RFC-0002 partial byte updates (`application/partial-update`) supporting inclusive, open-ended, suffix, and append ranges. Validates framing, preconditions, and applies atomic replacement. Checks lock via middleware.
 - `handle_delete` — resolves path, removes file/dir. Checks lock via middleware.
-- `handle_options` — returns `Allow` header listing all supported methods.
+- `handle_options` — returns an empty response with an `Allow` header listing all supported methods and advertises `partial-update` in `DAV`.
 
 ## webdav.rs
 

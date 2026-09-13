@@ -154,6 +154,26 @@ async fn test_put_on_locked_resource_without_token_returns_423() {
 }
 
 #[tokio::test]
+async fn test_patch_on_locked_resource_returns_423() {
+    let dir = temp_dir_with_files();
+    let app = make_test_router(dir.path(), sbx::AuthState::new());
+
+    let req = make_request("LOCK", "/hello.txt", lock_body(true));
+    let _resp = app.clone().oneshot(req).await.unwrap();
+
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::PATCH)
+        .uri("/hello.txt")
+        .header("content-type", "application/partial-update")
+        .header("content-length", "1")
+        .header("x-update-range", "bytes=0-0")
+        .body(Body::from("x"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 423);
+}
+
+#[tokio::test]
 async fn test_delete_on_locked_resource_returns_423() {
     let dir = temp_dir_with_files();
     let app = make_test_router(dir.path(), sbx::AuthState::new());

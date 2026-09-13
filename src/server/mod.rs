@@ -178,6 +178,7 @@ async fn dispatch(State(state): State<Arc<AppState>>, req: Request) -> impl Into
     match Method::try_from(req.method()) {
         Ok(Method::GET) | Ok(Method::HEAD) => http::handle_get_head(State(state), req).await,
         Ok(Method::PUT) => http::handle_put(State(state), req).await,
+        Ok(Method::PATCH) => http::handle_patch(State(state), req).await,
         Ok(Method::DELETE) => http::handle_delete(State(state), req).await,
         Ok(Method::OPTIONS) => http::handle_options().await,
         Ok(Method::PROPFIND) => webdav_handler::handle_propfind(State(state), req).await,

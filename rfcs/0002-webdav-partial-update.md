@@ -4,7 +4,7 @@
 | --- | --- |
 | Number | RFC-0002 |
 | Title | WebDAV Partial Byte Updates |
-| Status | Draft |
+| Status | Complete |
 | Authors | sandbox-toolkit contributors |
 | Created | 2026-09-13 |
 | Updated | 2026-09-13 |
@@ -199,13 +199,30 @@ No language-level interface is required. An implementation may expose an interna
 
 ## Test plan and acceptance criteria
 
+The executable suite in `tests/rfcs/0002-webdav-partial-update/` is normative acceptance coverage for this RFC. Every normative request form, response status, safety property, and corner case below is represented by a named test; changes to this RFC MUST update that suite in the same change.
+
 - Accept exact inclusive intervals, open-ended intervals, suffix intervals, and `append`.
-- Verify replacement, append, growth, and `0x00` gap filling against known byte sequences.
-- Reject missing headers, unsupported media types, malformed ranges, overflow, multiple ranges, invalid ordering, and body-length mismatches with the specified status.
-- Verify rejected requests never partially modify the resource.
-- Verify `If-Match`, authorization, WebDAV locks, path protection, and concurrent updates are enforced.
-- Verify successful responses contain no body, update validators, and invalidate stale cached representations.
-- Verify `OPTIONS` advertises `partial-update` only when enabled and that ordinary `PATCH` behavior remains unchanged for other media types.
+- Verify replacement, append, growth, and `0x00` gap filling against known byte sequences, including empty append.
+- Reject missing headers, unsupported media types, malformed ranges, overflow, multiple ranges, whitespace, invalid ordering, zero suffixes, and body-length mismatches with the specified status.
+- Verify rejected requests never partially modify the resource, including failures before and during interval validation.
+- Verify `404`, `411`, `412`, `415`, `416`, `423`, authentication, authorization, lock tokens, path protection, and concurrent-update preconditions. The implementation has no user-configurable size limit; allocation refusal is mapped to `413` through the handler's fallible reservation path.
+- Verify successful responses are `204` with no body, produce a new validator when available, and invalidate stale cached representations.
+- Verify `OPTIONS` advertises `PATCH` and `partial-update` only when enabled, and ordinary `PATCH` behavior remains unchanged for other media types.
+
+Traceability matrix:
+
+| RFC requirement | Executable test |
+| --- | --- |
+| Discovery and method support | `options_advertises_partial_update_capability` |
+| Content-Type/Length/range headers | `missing_headers_and_media_type_fail_with_specified_statuses` |
+| Inclusive, open-ended, suffix, append semantics | `interval_append_open_ended_and_suffix_updates` |
+| Growth and zero-filled gaps | `out_of_bounds_updates_grow_and_zero_fill` |
+| Empty append and opaque bytes | `empty_append_and_binary_payload_are_supported` |
+| Syntax, overflow, ordering, and body mismatches | `malformed_and_inconsistent_ranges_are_rejected_without_writes` |
+| Missing target, path protection, and auth | `not_found_traversal_and_auth_are_preserved` |
+| Preconditions and locks | `if_match_and_lock_tokens_are_enforced` |
+| No partial writes and response body | `malformed_and_inconsistent_ranges_are_rejected_without_writes` and `interval_append_open_ended_and_suffix_updates` |
+| Validator/cache/concurrency behavior | `successful_update_changes_validator_and_serializes_writes` |
 
 ## Open questions
 
@@ -216,6 +233,7 @@ No language-level interface is required. An implementation may expose an interna
 ## Changelog
 
 - 2026-09-13: Initial draft based on the neutralized partial-update behavior described in the [reference documentation](https://sabre.io/dav/http-patch/).
+- 2026-09-13: Marked complete after implementing PATCH dispatch, validation, atomic updates, lock enforcement, and the RFC acceptance suite under `tests/rfcs/0002-webdav-partial-update/`.
 
 ## References
 

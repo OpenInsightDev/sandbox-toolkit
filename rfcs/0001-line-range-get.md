@@ -13,7 +13,7 @@
 
 Define the `lines` HTTP Range unit for WebDAV `GET` and `HEAD`. A client can request a contiguous range of lines from a text representation. The extension uses RFC 9110 Range/Content-Range/`206 Partial Content` semantics and does not change `bytes` ranges.
 
-## Motivation and scope
+## Motivation, goals, and non-goals
 
 Byte ranges force clients to download, decode, and split more data than needed. Line ranges support efficient reads of logs, configuration, and source files.
 
@@ -121,12 +121,27 @@ This extension SHOULD initially be disabled or limited to configured text media 
 
 ## Test plan and acceptance criteria
 
+The executable suite in `tests/rfcs/0001-line-range-get/` is normative acceptance coverage for this RFC. Each test name cites the behavior it verifies; additions to this RFC MUST add a corresponding test before the RFC can be marked complete.
+
 - Correct counts and original bytes for CRLF, LF, CR, unterminated final lines, and empty files.
-- Correct `206`, `Content-Range`, and `Content-Length` for `1-1`, middle, and open-ended ranges.
-- Correct errors for first-line-out-of-range, suffix, multiple, mixed-unit, and binary requests; clip an oversized end line.
+- Correct `206`, `Content-Range`, and byte-based `Content-Length` for `1-1`, middle, and open-ended ranges.
+- Correct errors for first-line-out-of-range, suffix, multiple, mixed-unit, malformed, overflow, and binary requests; clip an oversized end line.
 - `HEAD` ignores `Range`, describes the complete representation, and has no body.
-- `If-Range`, resource changes, authentication, and path protection do not regress.
+- `If-Range` matching and mismatching validators, resource changes, authentication, and path protection do not regress.
+- `Accept-Ranges` advertises `lines` only for text representations.
 - Unsupported clients retain existing full-GET and byte-range behavior.
+
+Traceability matrix:
+
+| RFC requirement | Executable test |
+| --- | --- |
+| Line counting and byte preservation | `crlf_lf_cr_and_unterminated_bytes_are_preserved` |
+| Empty representation and unsatisfiable first line | `empty_file_returns_416_with_zero_total` |
+| Closed, open-ended, and clipped ranges | `closed_open_ended_and_clipped_ranges_return_206` |
+| Invalid/suffix/multiple/mixed/overflow syntax | `invalid_line_ranges_return_416_without_resource_bytes` |
+| Binary rejection and discovery | `binary_does_not_advertise_or_serve_line_ranges` |
+| HEAD and conditional range behavior | `head_ignores_range_and_if_range` and `if_range_controls_range_processing` |
+| Path and authorization preservation | `line_range_preserves_not_found_and_authentication_behavior` |
 
 ## Open questions
 

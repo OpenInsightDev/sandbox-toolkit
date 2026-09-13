@@ -12,4 +12,4 @@ Runtime order (outermost first): `HealthCheck` → `Auth` → `LockEnforce` → 
 
 ## lock.rs
 
-`lock_enforce` — intercepts write methods: `PUT`, `DELETE`, `MKCOL`, `PROPPATCH`, `MOVE`, `COPY`. Converts `req.method()` to `webdav::Method` via `TryFrom`. For `COPY`/`MOVE`, checks both source and destination paths. Calls `webdav::eval_if()` with the request's `If` header against `LockStore`. Returns `423 Locked` if no matching token, or `412 Precondition Failed` when `If` header present without `Lock-Token`.
+`lock_enforce` — intercepts write methods: `PUT`, `PATCH`, `DELETE`, `MKCOL`, `PROPPATCH`, `MOVE`, `COPY`. Converts `req.method()` to `webdav::Method` via `TryFrom`. For `COPY`/`MOVE`, checks both source and destination paths. Calls `webdav::eval_if()` with the request's `If` header against `LockStore`. Returns `423 Locked` if no matching token, or `412 Precondition Failed` when `If` header present without `Lock-Token`. `PATCH` follows the same target/ancestor lock policy as `PUT`.

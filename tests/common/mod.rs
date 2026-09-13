@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use sbx::{AppState, AuthState, make_router};
 
+#[allow(dead_code)]
 pub fn temp_dir_with_files() -> tempfile::TempDir {
     let dir = tempfile::TempDir::new().expect("failed to create temp dir");
     let mut f = std::fs::File::create(dir.path().join("hello.txt")).unwrap();

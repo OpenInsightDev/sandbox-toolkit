@@ -6,7 +6,7 @@
 
 `make_router(state) → Router` — builds the full middleware stack and dispatch. Used by both `start_server` and integration tests (no TCP binding needed).
 
-`dispatch()` — single entry point: converts `req.method()` to `webdav::Method`, matches on type-safe constants → handler functions. Unknown → `501 Not Implemented`.
+`dispatch()` — single entry point: converts `req.method()` to `webdav::Method`, matches on type-safe constants → handler functions, including RFC-0002 `PATCH`. Unknown → `501 Not Implemented`.
 
 `start_server(config) → io::Result<()>` — binds TCP (or TLS listener), spawns cleanup task, starts axum server with graceful shutdown.
 

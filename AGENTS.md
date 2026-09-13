@@ -47,6 +47,7 @@ Conveniences: `resolve_existing()`, `resolve_write_target()`, `resolve_and_guard
 | ------ | ------- | ------ |
 | GET/HEAD | `handle_get_head` | `http.rs` |
 | PUT | `handle_put` | `http.rs` |
+| PATCH | `handle_patch` (RFC-0002 partial byte updates) | `http.rs` |
 | DELETE | `handle_delete` | `http.rs` |
 | OPTIONS | `handle_options` | `http.rs` |
 | PROPFIND | `handle_propfind` | `webdav.rs` |
