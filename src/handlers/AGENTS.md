@@ -2,7 +2,7 @@
 
 ## http.rs
 
-- `handle_get_head` — serves files and directory listings; supports text line ranges (`Range: lines=`), advertises applicable range units, and streams full responses. Line-range parsing rejects malformed, overflowed, suffix, and multi-range syntax.
+- `handle_get_head` — serves files and directory listings; supports text line ranges (`Range: lines=`), advertises applicable range units, emits validators, honors `If-Range`, and streams full responses. Line-range parsing rejects malformed, overflowed, suffix, and multi-range syntax.
 - `handle_put` — body streamed to file via `StreamReader` + `tokio::io::copy` (zero-copy). Creates parent dirs as needed. Checks lock via middleware.
 - `handle_delete` — resolves path, removes file/dir. Checks lock via middleware.
 - `handle_options` — returns `Allow` header listing all supported methods.
