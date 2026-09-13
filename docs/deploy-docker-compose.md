@@ -6,7 +6,7 @@
 # docker-compose.yml
 services:
   sbx:
-    image: mogeko/sbx:latest
+    image: ghcr.io/openinsightdev/sandbox-toolkit:latest
     ports:
       - "8080:8080"
     volumes:
@@ -20,7 +20,7 @@ services:
 # docker-compose.yml
 services:
   sbx:
-    image: mogeko/sbx:latest
+    image: ghcr.io/openinsightdev/sandbox-toolkit:latest
     ports:
       - "8080:8080"
     volumes:
@@ -49,7 +49,7 @@ echo 'viewer:$6$aaaaaaaa$bbbbbbbbbbbbbbbbbbbbbb...' >> ./sbx/shadow
 # docker-compose.yml
 services:
   sbx:
-    image: docker.io/mogeko/sbx:latest
+    image: ghcr.io/openinsightdev/sandbox-toolkit:latest
     ports:
       - "8080:8080"
     volumes:
@@ -75,7 +75,7 @@ To update credentials, regenerate the shadow file and restart the service.
 # docker-compose.yml
 services:
   sbx:
-    image: mogeko/sbx:latest
+    image: ghcr.io/openinsightdev/sandbox-toolkit:latest
     ports:
       - "8080:8080"
     volumes:

@@ -95,7 +95,7 @@ spec:
     spec:
       containers:
         - name: sbx
-          image: mogeko/sbx:latest
+          image: ghcr.io/openinsightdev/sandbox-toolkit:latest
           ports:
             - containerPort: 8080
           volumeMounts:
@@ -153,7 +153,7 @@ spec:
     spec:
       containers:
         - name: sbx
-          image: mogeko/sbx:latest
+          image: ghcr.io/openinsightdev/sandbox-toolkit:latest
           ports:
             - containerPort: 8080
           env:
@@ -220,7 +220,7 @@ spec:
     spec:
       containers:
         - name: sbx
-          image: mogeko/sbx:latest
+          image: ghcr.io/openinsightdev/sandbox-toolkit:latest
           ports:
             - containerPort: 8080
           envFrom:
