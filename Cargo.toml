@@ -14,12 +14,14 @@ categories = ["web-programming::http-server"]
 
 [features]
 default = []
+tgrep = ["dep:tgrep"]
 
 [dependencies]
 axum = { version = "0.8", features = ["http2"] }
 base64 = "0.23"
 ripgrep = { version = "15.2.0", artifact = "bin:rg" }
 fd-find = { version = "10.5.0", artifact = "bin:fd" }
+tgrep = { package = "tgrep-cli", git = "https://github.com/microsoft/tgrep", tag = "v1.0.8", artifact = "bin:tgrep", optional = true }
 clap = { version = "4.6", features = ["derive", "env"] }
 futures-util = "0.3"
 httpdate = "1.0"

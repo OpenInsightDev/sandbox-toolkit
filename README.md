@@ -40,6 +40,17 @@ docker pull docker.io/mogeko/sbx:latest
 docker pull ghcr.io/mogeko/sbx:latest
 ```
 
+### Optional bundled tools
+
+The default build packages `rg` and `fd`. To also package Microsoft's `tgrep`
+binary from its tagged source release, enable the `tgrep` feature:
+
+```sh
+cargo build --release --features tgrep
+```
+
+For Docker builds, pass `--build-arg FEATURES=tgrep`.
+
 ## Quick Start
 
 ```sh
