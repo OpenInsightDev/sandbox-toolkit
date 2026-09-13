@@ -14,6 +14,7 @@ import {
     EntityDecoderOptions,
     FileStat,
     HttpMethod,
+    LineRange,
     Path,
     Range,
     RequestData,
@@ -89,6 +90,12 @@ describe("reference-compatible schema contracts", () => {
             expect(() => Schema.decodeUnknownSync(HttpMethod)("")).toThrow();
             expect(() => Schema.decodeUnknownSync(Range)({ start: -1 })).toThrow();
             expect(() => Schema.decodeUnknownSync(Range)({ start: 10, end: 2 })).toThrow();
+            expect(Schema.decodeUnknownSync(LineRange)({ start: 2, end: 4 })).toEqual({
+                start: 2,
+                end: 4,
+            });
+            expect(() => Schema.decodeUnknownSync(LineRange)({ start: 0 })).toThrow();
+            expect(() => Schema.decodeUnknownSync(Range)({ unit: "lines", start: 0 })).toThrow();
             expect(() =>
                 Schema.decodeUnknownSync(EntityDecoderOptions)({
                     limit: { maxTotalExpansions: 1.5 },

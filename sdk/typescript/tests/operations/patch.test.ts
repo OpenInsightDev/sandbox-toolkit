@@ -5,8 +5,8 @@ import { responseFromText } from "#/transport.ts";
 import { UnsupportedFeatureError } from "#/error.ts";
 import { makeLayer } from "./helpers.ts";
 
-describe("RFC 5789 PATCH support", () => {
-    it.effect("uses PATCH method with Content-Range for partial updates", () => {
+describe("RFC-0002 partial PATCH support", () => {
+    it.effect("uses the partial-update media type and X-Update-Range", () => {
         const requests: Array<{
             method: string;
             headers?: Record<string, string>;
@@ -28,7 +28,9 @@ describe("RFC 5789 PATCH support", () => {
             expect(requests).toHaveLength(1);
             expect(requests[0]?.method).toBe("PATCH");
             expect(requests[0]?.headers?.["Content-Range"]).toBe("bytes 10-20/*");
-            expect(requests[0]?.headers?.["Content-Type"]).toBe("application/octet-stream");
+            expect(requests[0]?.headers?.["X-Update-Range"]).toBe("bytes=10-20");
+            expect(requests[0]?.headers?.["Content-Type"]).toBe("application/partial-update");
+            expect(requests[0]?.headers?.["Content-Length"]).toBe("11");
         }).pipe(Effect.provide(layer));
     });
 
@@ -68,6 +70,7 @@ describe("RFC 5789 PATCH support", () => {
             });
 
             // start=100, length=11, so end=100+11-1=110
+            expect(requests[0]?.headers?.["X-Update-Range"]).toBe("bytes=100-");
             expect(requests[0]?.headers?.["Content-Range"]).toBe("bytes 100-110/*");
         }).pipe(Effect.provide(layer));
     });
@@ -166,6 +169,7 @@ describe("RFC 5789 PATCH support", () => {
 
             expect(requests[0]?.headers?.["X-Custom-Header"]).toBe("custom-value");
             expect(requests[0]?.headers?.["Authorization"]).toBe("Bearer token123");
+            expect(requests[0]?.headers?.["X-Update-Range"]).toBe("bytes=0-3");
             expect(requests[0]?.headers?.["Content-Range"]).toBe("bytes 0-3/*");
         }).pipe(Effect.provide(layer));
     });
@@ -188,6 +192,58 @@ describe("RFC 5789 PATCH support", () => {
             });
 
             expect(requests[0]?.method).toBe("PATCH");
+        }).pipe(Effect.provide(layer));
+    });
+
+    it.effect("supports append, suffix, and explicit wire ranges", () => {
+        const requests: Array<{ headers?: Record<string, string> }> = [];
+        const layer = makeLayer((request) => {
+            requests.push(request);
+            return Effect.succeed(responseFromText({ url: request.url, status: 204 }));
+        });
+
+        return Effect.gen(function* () {
+            const partial = yield* PartialUpdateFileContents;
+            yield* partial.execute("/file.txt", "abc", { range: "append" });
+            yield* partial.execute("/file.txt", "", { range: { append: true } });
+            yield* partial.execute("/file.txt", new Uint8Array([1, 2, 3, 4]), {
+                range: { suffix: 4 },
+            });
+            yield* partial.execute("/file.txt", "abc", { updateRange: "bytes=8-" });
+
+            expect(requests.map((request) => request.headers?.["X-Update-Range"])).toEqual([
+                "append",
+                "append",
+                "bytes=-4",
+                "bytes=8-",
+            ]);
+            expect(requests.map((request) => request.headers?.["Content-Length"])).toEqual([
+                "3",
+                "0",
+                "4",
+                "3",
+            ]);
+        }).pipe(Effect.provide(layer));
+    });
+
+    it.effect("rejects inconsistent ranges before sending a request", () => {
+        let requestCount = 0;
+        const layer = makeLayer((request) => {
+            requestCount += 1;
+            return Effect.succeed(responseFromText({ url: request.url, status: 204 }));
+        });
+
+        return Effect.gen(function* () {
+            const partial = yield* PartialUpdateFileContents;
+            const closedFailure = yield* Effect.flip(
+                partial.execute("/file.txt", "abc", { range: { start: 0, end: 3 } }),
+            );
+            const suffixFailure = yield* Effect.flip(
+                partial.execute("/file.txt", "abc", { range: { suffix: 4 } }),
+            );
+            expect(closedFailure._tag).toBe("InvalidDavResponseError");
+            expect(suffixFailure._tag).toBe("InvalidDavResponseError");
+            expect(requestCount).toBe(0);
         }).pipe(Effect.provide(layer));
     });
 });

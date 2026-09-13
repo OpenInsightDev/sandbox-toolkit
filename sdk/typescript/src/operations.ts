@@ -373,6 +373,12 @@ const basenameOf = (filename: string): string => {
     const trimmed = filename.replace(/\/+$/, "");
     return trimmed.split("/").pop() ?? "";
 };
+
+const formatLineRange = (range: { readonly start: number; readonly end?: number }): string =>
+    `lines=${range.start}-${range.end === undefined ? "" : range.end}`;
+
+const formatByteRange = (range: { readonly start: number; readonly end?: number }): string =>
+    `bytes=${range.start}-${range.end === undefined ? "" : range.end}`;
 const fileStat = (href: string, prop?: DAVProperties): FileStat => {
     const resource = property({ prop }, "resourcetype");
     const length = property({ prop }, "getcontentlength");
@@ -496,13 +502,26 @@ const makeLive = (config: NormalizedWebDavConfig) => {
     const getFileContents = (
         path: string,
         options: GetFileContentsInput = {},
-    ): Effect.Effect<FileContents | DetailedHttpResponse, OperationError, OperationRequirements> =>
-        execute({
+    ): Effect.Effect<
+        FileContents | DetailedHttpResponse,
+        OperationError,
+        OperationRequirements
+    > => {
+        const range =
+            options.lineRange === undefined
+                ? options.range === undefined
+                    ? undefined
+                    : options.range.unit === "lines"
+                      ? formatLineRange(options.range)
+                      : formatByteRange(options.range)
+                : formatLineRange(options.lineRange);
+        return execute({
             url: pathUrl(config, path),
             method: "GET",
             ...requestOptions(config, options),
             headers: {
                 Accept: options.format === "text" ? "text/plain" : "application/octet-stream",
+                ...(range === undefined ? {} : { Range: range }),
                 ...options.headers,
             },
         }).pipe(
@@ -526,6 +545,7 @@ const makeLive = (config: NormalizedWebDavConfig) => {
                           : bodyBytes(response),
             ),
         );
+    };
     const putFileContents = (path: string, data: UploadData, options: PutFileContentsInput = {}) =>
         uploadBytes(data).pipe(
             Effect.flatMap((body) =>
@@ -559,35 +579,121 @@ const makeLive = (config: NormalizedWebDavConfig) => {
         data: UploadData,
         options: PartialUpdateInput = {},
     ): Effect.Effect<boolean, OperationError, OperationRequirements> => {
-        const range = options.range;
+        const range = options.updateRange ?? options.range;
 
-        // If no range is specified, fall back to PUT (full file replacement)
+        // No range retains the convenience behavior of replacing the complete resource with PUT.
         if (!range) {
-            return putFileContents(path, data, { ...options, overwrite: true });
+            return putFileContents(path, data, {
+                data: options.data,
+                headers: options.headers,
+                signal: options.signal,
+                overwrite: true,
+            });
         }
 
-        // Use PATCH for partial updates with range
-        const contentType = options.contentType ?? "application/octet-stream";
-
         return uploadBytes(data).pipe(
-            Effect.flatMap((uploadData) => {
-                // Calculate the end position from the data length if not provided
-                const dataLength = uploadData.byteLength;
-                const rangeEnd = range.end !== undefined ? range.end : range.start + dataLength - 1;
-                const rangeHeader = `bytes ${range.start}-${rangeEnd}/*`;
+            Effect.flatMap(
+                (
+                    uploadData,
+                ): Effect.Effect<WebDavHttpResponse, OperationError, OperationRequirements> => {
+                    const dataLength = uploadData.byteLength;
+                    let updateRangeHeader: string;
+                    let compatibilityContentRange: string | undefined;
 
-                return execute({
-                    url: pathUrl(config, path),
-                    method: "PATCH",
-                    ...requestOptions(config, options),
-                    data: uploadData,
-                    headers: {
-                        "Content-Type": contentType,
-                        "Content-Range": rangeHeader,
-                        ...options.headers,
-                    },
-                });
-            }),
+                    if (typeof range === "string") {
+                        if (range.length === 0) {
+                            return Effect.fail(
+                                invalid(
+                                    "partialUpdateFileContents",
+                                    "Update range cannot be empty",
+                                ),
+                            );
+                        }
+                        updateRangeHeader = range;
+                    } else if ("append" in range) {
+                        updateRangeHeader = "append";
+                    } else if ("suffix" in range) {
+                        if (range.suffix !== dataLength) {
+                            return Effect.fail(
+                                invalid(
+                                    "partialUpdateFileContents",
+                                    "Patch body length must equal the suffix length",
+                                ),
+                            );
+                        }
+                        updateRangeHeader = `bytes=-${range.suffix}`;
+                    } else {
+                        if (range.unit === "lines") {
+                            return Effect.fail(
+                                invalid(
+                                    "partialUpdateFileContents",
+                                    "Partial updates only support byte ranges",
+                                ),
+                            );
+                        }
+                        if (!Number.isSafeInteger(range.start) || range.start < 0) {
+                            return Effect.fail(
+                                invalid("partialUpdateFileContents", "Byte range start is invalid"),
+                            );
+                        }
+                        if (range.end !== undefined) {
+                            const expectedLength = range.end - range.start + 1;
+                            if (
+                                !Number.isSafeInteger(range.end) ||
+                                range.end < range.start ||
+                                !Number.isSafeInteger(expectedLength) ||
+                                expectedLength !== dataLength
+                            ) {
+                                return Effect.fail(
+                                    invalid(
+                                        "partialUpdateFileContents",
+                                        "Patch body length must equal the inclusive byte range",
+                                    ),
+                                );
+                            }
+                            updateRangeHeader = `bytes=${range.start}-${range.end}`;
+                            compatibilityContentRange = `bytes ${range.start}-${range.end}/*`;
+                        } else {
+                            if (dataLength === 0) {
+                                return Effect.fail(
+                                    invalid(
+                                        "partialUpdateFileContents",
+                                        "Open-ended byte ranges require a non-empty body",
+                                    ),
+                                );
+                            }
+                            const end = range.start + dataLength - 1;
+                            if (!Number.isSafeInteger(end)) {
+                                return Effect.fail(
+                                    invalid(
+                                        "partialUpdateFileContents",
+                                        "Byte range exceeds numeric limits",
+                                    ),
+                                );
+                            }
+                            updateRangeHeader = `bytes=${range.start}-`;
+                            // Keep the legacy header for servers that implemented the pre-RFC client.
+                            compatibilityContentRange = `bytes ${range.start}-${end}/*`;
+                        }
+                    }
+
+                    return execute({
+                        url: pathUrl(config, path),
+                        method: "PATCH",
+                        ...requestOptions(config, options),
+                        data: uploadData,
+                        headers: {
+                            "Content-Type": options.contentType ?? "application/partial-update",
+                            "Content-Length": `${dataLength}`,
+                            "X-Update-Range": updateRangeHeader,
+                            ...(compatibilityContentRange === undefined
+                                ? {}
+                                : { "Content-Range": compatibilityContentRange }),
+                            ...options.headers,
+                        },
+                    });
+                },
+            ),
             Effect.flatMap(
                 (response): Effect.Effect<boolean, OperationError, OperationRequirements> => {
                     if (response.status === 409) {
@@ -611,13 +717,16 @@ const makeLive = (config: NormalizedWebDavConfig) => {
         );
     };
     const createReadStream = (path: string, options: CreateReadStreamInput = {}) => {
-        const range = options.range;
-        const headers = range
-            ? {
-                  Range: `bytes=${range.start}-${range.end === undefined ? "" : range.end}`,
-                  ...options.headers,
-              }
-            : options.headers;
+        const range =
+            options.lineRange === undefined
+                ? options.range === undefined
+                    ? undefined
+                    : options.range.unit === "lines"
+                      ? formatLineRange(options.range)
+                      : formatByteRange(options.range)
+                : formatLineRange(options.lineRange);
+        const headers =
+            range === undefined ? options.headers : { Range: range, ...options.headers };
         return execute({
             url: pathUrl(config, path),
             method: "GET",

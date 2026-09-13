@@ -64,4 +64,29 @@ describe("WebDAV file and stream operations", () => {
             expect(requests[0]?.headers?.Range).toBe("bytes=2-4");
         }).pipe(Effect.provide(layer));
     });
+
+    it.effect("supports RFC-0001 line ranges for streaming reads", () => {
+        const requests: Array<{ headers?: Record<string, string> }> = [];
+        const layer = makeLayer((request) => {
+            requests.push(request);
+            return Effect.succeed(
+                responseFromBytes({
+                    url: request.url,
+                    status: 206,
+                    body: new Uint8Array([1, 2]),
+                }),
+            );
+        });
+        return Effect.gen(function* () {
+            const read = yield* CreateReadStream;
+            yield* Stream.runCollect(yield* read.execute("a", { lineRange: { start: 2 } }));
+            yield* Stream.runCollect(
+                yield* read.execute("a", { range: { unit: "lines", start: 3, end: 4 } }),
+            );
+            expect(requests.map((request) => request.headers?.Range)).toEqual([
+                "lines=2-",
+                "lines=3-4",
+            ]);
+        }).pipe(Effect.provide(layer));
+    });
 });
