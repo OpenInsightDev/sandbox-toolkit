@@ -103,7 +103,6 @@ pub async fn handle_get_head(State(state): State<Arc<AppState>>, req: Request) -
                 .map(crate::utils::time::format_rfc1123)
                 .unwrap_or_default();
             if let Some(if_range) = req.headers().get("if-range").and_then(|v| v.to_str().ok())
-                && if_range != etag
                 && if_range != last_modified
             {
                 return Ok(Response::builder()
@@ -216,7 +215,7 @@ fn range_not_satisfiable(total: usize, include_total: bool) -> Response {
 
 fn make_etag(meta: &std::fs::Metadata) -> String {
     format!(
-        "\"{:x}-{:x}\"",
+        "W/\"{:x}-{:x}\"",
         meta.modified()
             .unwrap_or(UNIX_EPOCH)
             .duration_since(UNIX_EPOCH)

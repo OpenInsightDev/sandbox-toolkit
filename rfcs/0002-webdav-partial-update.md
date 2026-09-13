@@ -76,7 +76,7 @@ The server MUST require `Content-Type`, `Content-Length`, and `X-Update-Range` f
 
 For `bytes=<start>-<end>`, both offsets are non-negative decimal integers, `start <= end`, and the body length MUST equal `end - start + 1`. The end offset MAY be outside the current representation. The start offset MAY be outside the current representation.
 
-For `bytes=<start>-`, `start` is non-negative and the update extends from `start` through `start + Content-Length - 1`.
+For `bytes=<start>-`, `start` is non-negative. The request body MUST be non-empty, and the update extends from `start` through `start + Content-Length - 1`. Both the addition and the inclusive end calculation MUST be checked for numeric overflow; an overflow or zero-length body is invalid and MUST be rejected with `416 Range Not Satisfiable`.
 
 For `bytes=-<length>`, `length` is a positive decimal integer. The update targets the final `length` bytes of the current representation, and the body length MUST equal `length`. If `length` exceeds the current size, the update starts at offset zero and the body length MUST equal the resulting selected interval; implementations MUST reject an inconsistent request rather than silently truncate it.
 
@@ -90,7 +90,7 @@ The update MUST be applied to one consistent representation snapshot. For an int
 
 For example, applying `bytes=12-` with body `----` to `1234567890` produces ten original bytes, two `0x00` bytes, and four dashes. Applying `append` with the same body produces `1234567890----`.
 
-The operation SHOULD be atomic: readers MUST observe either the old representation or the complete new representation, never a partially written interval. A successful update MUST produce a new representation validator when the underlying resource supports validators.
+The operation SHOULD be atomic: readers MUST observe either the old representation or the complete new representation, never a partially written interval. A successful update MUST produce a new representation validator when the underlying resource supports validators. A validator derived only from coarse metadata such as second-resolution modification time and size MUST be marked weak (`W/`) and MUST NOT be accepted as a strong validator for `If-Match` or `If-Range`; implementations that need strong preconditions MUST use a collision-resistant representation validator.
 
 ### Responses and status codes
 
