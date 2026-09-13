@@ -164,14 +164,16 @@ describe("RFC-0002 partial PATCH support", () => {
                 headers: {
                     "X-Custom-Header": "custom-value",
                     Authorization: "Bearer token123",
-                    "Content-Length": "999",
-                    "X-Update-Range": "append",
+                    "content-type": "text/plain",
+                    "content-length": "999",
+                    "x-update-range": "append",
                 },
             });
 
             expect(requests[0]?.headers?.["X-Custom-Header"]).toBe("custom-value");
             expect(requests[0]?.headers?.["Authorization"]).toBe("Bearer token123");
             expect(requests[0]?.headers?.["X-Update-Range"]).toBe("bytes=0-3");
+            expect(requests[0]?.headers?.["Content-Type"]).toBe("application/partial-update");
             expect(requests[0]?.headers?.["Content-Length"]).toBe("4");
             expect(requests[0]?.headers?.["Content-Range"]).toBe("bytes 0-3/*");
         }).pipe(Effect.provide(layer));

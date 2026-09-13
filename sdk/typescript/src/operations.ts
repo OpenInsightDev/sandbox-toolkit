@@ -677,19 +677,31 @@ const makeLive = (config: NormalizedWebDavConfig) => {
                         }
                     }
 
+                    const protocolHeaders = {
+                        "Content-Type": options.contentType ?? "application/partial-update",
+                        "Content-Length": `${dataLength}`,
+                        "X-Update-Range": updateRangeHeader,
+                        ...(compatibilityContentRange === undefined
+                            ? {}
+                            : { "Content-Range": compatibilityContentRange }),
+                    };
+                    const protocolHeaderNames = new Set(
+                        Object.keys(protocolHeaders).map((name) => name.toLowerCase()),
+                    );
+                    const customHeaders = Object.fromEntries(
+                        Object.entries(options.headers ?? {}).filter(
+                            ([name]) => !protocolHeaderNames.has(name.toLowerCase()),
+                        ),
+                    );
+
                     return execute({
                         url: pathUrl(config, path),
                         method: "PATCH",
                         ...requestOptions(config, options),
                         data: uploadData,
                         headers: {
-                            ...options.headers,
-                            "Content-Type": options.contentType ?? "application/partial-update",
-                            "Content-Length": `${dataLength}`,
-                            "X-Update-Range": updateRangeHeader,
-                            ...(compatibilityContentRange === undefined
-                                ? {}
-                                : { "Content-Range": compatibilityContentRange }),
+                            ...customHeaders,
+                            ...protocolHeaders,
                         },
                     });
                 },
