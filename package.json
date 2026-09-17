@@ -1,0 +1,29 @@
+{
+  "name": "sandbox-toolkit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ready": "vp check && turbo run test build",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "check": "turbo run check",
+    "dev": "turbo run dev",
+    "prepare": "vp config"
+  },
+  "devDependencies": {
+    "turbo": "^2.10.13",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.4.2",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

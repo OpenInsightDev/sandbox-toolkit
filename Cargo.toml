@@ -1,0 +1,16 @@
+# Virtual Cargo workspace for the Rust crates in this repository.
+#
+# `turbo.json` enables Turborepo's experimental Cargo workspace support
+# (`futureFlags.experimentalCargoWorkspaces`), which discovers the crates in
+# `members` as packages in Turborepo's Package Graph and maps tasks such as
+# `build`, `test` and `check` to `cargo` commands. This replaces the Cargo
+# integration that `pnpm install` used to provide through `cargo.enabled`.
+#
+# `[workspace.metadata].name` gives the synthetic workspace package its identity
+# in Turborepo's graph. It must differ from any member crate name.
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.metadata]
+name = "sandbox-toolkit-rust"

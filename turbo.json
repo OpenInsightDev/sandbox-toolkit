@@ -1,0 +1,32 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "futureFlags": {
+    "experimentalCargoWorkspaces": true,
+    "experimentalTaskCommand": true
+  },
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    "check": {},
+    "lint": {},
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "@sandbox-toolkit/sdk#build": {
+      "dependsOn": ["sandbox-toolkit-rust#generate"],
+      "outputs": ["dist/**"]
+    },
+    "@sandbox-toolkit/sdk#check": {
+      "dependsOn": ["sandbox-toolkit-rust#generate"]
+    },
+    "sandbox-toolkit-rust#generate": {
+      "command": ["cargo", "test", "--package=sandbox-toolkit", "export_bindings", "--locked"],
+      "outputs": ["packages/sdk/src/generated/**"]
+    }
+  }
+}

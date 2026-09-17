@@ -1,0 +1,3 @@
+# The Cargo workspace builds into the repository-root `target/` directory. This
+# entry keeps the pre-workspace build output (already present on disk) ignored.
+/target

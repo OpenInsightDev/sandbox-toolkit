@@ -1,0 +1,7 @@
+# The Cargo packages in this repository use artifact/"binary" dependencies
+# (RFC 3028), which still require the unstable `bindeps` cargo feature and
+# therefore a nightly toolchain. This file lives at the repository root so that
+# every cargo invocation in the repo — including the Cargo tasks Turborepo runs
+# from the workspace root — uses nightly.
+[toolchain]
+channel = "nightly"

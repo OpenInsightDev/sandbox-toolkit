@@ -1,0 +1,27 @@
+[package]
+name = "sandbox-toolkit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+russh = "0.63.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53.1", features = ["full"] }
+# `serde-json-impl` gives `serde_json::Value` a `TS` impl so it can appear in
+# the generated TypeScript declarations.
+ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
+
+# Binary dependencies (RFC 3028, unstable `bindeps`).
+fd-find = { version = "10.5.0", artifact = "bin" }
+ripgrep = { version = "15.2.0", artifact = "bin" }
+
+jaq = { version = "3.1.1", artifact = "bin", optional = true }
+tgrep = { version = "1.6.15", artifact = "bin", optional = true }
+axum = { version = "0.8.9", features = ["http2", "macros"] }
+
+[features]
+default = []
+jaq = ["dep:jaq"]
+tgrep = ["dep:tgrep"]
