@@ -51,6 +51,30 @@ pnpm exec turbo run dev
 - `crates/server` — the Rust server crate, part of the root Cargo workspace.
 - `turbo.json` — task graph and caching configuration.
 
+## Server
+
+The `crates/server` binary starts an axum HTTP server. Every filesystem
+operation is served by one streamable HTTP endpoint, `/fs`, which speaks
+JSON-RPC 2.0:
+
+```bash
+cargo run --package sandbox-toolkit -- --host 127.0.0.1 --port 3000
+```
+
+```bash
+curl -s http://127.0.0.1:3000/fs \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"fs/readFile","params":{"path":"Cargo.toml","offset":0,"limit":10}}'
+```
+
+The endpoint answers `text/event-stream` (one SSE `message` event) when the
+client accepts it and `application/json` otherwise; notifications get
+`202 Accepted` with no body. `fs/readFile` takes `path`, `offset` (zero-based
+first line) and `limit` (line count), and returns the requested lines with
+their line numbers, whether the window was `truncated`, and the `next_offset`
+to continue from.
+
 ## Cargo tasks
 
 `turbo.json` enables `futureFlags.experimentalCargoWorkspaces`, so Turborepo

@@ -30,8 +30,7 @@ TS_RS_EXPORT_DIR = { value = "packages/sdk/src/generated", relative = true }
 # JSON-RPC ids and codes are numbers on the wire; emitting `bigint` for `i64`
 # would make them awkward to consume from JavaScript.
 TS_RS_LARGE_INT = "number"
-# Generated files import each other with no extension by default, which
-# `moduleResolution: nodenext` rejects. Append `.js` so the specifiers resolve
-# (`./Foo.js` resolves to `Foo.ts` under TypeScript's ESM resolution).
-TS_RS_IMPORT_EXTENSION = "js"
+# ts-rs omits extensions by default, which `moduleResolution: nodenext` rejects.
+# `.ts` matches the extension the SDK sources import (see the SDK tsconfig).
+TS_RS_IMPORT_EXTENSION = "ts"
 # <<< ts-rs <<<

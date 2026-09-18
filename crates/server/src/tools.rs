@@ -66,6 +66,11 @@ pub fn bundled() -> Vec<Tool> {
     tools
 }
 
+/// Look up a bundled executable by the name it is invoked as.
+pub fn find(name: &str) -> Option<Tool> {
+    bundled().into_iter().find(|tool| tool.name == name)
+}
+
 /// The stable directory the bundled executables are materialized into.
 ///
 /// The path is derived deterministically from the system temporary directory
