@@ -191,6 +191,58 @@ describe("SandboxToolkit", () => {
     expect(result.truncated).toBe(false);
   });
 
+  it("runs a command with a JSON request body", async () => {
+    const stub = stubFetch(() =>
+      json({ exitCode: 0, stdout: "hello", stderr: "", truncated: false }),
+    );
+
+    const result = await run(
+      withClient((client) =>
+        client.exec({
+          command: "printf",
+          args: ["hello"],
+          cwd: "/tmp",
+          env: { FOO: "bar" },
+        }),
+      ),
+      stub,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("hello");
+    expect(result.truncated).toBe(false);
+    expect(result.outputPath).toBeUndefined();
+    expect(stub.calls[0].method).toBe("POST");
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/process/exec`);
+    expect(stub.calls[0].contentType).toBe("application/json");
+    expect(sentBody(stub.calls[0])).toEqual({
+      command: "printf",
+      args: ["hello"],
+      cwd: "/tmp",
+      env: { FOO: "bar" },
+    });
+  });
+
+  it("surfaces the spilled output file path", async () => {
+    const stub = stubFetch(() =>
+      json({
+        exitCode: 0,
+        stdout: "xxxx",
+        stderr: "",
+        truncated: true,
+        outputPath: "/tmp/sandbox-toolkit-exec.log",
+      }),
+    );
+
+    const result = await run(
+      withClient((client) => client.exec({ command: "yes", limit: 4 })),
+      stub,
+    );
+
+    expect(result.truncated).toBe(true);
+    expect(result.outputPath).toBe("/tmp/sandbox-toolkit-exec.log");
+  });
+
   it("maps 400 to InvalidRequestError", async () => {
     const stub = stubFetch(() => text("path must be absolute: Cargo.toml", 400));
 

@@ -1,0 +1,17 @@
+# Keep the build context to the `Containerfile` and the Linux binaries staged
+# under `dist/linux/` by `.github/workflows/release.yml`.
+
+.git
+.github
+.turbo
+.zed
+.vscode
+
+node_modules
+packages
+references
+
+target
+**/target
+
+*.log

@@ -1,8 +1,6 @@
-//! Wire types shared by the HTTP endpoints, the TypeScript SDK and the MCP tool
-//! schema; one set of `serde` attributes drives all three.
-//!
-//! `#[schemars(crate = ...)]` pins the derive to `rmcp`'s re-exported `schemars`,
-//! so it implements the same `JsonSchema` trait that `Parameters<T>` requires.
+//! Wire types shared by the HTTP endpoints, the TypeScript SDK and the MCP tool schema.
+
+use std::collections::BTreeMap;
 
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,8 +54,6 @@ pub struct HealthResult {
 pub const DEFAULT_LIMIT: usize = 2_000;
 
 /// Parameters for the `fs/readFile` operation.
-///
-/// Lines are decoded lazily, so only the requested window is read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
@@ -72,6 +68,56 @@ pub struct ReadFileParams {
     /// Maximum number of lines to return. Defaults to [`DEFAULT_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+}
+
+/// Number of output bytes returned by `process/exec` when `limit` is omitted.
+/// Larger output is written to a temporary file instead.
+pub const DEFAULT_MAX_OUTPUT: usize = 64 * 1024;
+
+/// Parameters for the `process/exec` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct ExecParams {
+    /// Executable to run. A bare name is resolved against the inherited `PATH`.
+    pub command: String,
+    /// Arguments passed to the command, in order. Defaults to none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Absolute working directory for the command. Defaults to the server's
+    /// working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment variables added on top of the server's environment,
+    /// overriding it on conflict. Defaults to none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, String>>,
+    /// Maximum number of output bytes returned inline. Defaults to
+    /// [`DEFAULT_MAX_OUTPUT`]; larger output is written to a temporary file and
+    /// only its path is returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Result of the `process/exec` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct ExecResult {
+    /// Exit status of the command, or `null` when a signal terminated it.
+    pub exit_code: Option<i32>,
+    /// Standard output, decoded lossily and capped at `limit` bytes.
+    pub stdout: String,
+    /// Standard error, decoded lossily and capped at `limit` bytes.
+    pub stderr: String,
+    /// Whether the output exceeded `limit` and was written to `output_path`.
+    pub truncated: bool,
+    /// Path of the temporary file holding the full output (standard output
+    /// followed by standard error), present only when `truncated` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
 }
 
 /// A single line of a text file.
@@ -142,6 +188,17 @@ mod tests {
             json!(["integer", "null"])
         );
         assert_eq!(schema["properties"]["offset"]["minimum"], 0);
+    }
+
+    #[test]
+    fn exec_params_require_only_the_command() {
+        let schema = serde_json::to_value(schema_for!(ExecParams)).unwrap();
+        assert_eq!(schema["required"], json!(["command"]));
+        assert_eq!(
+            schema["properties"]["args"]["type"],
+            json!(["array", "null"])
+        );
+        assert_eq!(schema["properties"]["limit"]["minimum"], 0);
     }
 
     #[test]

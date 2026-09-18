@@ -32,6 +32,10 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [features]
 default = []
+# Umbrella feature for every bundled tool, so callers pass `--features tools`
+# instead of enumerating the individual tool features. Add new tools here and
+# nowhere else.
+tools = ["jaq", "tgrep", "uv", "deno"]
 jaq = []
 tgrep = ["dep:tgrep"]
 uv = []

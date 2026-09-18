@@ -15,11 +15,14 @@ import {
 } from "./errors.ts";
 import {
   DescribeToolResultSchema,
+  ExecResultSchema,
   HealthSchema,
   ListToolsResultSchema,
   ReadFileResultSchema,
   type DescribeToolParams,
   type DescribeToolResult,
+  type ExecParams,
+  type ExecResult,
   type HealthResult,
   type ReadFileParams,
   type ReadFileResult,
@@ -33,6 +36,7 @@ export interface Service {
     params: DescribeToolParams,
   ) => Effect.Effect<DescribeToolResult, SandboxToolkitError>;
   readonly readFile: (params: ReadFileParams) => Effect.Effect<ReadFileResult, SandboxToolkitError>;
+  readonly exec: (params: ExecParams) => Effect.Effect<ExecResult, SandboxToolkitError>;
 }
 
 const transportError = (cause: unknown): SandboxToolkitError =>
@@ -137,11 +141,18 @@ export class SandboxToolkit extends Context.Service<SandboxToolkit, Service>()(
             HttpClientResponse.schemaBodyJson(ReadFileResultSchema),
           ).pipe(Effect.withSpan("SandboxToolkit.readFile"));
 
+        const exec = (params: ExecParams): Effect.Effect<ExecResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/process/exec").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(ExecResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.exec"));
+
         return SandboxToolkit.of({
           health,
           listTools,
           describeTool,
           readFile,
+          exec,
         });
       }),
     );

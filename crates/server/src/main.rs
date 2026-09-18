@@ -27,14 +27,16 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod error;
 mod file;
 mod model;
+mod process;
 mod tools;
 
 use error::UnknownToolError;
 use file::ReadFileError;
 use model::{
-    DescribeToolParams, DescribeToolResult, HealthResult, ListToolsResult, ReadFileParams,
-    ReadFileResult,
+    DescribeToolParams, DescribeToolResult, ExecParams, ExecResult, HealthResult, ListToolsResult,
+    ReadFileParams, ReadFileResult,
 };
+use process::ExecError;
 use tools::Tool;
 
 /// Path the MCP endpoint is mounted at.
@@ -94,6 +96,7 @@ async fn main() -> eyre::Result<()> {
         .route("/tools", get(http_list_tools))
         .route("/tools/describe", post(http_describe_tool))
         .route("/fs/readFile", post(http_read_file))
+        .route("/process/exec", post(http_exec))
         .layer(middleware::from_fn(log_requests))
         .with_state(state);
 
@@ -115,10 +118,6 @@ async fn main() -> eyre::Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Shared operations
-// ---------------------------------------------------------------------------
 
 impl From<Tool> for DescribeToolResult {
     fn from(tool: Tool) -> Self {
@@ -152,10 +151,6 @@ fn health_result(state: &AppState) -> HealthResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HTTP adapters
-// ---------------------------------------------------------------------------
-
 /// `GET /health` — liveness probe.
 async fn http_health(State(state): State<Arc<AppState>>) -> Json<HealthResult> {
     Json(health_result(&state))
@@ -182,6 +177,11 @@ async fn http_read_file(
     Ok(Json(file::read_file(&params).await?))
 }
 
+/// `POST /process/exec` — the same operation as the MCP `exec` tool.
+async fn http_exec(Json(params): Json<ExecParams>) -> Result<Json<ExecResult>, ExecError> {
+    Ok(Json(process::exec(&params).await?))
+}
+
 /// Minimal request log, safe for MCP's long-lived SSE streams because it never
 /// buffers the body.
 async fn log_requests(request: Request, next: Next) -> Response {
@@ -191,10 +191,6 @@ async fn log_requests(request: Request, next: Next) -> Response {
     tracing::info!(%method, %uri, status = %response.status(), "request");
     response
 }
-
-// ---------------------------------------------------------------------------
-// MCP adapters
-// ---------------------------------------------------------------------------
 
 /// MCP handler, built once per session by the service factory.
 #[derive(Clone)]
@@ -233,6 +229,15 @@ impl SandboxServer {
         Parameters(params): Parameters<ReadFileParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = file::read_file(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Run a command and capture its exit status and output")]
+    async fn exec(
+        &self,
+        Parameters(params): Parameters<ExecParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = process::exec(&params).await.map_err(McpError::from)?;
         structured(&result)
     }
 }

@@ -1,0 +1,179 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TOOL_FEATURES: tools
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --workspace --locked --features "$TOOL_FEATURES"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-14
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --features "$TOOL_FEATURES" --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="sandbox-toolkit-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/sandbox-toolkit" dist/sandbox-toolkit
+          tar -C dist -czf "dist/${name}.tar.gz" sandbox-toolkit
+          rm dist/sandbox-toolkit
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sandbox-toolkit-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  container:
+    name: container
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the built binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/artifacts
+          pattern: sandbox-toolkit-*
+          merge-multiple: true
+
+      - name: Stage the Linux binaries for the image
+        run: |
+          set -euo pipefail
+          mkdir -p dist/linux/amd64 dist/linux/arm64
+          tar -xzf "${RUNNER_TEMP}"/artifacts/*-x86_64-unknown-linux-gnu.tar.gz -C dist/linux/amd64
+          tar -xzf "${RUNNER_TEMP}"/artifacts/*-aarch64-unknown-linux-gnu.tar.gz -C dist/linux/arm64
+          chmod 0755 dist/linux/amd64/sandbox-toolkit dist/linux/arm64/sandbox-toolkit
+          ls -l dist/linux/amd64 dist/linux/arm64
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `metadata-action` also lowercases the image name, which GHCR requires.
+      - name: Image metadata for :latest
+        id: latest
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=raw,value=latest
+
+      - name: Image metadata for :bin
+        id: bin
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=raw,value=bin
+
+      - name: Set up QEMU
+        # Only the runtime image's two `RUN` steps are emulated: the binaries
+        # themselves come from the native release builds.
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push :latest
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Containerfile
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.latest.outputs.tags }}
+
+      - name: Build and push :bin
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Containerfile
+          target: bin
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.bin.outputs.tags }}
+
+      - name: Smoke-test the published image
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            docker run --rm --platform "${platform}" "${{ steps.latest.outputs.tags }}" --version
+          done
+
+  release:
+    name: publish
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

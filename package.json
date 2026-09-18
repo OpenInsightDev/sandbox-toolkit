@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "ready": "vp check && turbo run test build",
+    "ready": "turbo run check lint test build && vp check",
     "build": "turbo run build",
     "test": "turbo run test",
     "check": "turbo run check",
+    "lint": "turbo run lint",
     "dev": "turbo run dev",
     "prepare": "vp config"
   },

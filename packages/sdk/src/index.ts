@@ -26,6 +26,8 @@ export {
 export type {
   DescribeToolParams,
   DescribeToolResult,
+  ExecParams,
+  ExecResult,
   HealthResult,
   ListToolsResult,
   ReadFileParams,

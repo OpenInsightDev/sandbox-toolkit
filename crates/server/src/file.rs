@@ -1,6 +1,4 @@
 //! `fs/readFile` — the implementation shared by the HTTP and MCP adapters.
-//!
-//! Knows nothing about either transport; `error.rs` maps [`ReadFileError`].
 
 use std::{io, path::PathBuf};
 

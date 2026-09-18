@@ -98,6 +98,56 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
     }
   });
 
+  it("runs a command and captures its output", async () => {
+    const result = await run(
+      withClient((client) => client.exec({ command: "printf", args: ["hello"] })),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("hello");
+    expect(result.stderr).toBe("");
+    expect(result.truncated).toBe(false);
+    expect(result.outputPath).toBeUndefined();
+  });
+
+  it("runs with a working directory and extra environment", async () => {
+    const result = await run(
+      withClient((client) =>
+        client.exec({
+          command: "sh",
+          args: ["-c", 'printf %s "$SANDBOX_EXEC_TEST"'],
+          cwd: tmpdir(),
+          env: { SANDBOX_EXEC_TEST: "live" },
+        }),
+      ),
+    );
+
+    expect(result.stdout).toBe("live");
+  });
+
+  it("spills output larger than the limit to a file", async () => {
+    const result = await run(
+      withClient((client) =>
+        client.exec({ command: "printf", args: ["%s", "x".repeat(4096)], limit: 16 }),
+      ),
+    );
+
+    expect(result.truncated).toBe(true);
+    expect(result.stdout).toBe("x".repeat(16));
+
+    const outputPath = result.outputPath;
+    if (outputPath === undefined || outputPath === null) {
+      throw new Error("expected the output to be spilled to a file");
+    }
+
+    try {
+      const spilled = await run(withClient((client) => client.readFile({ path: outputPath })));
+      expect(spilled.lines.map((line) => line.text).join("")).toBe("x".repeat(4096));
+    } finally {
+      await rm(outputPath, { force: true });
+    }
+  });
+
   it("rejects a relative path with a typed error", async () => {
     const error = await runError(withClient((client) => client.readFile({ path: "Cargo.toml" })));
 

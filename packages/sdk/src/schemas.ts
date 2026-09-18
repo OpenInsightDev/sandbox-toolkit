@@ -2,15 +2,13 @@ import { Schema } from "effect";
 
 import type { DescribeToolParams } from "./generated/DescribeToolParams.ts";
 import type { DescribeToolResult } from "./generated/DescribeToolResult.ts";
+import type { ExecParams } from "./generated/ExecParams.ts";
+import type { ExecResult } from "./generated/ExecResult.ts";
 import type { HealthResult } from "./generated/HealthResult.ts";
 import type { ListToolsResult } from "./generated/ListToolsResult.ts";
 import type { ReadFileParams } from "./generated/ReadFileParams.ts";
 import type { ReadFileResult } from "./generated/ReadFileResult.ts";
 import type { TextLine } from "./generated/TextLine.ts";
-
-// `satisfies` (not a `: Schema.Schema<T>` annotation) checks each schema against
-// its generated wire type without widening it. `Schema.mutable`/`optionalKey`
-// keep the decoded values assignable to those generated types.
 
 export const HealthSchema = Schema.Struct({
   status: Schema.String,
@@ -38,9 +36,19 @@ export const ReadFileResultSchema = Schema.Struct({
   nextOffset: Schema.optionalKey(Schema.NullOr(Schema.Number)),
 }) satisfies Schema.Schema<ReadFileResult>;
 
+export const ExecResultSchema = Schema.Struct({
+  exitCode: Schema.NullOr(Schema.Number),
+  stdout: Schema.String,
+  stderr: Schema.String,
+  truncated: Schema.Boolean,
+  outputPath: Schema.optionalKey(Schema.NullOr(Schema.String)),
+}) satisfies Schema.Schema<ExecResult>;
+
 export type {
   DescribeToolParams,
   DescribeToolResult,
+  ExecParams,
+  ExecResult,
   HealthResult,
   ListToolsResult,
   ReadFileParams,

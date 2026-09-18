@@ -7,7 +7,7 @@ use axum::{
 };
 use rmcp::ErrorData as McpError;
 
-use crate::file::ReadFileError;
+use crate::{file::ReadFileError, process::ExecError};
 
 /// A tool name that matches no bundled executable.
 #[derive(Debug, thiserror::Error)]
@@ -26,43 +26,78 @@ impl From<UnknownToolError> for McpError {
     }
 }
 
+/// Broad category an operation error falls into, shared by both transports.
 #[derive(Clone, Copy)]
-enum ReadFileErrorKind {
+enum Kind {
+    /// The request was malformed or named something that cannot be handled.
     Invalid,
+    /// The requested resource does not exist.
     NotFound,
+    /// The server failed while handling an otherwise valid request.
     Internal,
 }
 
-impl ReadFileError {
-    fn kind(&self) -> ReadFileErrorKind {
+impl Kind {
+    fn status(self) -> StatusCode {
         match self {
-            Self::RelativePath(_) | Self::ZeroLimit | Self::NotAFile(_) => {
-                ReadFileErrorKind::Invalid
-            }
-            Self::NotFound(_) => ReadFileErrorKind::NotFound,
-            Self::Io(_) => ReadFileErrorKind::Internal,
+            Self::Invalid => StatusCode::BAD_REQUEST,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    fn mcp(self, message: String) -> McpError {
+        match self {
+            Self::Invalid => McpError::invalid_params(message, None),
+            Self::NotFound => McpError::resource_not_found(message, None),
+            Self::Internal => McpError::internal_error(message, None),
+        }
+    }
+}
+
+impl ReadFileError {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::RelativePath(_) | Self::ZeroLimit | Self::NotAFile(_) => Kind::Invalid,
+            Self::NotFound(_) => Kind::NotFound,
+            Self::Io(_) => Kind::Internal,
         }
     }
 }
 
 impl IntoResponse for ReadFileError {
     fn into_response(self) -> Response {
-        let status = match self.kind() {
-            ReadFileErrorKind::Invalid => StatusCode::BAD_REQUEST,
-            ReadFileErrorKind::NotFound => StatusCode::NOT_FOUND,
-            ReadFileErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, self.to_string()).into_response()
+        (self.kind().status(), self.to_string()).into_response()
     }
 }
 
 impl From<ReadFileError> for McpError {
     fn from(error: ReadFileError) -> Self {
-        let message = error.to_string();
-        match error.kind() {
-            ReadFileErrorKind::Invalid => McpError::invalid_params(message, None),
-            ReadFileErrorKind::NotFound => McpError::resource_not_found(message, None),
-            ReadFileErrorKind::Internal => McpError::internal_error(message, None),
+        error.kind().mcp(error.to_string())
+    }
+}
+
+impl ExecError {
+    fn kind(&self) -> Kind {
+        match self {
+            // A command or working directory that cannot be started is a bad
+            // request, not a server fault.
+            Self::EmptyCommand | Self::RelativeCwd(_) | Self::ZeroLimit | Self::Spawn { .. } => {
+                Kind::Invalid
+            }
+            Self::Io(_) => Kind::Internal,
         }
+    }
+}
+
+impl IntoResponse for ExecError {
+    fn into_response(self) -> Response {
+        (self.kind().status(), self.to_string()).into_response()
+    }
+}
+
+impl From<ExecError> for McpError {
+    fn from(error: ExecError) -> Self {
+        error.kind().mcp(error.to_string())
     }
 }
