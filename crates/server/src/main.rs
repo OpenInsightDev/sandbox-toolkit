@@ -1,17 +1,17 @@
 //! `sandbox-toolkit` MCP server: the MCP Streamable HTTP endpoint at `/mcp`
 //! plus ordinary HTTP routes over the same shared logic.
 
-use std::{fmt, net::SocketAddr, sync::Arc, time::Instant};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
     extract::{Request, State},
-    http::StatusCode,
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::{get, post},
 };
 use clap::Parser;
+use eyre::WrapErr;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::wrapper::Parameters,
@@ -24,10 +24,12 @@ use rmcp::{
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod error;
 mod file;
 mod model;
 mod tools;
 
+use error::UnknownToolError;
 use file::ReadFileError;
 use model::{
     DescribeToolParams, DescribeToolResult, HealthResult, ListToolsResult, ReadFileParams,
@@ -61,7 +63,7 @@ impl AppState {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     tracing_subscriber::registry()
@@ -95,7 +97,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(middleware::from_fn(log_requests))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(args.bind).await?;
+    let listener = tokio::net::TcpListener::bind(args.bind)
+        .await
+        .wrap_err_with(|| format!("failed to bind {}", args.bind))?;
     tracing::info!(bind = %args.bind, mcp = MCP_ENDPOINT, "server listening");
 
     axum::serve(listener, router)
@@ -106,7 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cancellation_token.cancel();
             }
         })
-        .await?;
+        .await
+        .wrap_err("server stopped with an error")?;
 
     Ok(())
 }
@@ -119,7 +124,10 @@ impl From<Tool> for DescribeToolResult {
     fn from(tool: Tool) -> Self {
         Self {
             name: tool.name.to_string(),
-            path: tool.path.to_string(),
+            path: tools::materialized_dir()
+                .join(tool.name)
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 }
@@ -144,52 +152,6 @@ fn health_result(state: &AppState) -> HealthResult {
     }
 }
 
-/// A tool name that matches no bundled executable.
-struct UnknownToolError(String);
-
-impl fmt::Display for UnknownToolError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "unknown tool: {}", self.0)
-    }
-}
-
-impl IntoResponse for UnknownToolError {
-    fn into_response(self) -> Response {
-        (StatusCode::NOT_FOUND, self.to_string()).into_response()
-    }
-}
-
-impl From<UnknownToolError> for McpError {
-    fn from(error: UnknownToolError) -> Self {
-        McpError::invalid_params(error.to_string(), None)
-    }
-}
-
-/// Map [`ReadFileError`] onto an HTTP status.
-impl IntoResponse for ReadFileError {
-    fn into_response(self) -> Response {
-        let status = match self {
-            Self::RelativePath(_) | Self::ZeroLimit | Self::NotAFile(_) => StatusCode::BAD_REQUEST,
-            Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, self.to_string()).into_response()
-    }
-}
-
-/// The JSON-RPC counterpart of the mapping above.
-impl From<ReadFileError> for McpError {
-    fn from(error: ReadFileError) -> Self {
-        match &error {
-            ReadFileError::RelativePath(_)
-            | ReadFileError::ZeroLimit
-            | ReadFileError::NotAFile(_) => McpError::invalid_params(error.to_string(), None),
-            ReadFileError::NotFound(_) => McpError::resource_not_found(error.to_string(), None),
-            ReadFileError::Io(_) => McpError::internal_error(error.to_string(), None),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // HTTP adapters
 // ---------------------------------------------------------------------------
@@ -210,7 +172,7 @@ async fn http_describe_tool(
 ) -> Result<Json<DescribeToolResult>, UnknownToolError> {
     find_tool(&params.name)
         .map(Json)
-        .ok_or_else(|| UnknownToolError(params.name))
+        .ok_or(UnknownToolError(params.name))
 }
 
 /// `POST /fs/readFile` — the same operation as the MCP `read_file` tool.
@@ -277,8 +239,9 @@ impl SandboxServer {
 
 /// Wrap a typed result as `structuredContent`.
 fn structured<T: serde::Serialize>(value: &T) -> Result<CallToolResult, McpError> {
-    let value = serde_json::to_value(value)
-        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    let value = serde_json::to_value(value).map_err(|error| {
+        McpError::internal_error(format!("failed to serialize tool result: {error}"), None)
+    })?;
     Ok(CallToolResult::structured(value))
 }
 

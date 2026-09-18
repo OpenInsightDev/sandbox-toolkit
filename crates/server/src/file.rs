@@ -1,51 +1,32 @@
 //! `fs/readFile` — the implementation shared by the HTTP and MCP adapters.
 //!
-//! Knows nothing about either transport; `main.rs` maps [`ReadFileError`].
+//! Knows nothing about either transport; `error.rs` maps [`ReadFileError`].
 
-use std::{fmt, io, path::PathBuf};
+use std::{io, path::PathBuf};
 
+use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::model::{DEFAULT_LIMIT, ReadFileParams, ReadFileResult, TextLine};
 
 /// Why reading a file failed.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ReadFileError {
     /// The requested path was not absolute.
+    #[error("path must be absolute: {}", .0.display())]
     RelativePath(PathBuf),
     /// `limit` was present but not at least `1`.
+    #[error("limit must be at least 1")]
     ZeroLimit,
     /// No file exists at the requested path.
+    #[error("file not found: {}", .0.display())]
     NotFound(PathBuf),
     /// The path exists but is not a regular file.
+    #[error("not a regular file: {}", .0.display())]
     NotAFile(PathBuf),
     /// Reading the file failed.
-    Io(io::Error),
-}
-
-impl fmt::Display for ReadFileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RelativePath(path) => {
-                write!(formatter, "path must be absolute: {}", path.display())
-            }
-            Self::ZeroLimit => write!(formatter, "limit must be at least 1"),
-            Self::NotFound(path) => write!(formatter, "file not found: {}", path.display()),
-            Self::NotAFile(path) => {
-                write!(formatter, "not a regular file: {}", path.display())
-            }
-            Self::Io(error) => write!(formatter, "failed to read file: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for ReadFileError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            _ => None,
-        }
-    }
+    #[error("failed to read file: {0}")]
+    Io(#[from] io::Error),
 }
 
 /// Read a window of lines from a UTF-8 text file, streaming so that memory use
@@ -72,7 +53,7 @@ pub async fn read_file(params: &ReadFileParams) -> Result<ReadFileResult, ReadFi
 
     // Metadata from the handle, so a swap between check and read cannot slip
     // through.
-    if !file.metadata().await.map_err(ReadFileError::Io)?.is_file() {
+    if !file.metadata().await?.is_file() {
         return Err(ReadFileError::NotAFile(path));
     }
 
@@ -80,12 +61,7 @@ pub async fn read_file(params: &ReadFileParams) -> Result<ReadFileResult, ReadFi
 
     // Reaching EOF while skipping means `offset` is past the end: empty window.
     for _ in 0..offset {
-        if lines
-            .next_line()
-            .await
-            .map_err(ReadFileError::Io)?
-            .is_none()
-        {
+        if lines.next_line().await?.is_none() {
             return Ok(ReadFileResult {
                 path: params.path.clone(),
                 lines: Vec::new(),
@@ -97,19 +73,14 @@ pub async fn read_file(params: &ReadFileParams) -> Result<ReadFileResult, ReadFi
 
     let mut window = Vec::new();
     for _ in 0..limit {
-        match lines.next_line().await.map_err(ReadFileError::Io)? {
+        match lines.next_line().await? {
             Some(text) => window.push(text),
             None => break,
         }
     }
 
     // One line past the window distinguishes "ended" from "more to read".
-    let truncated = !window.is_empty()
-        && lines
-            .next_line()
-            .await
-            .map_err(ReadFileError::Io)?
-            .is_some();
+    let truncated = !window.is_empty() && lines.next_line().await?.is_some();
     let next_offset = truncated.then_some(offset + window.len());
 
     let lines = window

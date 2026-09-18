@@ -26,7 +26,7 @@ pub struct DescribeToolParams {
 pub struct DescribeToolResult {
     /// Name the executable is invoked as.
     pub name: String,
-    /// Path to the compiled executable.
+    /// Path the executable is materialized to at runtime.
     pub path: String,
 }
 
@@ -36,7 +36,7 @@ pub struct DescribeToolResult {
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
 pub struct ListToolsResult {
-    /// Every executable compiled into this build.
+    /// Every executable embedded in this build.
     pub tools: Vec<DescribeToolResult>,
 }
 
