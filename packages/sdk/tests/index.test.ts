@@ -75,6 +75,14 @@ const text = (body: string, status: number): Response =>
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 
+const resource = (path: string, kind: "file" | "directory" | "symlink" = "file") => ({
+  path,
+  name: path.split("/").pop() ?? path,
+  kind,
+  size: kind === "directory" ? 0 : 5,
+  readOnly: false,
+});
+
 const layer = SandboxToolkit.layer({ baseUrl: BASE_URL });
 
 const run = <A, E>(effect: Effect.Effect<A, E, SandboxToolkit>, stub: Stub): Promise<A> =>
@@ -189,6 +197,152 @@ describe("SandboxToolkit", () => {
 
     expect(result.nextOffset).toBeUndefined();
     expect(result.truncated).toBe(false);
+  });
+
+  it("describes an entry", async () => {
+    const entry = resource("/tmp/x.txt");
+    const stub = stubFetch(() => json({ resource: entry }));
+
+    const result = await run(
+      withClient((client) => client.stat({ path: "/tmp/x.txt" })),
+      stub,
+    );
+
+    expect(result.resource).toEqual(entry);
+    expect(stub.calls[0].method).toBe("POST");
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/stat`);
+    expect(stub.calls[0].contentType).toBe("application/json");
+    expect(sentBody(stub.calls[0])).toEqual({ path: "/tmp/x.txt" });
+  });
+
+  it("decodes a symbolic link resource with optional properties", async () => {
+    const stub = stubFetch(() =>
+      json({
+        resource: {
+          path: "/tmp/link",
+          name: "link",
+          kind: "symlink",
+          size: 3,
+          modifiedAt: 1_700_000_000_000,
+          createdAt: null,
+          readOnly: true,
+          target: "/tmp/x.txt",
+        },
+      }),
+    );
+
+    const result = await run(
+      withClient((client) => client.stat({ path: "/tmp/link" })),
+      stub,
+    );
+
+    expect(result.resource.kind).toBe("symlink");
+    expect(result.resource.target).toBe("/tmp/x.txt");
+    expect(result.resource.modifiedAt).toBe(1_700_000_000_000);
+    expect(result.resource.createdAt).toBeNull();
+    expect(result.resource.readOnly).toBe(true);
+  });
+
+  it("lists a directory's immediate members", async () => {
+    const entries = [resource("/tmp/a.txt"), resource("/tmp/sub", "directory")];
+    const stub = stubFetch(() => json({ path: "/tmp", entries }));
+
+    const result = await run(
+      withClient((client) => client.list({ path: "/tmp" })),
+      stub,
+    );
+
+    expect(result.entries).toEqual(entries);
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/list`);
+    expect(sentBody(stub.calls[0])).toEqual({ path: "/tmp" });
+  });
+
+  it("creates a directory", async () => {
+    const entry = resource("/tmp/sub", "directory");
+    const stub = stubFetch(() => json({ resource: entry }));
+
+    const result = await run(
+      withClient((client) => client.mkdir({ path: "/tmp/sub", recursive: true })),
+      stub,
+    );
+
+    expect(result.resource).toEqual(entry);
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/mkdir`);
+    expect(sentBody(stub.calls[0])).toEqual({ path: "/tmp/sub", recursive: true });
+  });
+
+  it("writes a file", async () => {
+    const entry = resource("/tmp/x.txt");
+    const stub = stubFetch(() => json({ resource: entry }));
+
+    const result = await run(
+      withClient((client) =>
+        client.writeFile({ path: "/tmp/x.txt", contents: "hello", append: true }),
+      ),
+      stub,
+    );
+
+    expect(result.resource).toEqual(entry);
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/writeFile`);
+    expect(sentBody(stub.calls[0])).toEqual({
+      path: "/tmp/x.txt",
+      contents: "hello",
+      append: true,
+    });
+  });
+
+  it("removes an entry", async () => {
+    const stub = stubFetch(() => json({ path: "/tmp/x.txt" }));
+
+    const result = await run(
+      withClient((client) => client.remove({ path: "/tmp/x.txt" })),
+      stub,
+    );
+
+    expect(result).toEqual({ path: "/tmp/x.txt" });
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/remove`);
+    expect(sentBody(stub.calls[0])).toEqual({ path: "/tmp/x.txt" });
+  });
+
+  it("copies an entry", async () => {
+    const entry = resource("/tmp/copy.txt");
+    const stub = stubFetch(() => json({ resource: entry }));
+
+    const result = await run(
+      withClient((client) =>
+        client.copy({
+          source: "/tmp/x.txt",
+          destination: "/tmp/copy.txt",
+          overwrite: true,
+        }),
+      ),
+      stub,
+    );
+
+    expect(result.resource).toEqual(entry);
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/copy`);
+    expect(sentBody(stub.calls[0])).toEqual({
+      source: "/tmp/x.txt",
+      destination: "/tmp/copy.txt",
+      overwrite: true,
+    });
+  });
+
+  it("moves an entry", async () => {
+    const entry = resource("/tmp/moved.txt");
+    const stub = stubFetch(() => json({ resource: entry }));
+
+    const result = await run(
+      withClient((client) => client.move({ source: "/tmp/x.txt", destination: "/tmp/moved.txt" })),
+      stub,
+    );
+
+    expect(result.resource).toEqual(entry);
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/fs/move`);
+    expect(sentBody(stub.calls[0])).toEqual({
+      source: "/tmp/x.txt",
+      destination: "/tmp/moved.txt",
+    });
   });
 
   it("runs a command with a JSON request body", async () => {

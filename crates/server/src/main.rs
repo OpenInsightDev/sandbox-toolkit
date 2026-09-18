@@ -31,17 +31,19 @@ use utoipa_axum::{
 };
 
 mod error;
-mod file;
+mod fs;
 mod model;
 mod plugins;
 mod process;
 mod tools;
 
 use error::UnknownToolError;
-use file::ReadFileError;
+use fs::FsError;
 use model::{
-    DescribeToolParams, DescribeToolResult, ExecParams, ExecResult, HealthResult, ListToolsResult,
-    PluginParseResult, ReadFileParams, ReadFileResult,
+    CopyParams, CopyResult, DescribeToolParams, DescribeToolResult, ExecParams, ExecResult,
+    HealthResult, ListParams, ListResult, ListToolsResult, MkdirParams, MkdirResult, MoveParams,
+    MoveResult, PluginParseResult, ReadFileParams, ReadFileResult, RemoveParams, RemoveResult,
+    StatParams, StatResult, WriteFileParams, WriteFileResult,
 };
 use plugins::PluginError;
 use process::ExecError;
@@ -62,7 +64,7 @@ const OPENAPI_ENDPOINT: &str = "/api-docs/openapi.json";
     tags(
         (name = "system", description = "Liveness and server metadata."),
         (name = "tools", description = "The command-line tools bundled into this server."),
-        (name = "filesystem", description = "Read windows of lines from text files."),
+        (name = "filesystem", description = "Read, describe, list, create, write, copy, move and remove files and directories."),
         (name = "process", description = "Run commands and capture their output."),
         (name = "plugins", description = "Parse uploaded Agent Plugins packages.")
     )
@@ -188,6 +190,13 @@ fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(http_list_tools))
         .routes(routes!(http_describe_tool))
         .routes(routes!(http_read_file))
+        .routes(routes!(http_stat))
+        .routes(routes!(http_list))
+        .routes(routes!(http_mkdir))
+        .routes(routes!(http_write_file))
+        .routes(routes!(http_remove))
+        .routes(routes!(http_copy))
+        .routes(routes!(http_move))
         .routes(routes!(http_exec))
         .routes(routes!(http_parse_plugin).layer(DefaultBodyLimit::max(plugins::MAX_ARCHIVE_BYTES)))
 }
@@ -248,8 +257,127 @@ async fn http_describe_tool(
 )]
 async fn http_read_file(
     Json(params): Json<ReadFileParams>,
-) -> Result<Json<ReadFileResult>, ReadFileError> {
-    Ok(Json(file::read_file(&params).await?))
+) -> Result<Json<ReadFileResult>, FsError> {
+    Ok(Json(fs::read_file(&params).await?))
+}
+
+/// `POST /fs/stat` — the same operation as the MCP `stat` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/stat",
+    tag = "filesystem",
+    request_body = StatParams,
+    responses(
+        (status = OK, description = "Metadata for the described entry.", body = StatResult),
+        (status = BAD_REQUEST, description = "The path was not absolute or named a kind of entry that cannot be described.", body = String),
+        (status = NOT_FOUND, description = "No entry exists at the requested path.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The entry could not be described.", body = String)
+    )
+)]
+async fn http_stat(Json(params): Json<StatParams>) -> Result<Json<StatResult>, FsError> {
+    Ok(Json(fs::stat(&params).await?))
+}
+
+/// `POST /fs/list` — the same operation as the MCP `list` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/list",
+    tag = "filesystem",
+    request_body = ListParams,
+    responses(
+        (status = OK, description = "The directory's immediate members, sorted by name.", body = ListResult),
+        (status = BAD_REQUEST, description = "The path was not absolute or was not a directory.", body = String),
+        (status = NOT_FOUND, description = "No entry exists at the requested path.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The directory could not be read.", body = String)
+    )
+)]
+async fn http_list(Json(params): Json<ListParams>) -> Result<Json<ListResult>, FsError> {
+    Ok(Json(fs::list(&params).await?))
+}
+
+/// `POST /fs/mkdir` — the same operation as the MCP `mkdir` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/mkdir",
+    tag = "filesystem",
+    request_body = MkdirParams,
+    responses(
+        (status = OK, description = "Metadata for the collection that was created.", body = MkdirResult),
+        (status = BAD_REQUEST, description = "The path was not absolute, already existed, or its parents were missing.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The directory could not be created.", body = String)
+    )
+)]
+async fn http_mkdir(Json(params): Json<MkdirParams>) -> Result<Json<MkdirResult>, FsError> {
+    Ok(Json(fs::mkdir(&params).await?))
+}
+
+/// `POST /fs/writeFile` — the same operation as the MCP `write_file` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/writeFile",
+    tag = "filesystem",
+    request_body = WriteFileParams,
+    responses(
+        (status = OK, description = "Metadata for the file that was written.", body = WriteFileResult),
+        (status = BAD_REQUEST, description = "The path was not absolute or names a directory.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The file could not be written.", body = String)
+    )
+)]
+async fn http_write_file(
+    Json(params): Json<WriteFileParams>,
+) -> Result<Json<WriteFileResult>, FsError> {
+    Ok(Json(fs::write_file(&params).await?))
+}
+
+/// `POST /fs/remove` — the same operation as the MCP `remove` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/remove",
+    tag = "filesystem",
+    request_body = RemoveParams,
+    responses(
+        (status = OK, description = "The path that was removed.", body = RemoveResult),
+        (status = BAD_REQUEST, description = "The path was not absolute or the directory was not empty.", body = String),
+        (status = NOT_FOUND, description = "No entry exists at the requested path.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The entry could not be removed.", body = String)
+    )
+)]
+async fn http_remove(Json(params): Json<RemoveParams>) -> Result<Json<RemoveResult>, FsError> {
+    Ok(Json(fs::remove(&params).await?))
+}
+
+/// `POST /fs/copy` — the same operation as the MCP `copy` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/copy",
+    tag = "filesystem",
+    request_body = CopyParams,
+    responses(
+        (status = OK, description = "Metadata for the copy that was created.", body = CopyResult),
+        (status = BAD_REQUEST, description = "A path was not absolute, the destination existed, or the paths overlapped.", body = String),
+        (status = NOT_FOUND, description = "No entry exists at the requested source.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The entry could not be copied.", body = String)
+    )
+)]
+async fn http_copy(Json(params): Json<CopyParams>) -> Result<Json<CopyResult>, FsError> {
+    Ok(Json(fs::copy(&params).await?))
+}
+
+/// `POST /fs/move` — the same operation as the MCP `move` tool.
+#[utoipa::path(
+    post,
+    path = "/fs/move",
+    tag = "filesystem",
+    request_body = MoveParams,
+    responses(
+        (status = OK, description = "Metadata for the entry at its new location.", body = MoveResult),
+        (status = BAD_REQUEST, description = "A path was not absolute, the destination existed, or the paths overlapped.", body = String),
+        (status = NOT_FOUND, description = "No entry exists at the requested source.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The entry could not be moved.", body = String)
+    )
+)]
+async fn http_move(Json(params): Json<MoveParams>) -> Result<Json<MoveResult>, FsError> {
+    Ok(Json(fs::move_(&params).await?))
 }
 
 /// `POST /process/exec` — the same operation as the MCP `exec` tool.
@@ -335,7 +463,73 @@ impl SandboxServer {
         &self,
         Parameters(params): Parameters<ReadFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = file::read_file(&params).await.map_err(McpError::from)?;
+        let result = fs::read_file(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Describe one file, directory or symbolic link by absolute path")]
+    async fn stat(
+        &self,
+        Parameters(params): Parameters<StatParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::stat(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "List a directory's immediate members by absolute path")]
+    async fn list(
+        &self,
+        Parameters(params): Parameters<ListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::list(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Create a directory, optionally creating missing parents")]
+    async fn mkdir(
+        &self,
+        Parameters(params): Parameters<MkdirParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::mkdir(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Create or replace a text file, optionally appending instead")]
+    async fn write_file(
+        &self,
+        Parameters(params): Parameters<WriteFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::write_file(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Remove a file, symbolic link or directory by absolute path")]
+    async fn remove(
+        &self,
+        Parameters(params): Parameters<RemoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::remove(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Copy a file, symbolic link or directory to an absolute destination")]
+    async fn copy(
+        &self,
+        Parameters(params): Parameters<CopyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::copy(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(
+        name = "move",
+        description = "Move or rename a file, symbolic link or directory"
+    )]
+    async fn move_entry(
+        &self,
+        Parameters(params): Parameters<MoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = fs::move_(&params).await.map_err(McpError::from)?;
         structured(&result)
     }
 
@@ -380,6 +574,13 @@ mod tests {
             "/tools",
             "/tools/describe",
             "/fs/readFile",
+            "/fs/stat",
+            "/fs/list",
+            "/fs/mkdir",
+            "/fs/writeFile",
+            "/fs/remove",
+            "/fs/copy",
+            "/fs/move",
             "/process/exec",
             "/plugins",
         ] {
@@ -406,6 +607,22 @@ mod tests {
             "ReadFileParams",
             "ReadFileResult",
             "TextLine",
+            "ResourceKind",
+            "Resource",
+            "StatParams",
+            "StatResult",
+            "ListParams",
+            "ListResult",
+            "MkdirParams",
+            "MkdirResult",
+            "WriteFileParams",
+            "WriteFileResult",
+            "RemoveParams",
+            "RemoveResult",
+            "CopyParams",
+            "CopyResult",
+            "MoveParams",
+            "MoveResult",
             "ExecParams",
             "ExecResult",
             "PluginParseResult",

@@ -1,13 +1,15 @@
 //! Maps the domain modules' typed errors onto HTTP and MCP responses, so the
 //! two transports stay in sync.
 
+use std::io;
+
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use rmcp::ErrorData as McpError;
 
-use crate::{file::ReadFileError, plugins::PluginError, process::ExecError};
+use crate::{fs::FsError, plugins::PluginError, process::ExecError};
 
 /// A tool name that matches no bundled executable.
 #[derive(Debug, thiserror::Error)]
@@ -55,24 +57,42 @@ impl Kind {
     }
 }
 
-impl ReadFileError {
+impl FsError {
     fn kind(&self) -> Kind {
         match self {
-            Self::RelativePath(_) | Self::ZeroLimit | Self::NotAFile(_) => Kind::Invalid,
+            Self::EmptyPath
+            | Self::RelativePath(_)
+            | Self::ZeroLimit
+            | Self::NotAFile(_)
+            | Self::NotADirectory(_)
+            | Self::IsADirectory(_)
+            | Self::AlreadyExists(_)
+            | Self::DirectoryNotEmpty(_)
+            | Self::SamePath(_)
+            | Self::DestinationInsideSource(_)
+            | Self::SourceInsideDestination(_) => Kind::Invalid,
             Self::NotFound(_) => Kind::NotFound,
-            Self::Io(_) => Kind::Internal,
+            Self::Io(error) => match error.kind() {
+                io::ErrorKind::NotFound => Kind::NotFound,
+                io::ErrorKind::AlreadyExists
+                | io::ErrorKind::NotADirectory
+                | io::ErrorKind::IsADirectory
+                | io::ErrorKind::DirectoryNotEmpty => Kind::Invalid,
+                _ => Kind::Internal,
+            },
+            Self::Task(_) => Kind::Internal,
         }
     }
 }
 
-impl IntoResponse for ReadFileError {
+impl IntoResponse for FsError {
     fn into_response(self) -> Response {
         (self.kind().status(), self.to_string()).into_response()
     }
 }
 
-impl From<ReadFileError> for McpError {
-    fn from(error: ReadFileError) -> Self {
+impl From<FsError> for McpError {
+    fn from(error: FsError) -> Self {
         error.kind().mcp(error.to_string())
     }
 }

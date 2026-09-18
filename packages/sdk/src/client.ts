@@ -14,18 +14,39 @@ import {
   TransportError,
 } from "./errors.ts";
 import {
+  CopyResultSchema,
   DescribeToolResultSchema,
   ExecResultSchema,
   HealthSchema,
+  ListResultSchema,
   ListToolsResultSchema,
+  MkdirResultSchema,
+  MoveResultSchema,
   ReadFileResultSchema,
+  RemoveResultSchema,
+  StatResultSchema,
+  WriteFileResultSchema,
+  type CopyParams,
+  type CopyResult,
   type DescribeToolParams,
   type DescribeToolResult,
   type ExecParams,
   type ExecResult,
   type HealthResult,
+  type ListParams,
+  type ListResult,
+  type MkdirParams,
+  type MkdirResult,
+  type MoveParams,
+  type MoveResult,
   type ReadFileParams,
   type ReadFileResult,
+  type RemoveParams,
+  type RemoveResult,
+  type StatParams,
+  type StatResult,
+  type WriteFileParams,
+  type WriteFileResult,
 } from "./schemas.ts";
 
 /** The operations exposed by the server's HTTP surface. */
@@ -36,6 +57,15 @@ export interface Service {
     params: DescribeToolParams,
   ) => Effect.Effect<DescribeToolResult, SandboxToolkitError>;
   readonly readFile: (params: ReadFileParams) => Effect.Effect<ReadFileResult, SandboxToolkitError>;
+  readonly stat: (params: StatParams) => Effect.Effect<StatResult, SandboxToolkitError>;
+  readonly list: (params: ListParams) => Effect.Effect<ListResult, SandboxToolkitError>;
+  readonly mkdir: (params: MkdirParams) => Effect.Effect<MkdirResult, SandboxToolkitError>;
+  readonly writeFile: (
+    params: WriteFileParams,
+  ) => Effect.Effect<WriteFileResult, SandboxToolkitError>;
+  readonly remove: (params: RemoveParams) => Effect.Effect<RemoveResult, SandboxToolkitError>;
+  readonly copy: (params: CopyParams) => Effect.Effect<CopyResult, SandboxToolkitError>;
+  readonly move: (params: MoveParams) => Effect.Effect<MoveResult, SandboxToolkitError>;
   readonly exec: (params: ExecParams) => Effect.Effect<ExecResult, SandboxToolkitError>;
 }
 
@@ -141,6 +171,50 @@ export class SandboxToolkit extends Context.Service<SandboxToolkit, Service>()(
             HttpClientResponse.schemaBodyJson(ReadFileResultSchema),
           ).pipe(Effect.withSpan("SandboxToolkit.readFile"));
 
+        const stat = (params: StatParams): Effect.Effect<StatResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/stat").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(StatResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.stat"));
+
+        const list = (params: ListParams): Effect.Effect<ListResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/list").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(ListResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.list"));
+
+        const mkdir = (params: MkdirParams): Effect.Effect<MkdirResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/mkdir").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(MkdirResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.mkdir"));
+
+        const writeFile = (
+          params: WriteFileParams,
+        ): Effect.Effect<WriteFileResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/writeFile").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(WriteFileResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.writeFile"));
+
+        const remove = (params: RemoveParams): Effect.Effect<RemoveResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/remove").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(RemoveResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.remove"));
+
+        const copy = (params: CopyParams): Effect.Effect<CopyResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/copy").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(CopyResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.copy"));
+
+        const move = (params: MoveParams): Effect.Effect<MoveResult, SandboxToolkitError> =>
+          execute(
+            HttpClientRequest.post("/fs/move").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
+            HttpClientResponse.schemaBodyJson(MoveResultSchema),
+          ).pipe(Effect.withSpan("SandboxToolkit.move"));
+
         const exec = (params: ExecParams): Effect.Effect<ExecResult, SandboxToolkitError> =>
           execute(
             HttpClientRequest.post("/process/exec").pipe(HttpClientRequest.bodyJsonUnsafe(params)),
@@ -152,6 +226,13 @@ export class SandboxToolkit extends Context.Service<SandboxToolkit, Service>()(
           listTools,
           describeTool,
           readFile,
+          stat,
+          list,
+          mkdir,
+          writeFile,
+          remove,
+          copy,
+          move,
           exec,
         });
       }),

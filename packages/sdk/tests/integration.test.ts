@@ -98,6 +98,57 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
     }
   });
 
+  it("manages files and directories end to end", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sandbox-toolkit-sdk-fs-"));
+    const file = join(directory, "note.txt");
+    const duplicate = join(directory, "copy.txt");
+    const moved = join(directory, "moved.txt");
+    const nested = join(directory, "nested", "deeper");
+
+    try {
+      const written = await run(
+        withClient((client) => client.writeFile({ path: file, contents: "hello" })),
+      );
+      expect(written.resource.kind).toBe("file");
+      expect(written.resource.name).toBe("note.txt");
+
+      const described = await run(withClient((client) => client.stat({ path: file })));
+      expect(described.resource.kind).toBe("file");
+      expect(described.resource.size).toBe(5);
+
+      const listing = await run(withClient((client) => client.list({ path: directory })));
+      expect(listing.entries.map((entry) => entry.name)).toContain("note.txt");
+
+      const created = await run(
+        withClient((client) => client.mkdir({ path: nested, recursive: true })),
+      );
+      expect(created.resource.kind).toBe("directory");
+
+      const copied = await run(
+        withClient((client) => client.copy({ source: file, destination: duplicate })),
+      );
+      expect(copied.resource.name).toBe("copy.txt");
+
+      const relocated = await run(
+        withClient((client) => client.move({ source: duplicate, destination: moved })),
+      );
+      expect(relocated.resource.name).toBe("moved.txt");
+
+      const removed = await run(withClient((client) => client.remove({ path: moved })));
+      expect(removed.path).toBe(moved);
+
+      const missing = await runError(withClient((client) => client.stat({ path: moved })));
+      expect(missing.reason._tag).toBe("NotFoundError");
+
+      const removedTree = await run(
+        withClient((client) => client.remove({ path: join(directory, "nested"), recursive: true })),
+      );
+      expect(removedTree.path).toBe(join(directory, "nested"));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("runs a command and captures its output", async () => {
     const result = await run(
       withClient((client) => client.exec({ command: "printf", args: ["hello"] })),

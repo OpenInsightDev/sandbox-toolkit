@@ -150,6 +150,227 @@ pub struct ReadFileResult {
     pub next_offset: Option<usize>,
 }
 
+/// The kind of entry a [`Resource`] describes, the analog of the WebDAV
+/// `DAV:resourcetype` live property.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub enum ResourceKind {
+    /// A regular file.
+    File,
+    /// A collection, the toolkit's name for a directory.
+    Directory,
+    /// A symbolic link, reported instead of following it to its target.
+    Symlink,
+}
+
+/// Metadata for a single file, directory or symbolic link, the toolkit's
+/// analog of the WebDAV live properties returned by `PROPFIND`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct Resource {
+    /// Absolute path of the entry.
+    pub path: String,
+    /// Last component of the path, the analog of `DAV:displayname`.
+    pub name: String,
+    /// Whether the entry is a file, directory or symbolic link.
+    pub kind: ResourceKind,
+    /// Size in bytes, the analog of `DAV:getcontentlength`. Directories report
+    /// whatever size the platform records for them.
+    pub size: u64,
+    /// Last modification time in milliseconds since the Unix epoch, the analog
+    /// of `DAV:getlastmodified`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<i64>,
+    /// Creation time in milliseconds since the Unix epoch, the analog of
+    /// `DAV:creationdate`, when the platform records one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    /// Whether the entry denies write permission to everyone.
+    pub read_only: bool,
+    /// Target of a symbolic link, present only when `kind` is `symlink`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+/// Parameters for the `fs/stat` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct StatParams {
+    /// Absolute path of the entry to describe.
+    pub path: String,
+}
+
+/// Result of the `fs/stat` operation, the analog of a `PROPFIND` with
+/// `Depth: 0`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct StatResult {
+    /// Metadata for the described entry.
+    pub resource: Resource,
+}
+
+/// Parameters for the `fs/list` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct ListParams {
+    /// Absolute path of the directory to list.
+    pub path: String,
+}
+
+/// Result of the `fs/list` operation, the analog of a `PROPFIND` with
+/// `Depth: 1`. Only the collection's immediate members are returned; the
+/// collection itself is described by [`Resource`] separately.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct ListResult {
+    /// The directory that was listed, echoed back for correlation.
+    pub path: String,
+    /// Immediate members, sorted by name.
+    pub entries: Vec<Resource>,
+}
+
+/// Parameters for the `fs/mkdir` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct MkdirParams {
+    /// Absolute path of the directory to create.
+    pub path: String,
+    /// Whether to create missing parents too. Defaults to `false`, matching
+    /// `MKCOL`'s requirement that intermediate collections already exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursive: Option<bool>,
+}
+
+/// Result of the `fs/mkdir` operation, the analog of `MKCOL`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct MkdirResult {
+    /// Metadata for the collection that was created.
+    pub resource: Resource,
+}
+
+/// Parameters for the `fs/writeFile` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct WriteFileParams {
+    /// Absolute path of the file to write.
+    pub path: String,
+    /// UTF-8 text to write. The file is created when missing and replaced
+    /// otherwise, matching `PUT`.
+    pub contents: String,
+    /// Whether to append to the existing contents instead of replacing them.
+    /// Defaults to `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append: Option<bool>,
+}
+
+/// Result of the `fs/writeFile` operation, the analog of `PUT`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct WriteFileResult {
+    /// Metadata for the file that was written.
+    pub resource: Resource,
+}
+
+/// Parameters for the `fs/remove` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct RemoveParams {
+    /// Absolute path of the file, symbolic link or directory to remove.
+    pub path: String,
+    /// Whether to remove a non-empty directory and its contents. Defaults to
+    /// `false`, which refuses to delete a non-empty collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursive: Option<bool>,
+}
+
+/// Result of the `fs/remove` operation, the analog of `DELETE`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct RemoveResult {
+    /// The path that was removed, echoed back for correlation.
+    pub path: String,
+}
+
+/// Parameters for the `fs/copy` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct CopyParams {
+    /// Absolute path of the file, symbolic link or directory to copy.
+    pub source: String,
+    /// Absolute path to copy it to. Directories are copied recursively, with
+    /// symbolic links recreated rather than followed.
+    pub destination: String,
+    /// Whether to replace an existing destination. Defaults to `false`, which
+    /// reports a conflict instead of overwriting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+}
+
+/// Result of the `fs/copy` operation, the analog of `COPY`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct CopyResult {
+    /// Metadata for the copy that was created.
+    pub resource: Resource,
+}
+
+/// Parameters for the `fs/move` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct MoveParams {
+    /// Absolute path of the file, symbolic link or directory to move.
+    pub source: String,
+    /// Absolute path to move it to.
+    pub destination: String,
+    /// Whether to replace an existing destination. Defaults to `false`, which
+    /// reports a conflict instead of overwriting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+}
+
+/// Result of the `fs/move` operation, the analog of `MOVE`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct MoveResult {
+    /// Metadata for the entry at its new location.
+    pub resource: Resource,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -333,5 +554,55 @@ mod tests {
             serde_json::from_str::<DescribeToolResult>(&json).unwrap(),
             result
         );
+    }
+
+    #[test]
+    fn resource_kinds_serialize_to_lowercase_names() {
+        let names: Vec<String> = [
+            ResourceKind::File,
+            ResourceKind::Directory,
+            ResourceKind::Symlink,
+        ]
+        .into_iter()
+        .map(|kind| serde_json::to_string(&kind).unwrap())
+        .collect();
+
+        assert_eq!(names, vec![r#""file""#, r#""directory""#, r#""symlink""#]);
+    }
+
+    #[test]
+    fn resource_serializes_live_properties_with_camel_case_keys() {
+        let resource = Resource {
+            path: "/tmp/a.txt".into(),
+            name: "a.txt".into(),
+            kind: ResourceKind::File,
+            size: 12,
+            modified_at: Some(1_700_000_000_000),
+            created_at: None,
+            read_only: false,
+            target: None,
+        };
+
+        let value = serde_json::to_value(&resource).unwrap();
+        assert_eq!(value["kind"], json!("file"));
+        assert_eq!(value["modifiedAt"], json!(1_700_000_000_000i64));
+        assert_eq!(value["readOnly"], json!(false));
+        assert!(value.get("createdAt").is_none());
+        assert!(value.get("target").is_none());
+    }
+
+    #[test]
+    fn mutation_optionals_are_not_required() {
+        let mkdir = serde_json::to_value(schema_for!(MkdirParams)).unwrap();
+        assert_eq!(mkdir["required"], json!(["path"]));
+
+        let remove = serde_json::to_value(schema_for!(RemoveParams)).unwrap();
+        assert_eq!(remove["required"], json!(["path"]));
+
+        let copy = serde_json::to_value(schema_for!(CopyParams)).unwrap();
+        assert_eq!(copy["required"], json!(["source", "destination"]));
+
+        let write = serde_json::to_value(schema_for!(WriteFileParams)).unwrap();
+        assert_eq!(write["required"], json!(["path", "contents"]));
     }
 }
