@@ -12,11 +12,15 @@ tokio = { version = "1.53.1", features = ["full"] }
 ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
 
 flate2 = "1.1"
+tar = "0.4"
+agent-plugins = "0.1"
 
 # bindeps: `tgrep` has no prebuilt release channel.
 tgrep = { version = "1.6.15", artifact = "bin", optional = true }
 
 axum = { version = "0.8.9", features = ["http2", "macros"] }
+utoipa = "5.5.0"
+utoipa-axum = "0.2.0"
 rmcp = { version = "3.4.0", features = ["server", "transport-streamable-http-server"] }
 rmcp-macros = "3.4.0"
 thiserror = "2.0.20"

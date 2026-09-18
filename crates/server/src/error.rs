@@ -7,7 +7,7 @@ use axum::{
 };
 use rmcp::ErrorData as McpError;
 
-use crate::{file::ReadFileError, process::ExecError};
+use crate::{file::ReadFileError, plugins::PluginError, process::ExecError};
 
 /// A tool name that matches no bundled executable.
 #[derive(Debug, thiserror::Error)]
@@ -99,5 +99,16 @@ impl IntoResponse for ExecError {
 impl From<ExecError> for McpError {
     fn from(error: ExecError) -> Self {
         error.kind().mcp(error.to_string())
+    }
+}
+
+impl IntoResponse for PluginError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            Self::EmptyBody | Self::InvalidArchive(_) => StatusCode::BAD_REQUEST,
+            Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Task(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, self.to_string()).into_response()
     }
 }

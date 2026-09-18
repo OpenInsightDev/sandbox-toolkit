@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Parameters for the `tools/describe` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -17,7 +17,7 @@ pub struct DescribeToolParams {
 }
 
 /// Result of the `tools/describe` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -29,7 +29,7 @@ pub struct DescribeToolResult {
 }
 
 /// Result of the `tools/list` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -39,7 +39,7 @@ pub struct ListToolsResult {
 }
 
 /// Result of the `health` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -54,7 +54,7 @@ pub struct HealthResult {
 pub const DEFAULT_LIMIT: usize = 2_000;
 
 /// Parameters for the `fs/readFile` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -75,7 +75,7 @@ pub struct ReadFileParams {
 pub const DEFAULT_MAX_OUTPUT: usize = 64 * 1024;
 
 /// Parameters for the `process/exec` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -101,7 +101,7 @@ pub struct ExecParams {
 }
 
 /// Result of the `process/exec` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -121,7 +121,7 @@ pub struct ExecResult {
 }
 
 /// A single line of a text file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -133,7 +133,7 @@ pub struct TextLine {
 }
 
 /// Result of the `fs/readFile` operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
 #[ts(export)]
@@ -148,6 +148,126 @@ pub struct ReadFileResult {
     /// window, or absent once the end of the file has been reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginParseResult {
+    pub valid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<PluginRejection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<PluginManifest>,
+    pub skills: Vec<PluginSkill>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<PluginMcp>,
+    pub diagnostics: Vec<PluginDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginRejection {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginManifest {
+    pub spec_version: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<PluginAuthor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    pub keywords: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginAuthor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginSkill {
+    pub name: String,
+    pub directory: String,
+    pub path: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginMcp {
+    pub status: PluginMcpStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub servers: Vec<PluginMcpServer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum PluginMcpStatus {
+    Absent,
+    Disabled,
+    Configured,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginMcpServer {
+    pub name: String,
+    pub transport: PluginTransport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum PluginTransport {
+    Stdio,
+    StreamableHttp,
+    Sse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PluginDiagnostic {
+    pub rule: String,
+    pub section: String,
+    pub origin: String,
+    pub message: String,
 }
 
 #[cfg(test)]
