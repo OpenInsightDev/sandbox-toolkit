@@ -43,7 +43,7 @@ use model::{
     CopyParams, CopyResult, DescribeToolParams, DescribeToolResult, ExecParams, ExecResult,
     HealthResult, ListParams, ListResult, ListToolsResult, MkdirParams, MkdirResult, MoveParams,
     MoveResult, PluginParseResult, ReadFileParams, ReadFileResult, RemoveParams, RemoveResult,
-    StatParams, StatResult, WriteFileParams, WriteFileResult,
+    ShellParams, StatParams, StatResult, WriteFileParams, WriteFileResult,
 };
 use plugins::PluginError;
 use process::ExecError;
@@ -65,7 +65,7 @@ const OPENAPI_ENDPOINT: &str = "/api-docs/openapi.json";
         (name = "system", description = "Liveness and server metadata."),
         (name = "tools", description = "The command-line tools bundled into this server."),
         (name = "filesystem", description = "Read, describe, list, create, write, copy, move and remove files and directories."),
-        (name = "process", description = "Run commands and capture their output."),
+        (name = "process", description = "Run commands and shell scripts and capture their output."),
         (name = "plugins", description = "Parse uploaded Agent Plugins packages.")
     )
 )]
@@ -203,6 +203,7 @@ fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(http_copy))
         .routes(routes!(http_move))
         .routes(routes!(http_exec))
+        .routes(routes!(http_shell))
         .routes(routes!(http_parse_plugin).layer(DefaultBodyLimit::max(plugins::MAX_ARCHIVE_BYTES)))
 }
 
@@ -401,6 +402,22 @@ async fn http_exec(Json(params): Json<ExecParams>) -> Result<Json<ExecResult>, E
     Ok(Json(process::exec(&params).await?))
 }
 
+/// `POST /process/shell` — the same operation as the MCP `shell` tool.
+#[utoipa::path(
+    post,
+    path = "/process/shell",
+    tag = "process",
+    request_body = ShellParams,
+    responses(
+        (status = OK, description = "The script's exit status and captured output.", body = ExecResult),
+        (status = BAD_REQUEST, description = "The script, shell, working directory or limit was invalid.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The script output could not be captured.", body = String)
+    )
+)]
+async fn http_shell(Json(params): Json<ShellParams>) -> Result<Json<ExecResult>, ExecError> {
+    Ok(Json(process::shell(&params).await?))
+}
+
 /// `POST /plugins` — parse an uploaded Agent Plugins `.tar.gz`.
 #[utoipa::path(
     post,
@@ -546,6 +563,15 @@ impl SandboxServer {
         let result = process::exec(&params).await.map_err(McpError::from)?;
         structured(&result)
     }
+
+    #[tool(description = "Run a shell script and capture its exit status and output")]
+    async fn shell(
+        &self,
+        Parameters(params): Parameters<ShellParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = process::shell(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
 }
 
 /// Wrap a typed result as `structuredContent`.
@@ -587,6 +613,7 @@ mod tests {
             "/fs/copy",
             "/fs/move",
             "/process/exec",
+            "/process/shell",
             "/plugins",
         ] {
             assert!(
@@ -630,6 +657,7 @@ mod tests {
             "MoveResult",
             "ExecParams",
             "ExecResult",
+            "ShellParams",
             "PluginParseResult",
             "PluginRejection",
             "PluginManifest",

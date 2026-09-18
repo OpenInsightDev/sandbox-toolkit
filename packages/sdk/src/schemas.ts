@@ -20,6 +20,7 @@ import type { RemoveParams } from "./generated/RemoveParams.ts";
 import type { RemoveResult } from "./generated/RemoveResult.ts";
 import type { Resource } from "./generated/Resource.ts";
 import type { ResourceKind } from "./generated/ResourceKind.ts";
+import type { ShellParams } from "./generated/ShellParams.ts";
 import type { StatParams } from "./generated/StatParams.ts";
 import type { StatResult } from "./generated/StatResult.ts";
 import type { TextLine } from "./generated/TextLine.ts";
@@ -127,6 +128,7 @@ export type {
   RemoveResult,
   Resource,
   ResourceKind,
+  ShellParams,
   StatParams,
   StatResult,
   TextLine,

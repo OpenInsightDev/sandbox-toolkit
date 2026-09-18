@@ -102,9 +102,12 @@ impl ExecError {
         match self {
             // A command or working directory that cannot be started is a bad
             // request, not a server fault.
-            Self::EmptyCommand | Self::RelativeCwd(_) | Self::ZeroLimit | Self::Spawn { .. } => {
-                Kind::Invalid
-            }
+            Self::EmptyCommand
+            | Self::EmptyScript
+            | Self::EmptyShell
+            | Self::RelativeCwd(_)
+            | Self::ZeroLimit
+            | Self::Spawn { .. } => Kind::Invalid,
             Self::Io(_) => Kind::Internal,
         }
     }

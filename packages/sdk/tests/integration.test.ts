@@ -56,12 +56,12 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
   });
 
   it("describes a bundled tool and rejects an unknown one", async () => {
-    const described = await run(withClient((client) => client.describeTool({ name: "rg" })));
+    const described = await run(withClient((client) => client.describeTool("rg")));
     expect(described.name).toBe("rg");
     expect(described.path).toContain("rg");
 
     const error = await runError(
-      withClient((client) => client.describeTool({ name: "definitely-not-a-tool" })),
+      withClient((client) => client.describeTool("definitely-not-a-tool")),
     );
     expect(error.reason._tag).toBe("NotFoundError");
   });
@@ -73,7 +73,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
 
     try {
       const result = await run(
-        withClient((client) => client.readFile({ path, offset: 1, limit: 2 })),
+        withClient((client) => client.readFile(path, { offset: 1, limit: 2 })),
       );
 
       expect(result.path).toBe(path);
@@ -88,7 +88,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
       if (nextOffset === undefined) throw new Error("expected a follow-up offset");
 
       const last = await run(
-        withClient((client) => client.readFile({ path, offset: nextOffset, limit: 2 })),
+        withClient((client) => client.readFile(path, { offset: nextOffset, limit: 2 })),
       );
       expect(last.lines).toEqual([{ number: 4, text: "delta" }]);
       expect(last.truncated).toBe(false);
@@ -106,42 +106,34 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
     const nested = join(directory, "nested", "deeper");
 
     try {
-      const written = await run(
-        withClient((client) => client.writeFile({ path: file, contents: "hello" })),
-      );
+      const written = await run(withClient((client) => client.writeFile(file, "hello")));
       expect(written.resource.kind).toBe("file");
       expect(written.resource.name).toBe("note.txt");
 
-      const described = await run(withClient((client) => client.stat({ path: file })));
+      const described = await run(withClient((client) => client.stat(file)));
       expect(described.resource.kind).toBe("file");
       expect(described.resource.size).toBe(5);
 
-      const listing = await run(withClient((client) => client.list({ path: directory })));
+      const listing = await run(withClient((client) => client.list(directory)));
       expect(listing.entries.map((entry) => entry.name)).toContain("note.txt");
 
-      const created = await run(
-        withClient((client) => client.mkdir({ path: nested, recursive: true })),
-      );
+      const created = await run(withClient((client) => client.mkdir(nested, { recursive: true })));
       expect(created.resource.kind).toBe("directory");
 
-      const copied = await run(
-        withClient((client) => client.copy({ source: file, destination: duplicate })),
-      );
+      const copied = await run(withClient((client) => client.copy(file, duplicate)));
       expect(copied.resource.name).toBe("copy.txt");
 
-      const relocated = await run(
-        withClient((client) => client.move({ source: duplicate, destination: moved })),
-      );
+      const relocated = await run(withClient((client) => client.move(duplicate, moved)));
       expect(relocated.resource.name).toBe("moved.txt");
 
-      const removed = await run(withClient((client) => client.remove({ path: moved })));
+      const removed = await run(withClient((client) => client.remove(moved)));
       expect(removed.path).toBe(moved);
 
-      const missing = await runError(withClient((client) => client.stat({ path: moved })));
+      const missing = await runError(withClient((client) => client.stat(moved)));
       expect(missing.reason._tag).toBe("NotFoundError");
 
       const removedTree = await run(
-        withClient((client) => client.remove({ path: join(directory, "nested"), recursive: true })),
+        withClient((client) => client.remove(join(directory, "nested"), { recursive: true })),
       );
       expect(removedTree.path).toBe(join(directory, "nested"));
     } finally {
@@ -150,9 +142,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
   });
 
   it("runs a command and captures its output", async () => {
-    const result = await run(
-      withClient((client) => client.exec({ command: "printf", args: ["hello"] })),
-    );
+    const result = await run(withClient((client) => client.exec("printf", { args: ["hello"] })));
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("hello");
@@ -164,8 +154,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
   it("runs with a working directory and extra environment", async () => {
     const result = await run(
       withClient((client) =>
-        client.exec({
-          command: "sh",
+        client.exec("sh", {
           args: ["-c", 'printf %s "$SANDBOX_EXEC_TEST"'],
           cwd: tmpdir(),
           env: { SANDBOX_EXEC_TEST: "live" },
@@ -176,11 +165,34 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
     expect(result.stdout).toBe("live");
   });
 
-  it("spills output larger than the limit to a file", async () => {
+  it("runs a shell script and captures its output", async () => {
     const result = await run(
       withClient((client) =>
-        client.exec({ command: "printf", args: ["%s", "x".repeat(4096)], limit: 16 }),
+        client.shell('printf %s "$SANDBOX_SHELL_TEST"', {
+          cwd: tmpdir(),
+          env: { SANDBOX_SHELL_TEST: "live" },
+        }),
       ),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("live");
+    expect(result.stderr).toBe("");
+    expect(result.truncated).toBe(false);
+    expect(result.outputPath).toBeUndefined();
+  });
+
+  it("runs a shell script with a custom shell", async () => {
+    const result = await run(
+      withClient((client) => client.shell('printf %s "$0"', { shell: "/bin/sh" })),
+    );
+
+    expect(result.stdout).toBe("/bin/sh");
+  });
+
+  it("spills output larger than the limit to a file", async () => {
+    const result = await run(
+      withClient((client) => client.exec("printf", { args: ["%s", "x".repeat(4096)], limit: 16 })),
     );
 
     expect(result.truncated).toBe(true);
@@ -192,7 +204,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
     }
 
     try {
-      const spilled = await run(withClient((client) => client.readFile({ path: outputPath })));
+      const spilled = await run(withClient((client) => client.readFile(outputPath)));
       expect(spilled.lines.map((line) => line.text).join("")).toBe("x".repeat(4096));
     } finally {
       await rm(outputPath, { force: true });
@@ -200,7 +212,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
   });
 
   it("rejects a relative path with a typed error", async () => {
-    const error = await runError(withClient((client) => client.readFile({ path: "Cargo.toml" })));
+    const error = await runError(withClient((client) => client.readFile("Cargo.toml")));
 
     expect(error.reason._tag).toBe("InvalidRequestError");
     expect(error.reason.message).toBe("path must be absolute: Cargo.toml");
@@ -208,9 +220,7 @@ describe.skipIf(baseUrl === undefined)("SandboxToolkit (live server)", () => {
 
   it("reports a missing file as not found", async () => {
     const error = await runError(
-      withClient((client) =>
-        client.readFile({ path: "/tmp/definitely-not-here-sandbox-toolkit.txt" }),
-      ),
+      withClient((client) => client.readFile("/tmp/definitely-not-here-sandbox-toolkit.txt")),
     );
 
     expect(error.reason._tag).toBe("NotFoundError");

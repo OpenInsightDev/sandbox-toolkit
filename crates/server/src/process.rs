@@ -1,6 +1,8 @@
-//! `process/exec` — the implementation shared by the HTTP and MCP adapters.
+//! `process/exec` and `process/shell` — the implementation shared by the HTTP
+//! and MCP adapters.
 
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     io,
     path::PathBuf,
@@ -13,7 +15,7 @@ use thiserror::Error;
 use tokio::{io::AsyncWriteExt, process::Command};
 
 use crate::{
-    model::{DEFAULT_MAX_OUTPUT, ExecParams, ExecResult},
+    model::{DEFAULT_MAX_OUTPUT, DEFAULT_SHELL, ExecParams, ExecResult, ShellParams},
     tools,
 };
 
@@ -23,6 +25,12 @@ pub enum ExecError {
     /// `command` was empty or only whitespace.
     #[error("command must not be empty")]
     EmptyCommand,
+    /// `script` was empty or only whitespace.
+    #[error("script must not be empty")]
+    EmptyScript,
+    /// `shell` was present but empty or only whitespace.
+    #[error("shell must not be empty")]
+    EmptyShell,
     /// `cwd` was present but not absolute.
     #[error("cwd must be absolute: {}", .0.display())]
     RelativeCwd(PathBuf),
@@ -53,38 +61,12 @@ pub async fn exec(params: &ExecParams) -> Result<ExecResult, ExecError> {
         return Err(ExecError::EmptyCommand);
     }
 
-    if let Some(cwd) = &params.cwd {
-        let path = PathBuf::from(cwd);
-        if !path.is_absolute() {
-            return Err(ExecError::RelativeCwd(path));
-        }
-    }
-
-    let limit = params.limit.unwrap_or(DEFAULT_MAX_OUTPUT);
-    if limit == 0 {
-        return Err(ExecError::ZeroLimit);
-    }
+    let cwd = validated_cwd(params.cwd.as_deref())?;
+    let limit = validated_limit(params.limit)?;
 
     let mut command = Command::new(&params.command);
-    command
-        .args(params.args.as_deref().unwrap_or_default())
-        .stdin(Stdio::null())
-        // Do not leave an orphan running when the request is cancelled.
-        .kill_on_drop(true);
-    if let Some(cwd) = &params.cwd {
-        command.current_dir(cwd);
-    }
-    if let Some(env) = &params.env {
-        command.envs(env);
-    }
-
-    let inherited_path = params
-        .env
-        .as_ref()
-        .and_then(|env| env.get("PATH"))
-        .map(OsString::from)
-        .or_else(|| std::env::var_os("PATH"));
-    command.env("PATH", tools::search_path(inherited_path.as_deref()));
+    command.args(params.args.as_deref().unwrap_or_default());
+    configure(&mut command, cwd, params.env.as_ref());
 
     let output = command.output().await.map_err(|source| ExecError::Spawn {
         command: params.command.clone(),
@@ -92,6 +74,77 @@ pub async fn exec(params: &ExecParams) -> Result<ExecResult, ExecError> {
     })?;
 
     summarize(output.stdout, output.stderr, output.status.code(), limit).await
+}
+
+/// Run a shell script to completion and capture its output.
+///
+/// The script is passed as a single string to `shell` via `-c`. As with
+/// [`exec`], at most `limit` bytes are returned inline and anything larger is
+/// written to a temporary file whose path is returned as `output_path`.
+pub async fn shell(params: &ShellParams) -> Result<ExecResult, ExecError> {
+    if params.script.trim().is_empty() {
+        return Err(ExecError::EmptyScript);
+    }
+
+    let shell = params.shell.as_deref().unwrap_or(DEFAULT_SHELL);
+    if shell.trim().is_empty() {
+        return Err(ExecError::EmptyShell);
+    }
+
+    let cwd = validated_cwd(params.cwd.as_deref())?;
+    let limit = validated_limit(params.limit)?;
+
+    let mut command = Command::new(shell);
+    command.arg("-c").arg(&params.script);
+    configure(&mut command, cwd, params.env.as_ref());
+
+    let output = command.output().await.map_err(|source| ExecError::Spawn {
+        command: shell.to_string(),
+        source,
+    })?;
+
+    summarize(output.stdout, output.stderr, output.status.code(), limit).await
+}
+
+/// Validate `cwd`, returning the borrowed value so callers can reuse it.
+fn validated_cwd(cwd: Option<&str>) -> Result<Option<&str>, ExecError> {
+    if let Some(cwd) = cwd {
+        let path = PathBuf::from(cwd);
+        if !path.is_absolute() {
+            return Err(ExecError::RelativeCwd(path));
+        }
+    }
+    Ok(cwd)
+}
+
+/// Resolve `limit`, defaulting to [`DEFAULT_MAX_OUTPUT`].
+fn validated_limit(limit: Option<usize>) -> Result<usize, ExecError> {
+    let limit = limit.unwrap_or(DEFAULT_MAX_OUTPUT);
+    if limit == 0 {
+        return Err(ExecError::ZeroLimit);
+    }
+    Ok(limit)
+}
+
+/// Apply the I/O, working directory, environment and `PATH` shared by every
+/// spawned command.
+fn configure(command: &mut Command, cwd: Option<&str>, env: Option<&BTreeMap<String, String>>) {
+    command
+        .stdin(Stdio::null())
+        // Do not leave an orphan running when the request is cancelled.
+        .kill_on_drop(true);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    if let Some(env) = env {
+        command.envs(env);
+    }
+
+    let inherited_path = env
+        .and_then(|env| env.get("PATH"))
+        .map(OsString::from)
+        .or_else(|| std::env::var_os("PATH"));
+    command.env("PATH", tools::search_path(inherited_path.as_deref()));
 }
 
 /// Build the result, keeping at most `limit` output bytes inline and spilling
@@ -323,6 +376,132 @@ mod tests {
         let error = exec(&params("definitely-not-a-real-command"))
             .await
             .unwrap_err();
+
+        assert!(matches!(error, ExecError::Spawn { .. }));
+    }
+
+    fn shell_params(script: &str) -> ShellParams {
+        ShellParams {
+            script: script.to_string(),
+            cwd: None,
+            env: None,
+            shell: None,
+            limit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn shell_runs_a_script_and_captures_output() {
+        let result = shell(&shell_params("printf hello")).await.unwrap();
+
+        assert_eq!(result.stdout, "hello");
+        assert_eq!(result.stderr, "");
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!result.truncated);
+        assert_eq!(result.output_path, None);
+    }
+
+    #[tokio::test]
+    async fn shell_defaults_to_sh() {
+        let result = shell(&shell_params("printf %s \"$0\"")).await.unwrap();
+
+        assert_eq!(result.stdout, DEFAULT_SHELL);
+    }
+
+    #[tokio::test]
+    async fn shell_honors_a_custom_shell() {
+        let mut params = shell_params("printf %s \"$0\"");
+        params.shell = Some("/bin/sh".to_string());
+
+        let result = shell(&params).await.unwrap();
+
+        assert_eq!(result.stdout, "/bin/sh");
+    }
+
+    #[tokio::test]
+    async fn shell_captures_stderr_and_a_failing_exit_code() {
+        let result = shell(&shell_params("printf oops >&2; exit 3"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.stdout, "");
+        assert_eq!(result.stderr, "oops");
+        assert_eq!(result.exit_code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn shell_applies_cwd_and_env() {
+        let mut params = shell_params("printf %s \"$SANDBOX_SHELL_TEST\"");
+        params.cwd = Some(std::env::temp_dir().to_string_lossy().into_owned());
+        params.env = Some(std::collections::BTreeMap::from([(
+            "SANDBOX_SHELL_TEST".to_string(),
+            "from-env".to_string(),
+        )]));
+
+        let result = shell(&params).await.unwrap();
+
+        assert_eq!(result.stdout, "from-env");
+    }
+
+    #[tokio::test]
+    async fn shell_output_over_limit_is_written_to_a_file() {
+        let mut params = shell_params("printf %s \"xxxxxxxxxx\"");
+        params.limit = Some(4);
+
+        let result = shell(&params).await.unwrap();
+
+        assert!(result.truncated);
+        assert_eq!(result.stdout, "xxxx");
+
+        let path = result.output_path.expect("a truncated result has a file");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "x".repeat(10));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shell_rejects_an_empty_script() {
+        let error = shell(&shell_params("  ")).await.unwrap_err();
+
+        assert!(matches!(error, ExecError::EmptyScript));
+    }
+
+    #[tokio::test]
+    async fn shell_rejects_an_empty_shell() {
+        let mut params = shell_params("printf hello");
+        params.shell = Some("  ".to_string());
+
+        let error = shell(&params).await.unwrap_err();
+
+        assert!(matches!(error, ExecError::EmptyShell));
+    }
+
+    #[tokio::test]
+    async fn shell_rejects_a_relative_cwd() {
+        let mut params = shell_params("printf hello");
+        params.cwd = Some("relative/dir".to_string());
+
+        let error = shell(&params).await.unwrap_err();
+
+        assert!(matches!(error, ExecError::RelativeCwd(_)));
+    }
+
+    #[tokio::test]
+    async fn shell_rejects_a_zero_limit() {
+        let mut params = shell_params("printf hello");
+        params.limit = Some(0);
+
+        let error = shell(&params).await.unwrap_err();
+
+        assert!(matches!(error, ExecError::ZeroLimit));
+    }
+
+    #[tokio::test]
+    async fn shell_reports_a_missing_shell_as_a_spawn_error() {
+        let mut params = shell_params("printf hello");
+        params.shell = Some("definitely-not-a-real-shell".to_string());
+
+        let error = shell(&params).await.unwrap_err();
 
         assert!(matches!(error, ExecError::Spawn { .. }));
     }

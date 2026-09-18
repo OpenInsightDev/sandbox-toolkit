@@ -100,7 +100,7 @@ pub struct ExecParams {
     pub limit: Option<usize>,
 }
 
-/// Result of the `process/exec` operation.
+/// Result of the `process/exec` and `process/shell` operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(crate = "rmcp::schemars")]
@@ -118,6 +118,36 @@ pub struct ExecResult {
     /// followed by standard error), present only when `truncated` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_path: Option<String>,
+}
+
+/// Shell used by `process/shell` when `shell` is omitted.
+pub const DEFAULT_SHELL: &str = "sh";
+
+/// Parameters for the `process/shell` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct ShellParams {
+    /// Script to run as a single string, interpreted by `shell`.
+    pub script: String,
+    /// Absolute working directory for the script. Defaults to the server's
+    /// working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment variables added on top of the server's environment,
+    /// overriding it on conflict. Defaults to none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, String>>,
+    /// Shell executable that interprets `script`, invoked as `shell -c script`.
+    /// Defaults to [`DEFAULT_SHELL`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// Maximum number of output bytes returned inline. Defaults to
+    /// [`DEFAULT_MAX_OUTPUT`]; larger output is written to a temporary file and
+    /// only its path is returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
 }
 
 /// A single line of a text file.
@@ -538,6 +568,17 @@ mod tests {
         assert_eq!(
             schema["properties"]["args"]["type"],
             json!(["array", "null"])
+        );
+        assert_eq!(schema["properties"]["limit"]["minimum"], 0);
+    }
+
+    #[test]
+    fn shell_params_require_only_the_script() {
+        let schema = serde_json::to_value(schema_for!(ShellParams)).unwrap();
+        assert_eq!(schema["required"], json!(["script"]));
+        assert_eq!(
+            schema["properties"]["shell"]["type"],
+            json!(["string", "null"])
         );
         assert_eq!(schema["properties"]["limit"]["minimum"], 0);
     }

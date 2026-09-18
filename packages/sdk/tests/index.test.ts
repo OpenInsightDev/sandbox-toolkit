@@ -140,7 +140,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ name: "rg", path: "/tmp/tools/rg" }));
 
     const result = await run(
-      withClient((client) => client.describeTool({ name: "rg" })),
+      withClient((client) => client.describeTool("rg")),
       stub,
     );
 
@@ -165,7 +165,7 @@ describe("SandboxToolkit", () => {
     );
 
     const result = await run(
-      withClient((client) => client.readFile({ path: "/tmp/x.txt", offset: 1, limit: 2 })),
+      withClient((client) => client.readFile("/tmp/x.txt", { offset: 1, limit: 2 })),
       stub,
     );
 
@@ -191,7 +191,7 @@ describe("SandboxToolkit", () => {
     );
 
     const result = await run(
-      withClient((client) => client.readFile({ path: "/tmp/x.txt" })),
+      withClient((client) => client.readFile("/tmp/x.txt")),
       stub,
     );
 
@@ -204,7 +204,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ resource: entry }));
 
     const result = await run(
-      withClient((client) => client.stat({ path: "/tmp/x.txt" })),
+      withClient((client) => client.stat("/tmp/x.txt")),
       stub,
     );
 
@@ -232,7 +232,7 @@ describe("SandboxToolkit", () => {
     );
 
     const result = await run(
-      withClient((client) => client.stat({ path: "/tmp/link" })),
+      withClient((client) => client.stat("/tmp/link")),
       stub,
     );
 
@@ -248,7 +248,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ path: "/tmp", entries }));
 
     const result = await run(
-      withClient((client) => client.list({ path: "/tmp" })),
+      withClient((client) => client.list("/tmp")),
       stub,
     );
 
@@ -262,7 +262,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ resource: entry }));
 
     const result = await run(
-      withClient((client) => client.mkdir({ path: "/tmp/sub", recursive: true })),
+      withClient((client) => client.mkdir("/tmp/sub", { recursive: true })),
       stub,
     );
 
@@ -276,9 +276,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ resource: entry }));
 
     const result = await run(
-      withClient((client) =>
-        client.writeFile({ path: "/tmp/x.txt", contents: "hello", append: true }),
-      ),
+      withClient((client) => client.writeFile("/tmp/x.txt", "hello", { append: true })),
       stub,
     );
 
@@ -295,7 +293,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ path: "/tmp/x.txt" }));
 
     const result = await run(
-      withClient((client) => client.remove({ path: "/tmp/x.txt" })),
+      withClient((client) => client.remove("/tmp/x.txt")),
       stub,
     );
 
@@ -309,13 +307,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ resource: entry }));
 
     const result = await run(
-      withClient((client) =>
-        client.copy({
-          source: "/tmp/x.txt",
-          destination: "/tmp/copy.txt",
-          overwrite: true,
-        }),
-      ),
+      withClient((client) => client.copy("/tmp/x.txt", "/tmp/copy.txt", { overwrite: true })),
       stub,
     );
 
@@ -333,7 +325,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => json({ resource: entry }));
 
     const result = await run(
-      withClient((client) => client.move({ source: "/tmp/x.txt", destination: "/tmp/moved.txt" })),
+      withClient((client) => client.move("/tmp/x.txt", "/tmp/moved.txt")),
       stub,
     );
 
@@ -352,12 +344,7 @@ describe("SandboxToolkit", () => {
 
     const result = await run(
       withClient((client) =>
-        client.exec({
-          command: "printf",
-          args: ["hello"],
-          cwd: "/tmp",
-          env: { FOO: "bar" },
-        }),
+        client.exec("printf", { args: ["hello"], cwd: "/tmp", env: { FOO: "bar" } }),
       ),
       stub,
     );
@@ -389,7 +376,7 @@ describe("SandboxToolkit", () => {
     );
 
     const result = await run(
-      withClient((client) => client.exec({ command: "yes", limit: 4 })),
+      withClient((client) => client.exec("yes", { limit: 4 })),
       stub,
     );
 
@@ -397,11 +384,41 @@ describe("SandboxToolkit", () => {
     expect(result.outputPath).toBe("/tmp/sandbox-toolkit-exec.log");
   });
 
+  it("runs a shell script with a JSON request body", async () => {
+    const stub = stubFetch(() =>
+      json({ exitCode: 0, stdout: "hello", stderr: "", truncated: false }),
+    );
+
+    const result = await run(
+      withClient((client) =>
+        client.shell("printf hello", {
+          cwd: "/tmp",
+          env: { FOO: "bar" },
+          shell: "/bin/bash",
+        }),
+      ),
+      stub,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("hello");
+    expect(result.truncated).toBe(false);
+    expect(stub.calls[0].method).toBe("POST");
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/process/shell`);
+    expect(stub.calls[0].contentType).toBe("application/json");
+    expect(sentBody(stub.calls[0])).toEqual({
+      script: "printf hello",
+      cwd: "/tmp",
+      env: { FOO: "bar" },
+      shell: "/bin/bash",
+    });
+  });
+
   it("maps 400 to InvalidRequestError", async () => {
     const stub = stubFetch(() => text("path must be absolute: Cargo.toml", 400));
 
     const error = await runError(
-      withClient((client) => client.readFile({ path: "Cargo.toml" })),
+      withClient((client) => client.readFile("Cargo.toml")),
       stub,
     );
 
@@ -414,7 +431,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => text("unknown tool: nope", 404));
 
     const error = await runError(
-      withClient((client) => client.describeTool({ name: "nope" })),
+      withClient((client) => client.describeTool("nope")),
       stub,
     );
 
@@ -426,7 +443,7 @@ describe("SandboxToolkit", () => {
     const stub = stubFetch(() => text("failed to read file: boom", 500));
 
     const error = await runError(
-      withClient((client) => client.readFile({ path: "/tmp/x.txt" })),
+      withClient((client) => client.readFile("/tmp/x.txt")),
       stub,
     );
 
