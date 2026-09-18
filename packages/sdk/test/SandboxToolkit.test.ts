@@ -151,6 +151,53 @@ describe("SandboxToolkit", () => {
     expect(sentBody(stub.calls[0])).toEqual({ name: "rg" });
   });
 
+  it("lists agent skills", async () => {
+    const skill = {
+      name: "greet",
+      directory: "greet",
+      path: "/root/.agents/skills/greet",
+      description: "Greets. Use when greeting.",
+      metadata: {},
+    };
+    const stub = stubFetch(() => json({ skills: [skill] }));
+
+    const skills = await run(
+      withClient((client) => client.listSkills),
+      stub,
+    );
+
+    expect(skills).toEqual([skill]);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0].method).toBe("GET");
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/skills`);
+    expect(stub.calls[0].accept).toBe("application/json");
+  });
+
+  it("gets a skill with its instructions", async () => {
+    const skill = {
+      name: "greet",
+      directory: "greet",
+      path: "/root/.agents/skills/greet",
+      description: "Greets.",
+      license: null,
+      metadata: { version: "1" },
+    };
+    const stub = stubFetch(() => json({ skill, content: "Say hi.\n" }));
+
+    const result = await run(
+      withClient((client) => client.getSkill("greet")),
+      stub,
+    );
+
+    expect(result.skill.name).toBe("greet");
+    expect(result.skill.metadata).toEqual({ version: "1" });
+    expect(result.content).toBe("Say hi.\n");
+    expect(stub.calls[0].method).toBe("POST");
+    expect(stub.calls[0].url).toBe(`${BASE_URL}/skills/get`);
+    expect(stub.calls[0].contentType).toBe("application/json");
+    expect(sentBody(stub.calls[0])).toEqual({ name: "greet" });
+  });
+
   it("reads a window of lines", async () => {
     const stub = stubFetch(() =>
       json({

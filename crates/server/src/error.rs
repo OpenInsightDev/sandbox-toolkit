@@ -9,7 +9,7 @@ use axum::{
 };
 use rmcp::ErrorData as McpError;
 
-use crate::{fs::FsError, plugins::PluginError, process::ExecError};
+use crate::{fs::FsError, plugins::PluginError, process::ExecError, skills::SkillsError};
 
 /// A tool name that matches no bundled executable.
 #[derive(Debug, thiserror::Error)]
@@ -133,5 +133,29 @@ impl IntoResponse for PluginError {
             Self::Task(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
+    }
+}
+
+impl SkillsError {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::InvalidName(_) => Kind::Invalid,
+            Self::Unknown(_) => Kind::NotFound,
+            Self::NoHome | Self::ReadDir(..) | Self::ReadFile(..) | Self::Invalid(..) => {
+                Kind::Internal
+            }
+        }
+    }
+}
+
+impl IntoResponse for SkillsError {
+    fn into_response(self) -> Response {
+        (self.kind().status(), self.to_string()).into_response()
+    }
+}
+
+impl From<SkillsError> for McpError {
+    fn from(error: SkillsError) -> Self {
+        error.kind().mcp(error.to_string())
     }
 }

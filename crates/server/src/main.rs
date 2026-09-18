@@ -35,18 +35,21 @@ mod fs;
 mod model;
 mod plugins;
 mod process;
+mod skills;
 mod tools;
 
 use error::UnknownToolError;
 use fs::FsError;
 use model::{
     CopyParams, CopyResult, DescribeToolParams, DescribeToolResult, ExecParams, ExecResult,
-    HealthResult, ListParams, ListResult, ListToolsResult, MkdirParams, MkdirResult, MoveParams,
-    MoveResult, PluginParseResult, ReadFileParams, ReadFileResult, RemoveParams, RemoveResult,
-    ShellParams, StatParams, StatResult, WriteFileParams, WriteFileResult,
+    GetSkillParams, GetSkillResult, HealthResult, ListParams, ListResult, ListSkillsResult,
+    ListToolsResult, MkdirParams, MkdirResult, MoveParams, MoveResult, PluginParseResult,
+    ReadFileParams, ReadFileResult, RemoveParams, RemoveResult, ShellParams, StatParams,
+    StatResult, WriteFileParams, WriteFileResult,
 };
 use plugins::PluginError;
 use process::ExecError;
+use skills::SkillsError;
 use tools::Tool;
 
 /// Path the MCP endpoint is mounted at.
@@ -66,7 +69,8 @@ const OPENAPI_ENDPOINT: &str = "/api-docs/openapi.json";
         (name = "tools", description = "The command-line tools bundled into this server."),
         (name = "filesystem", description = "Read, describe, list, create, write, copy, move and remove files and directories."),
         (name = "process", description = "Run commands and shell scripts and capture their output."),
-        (name = "plugins", description = "Parse uploaded Agent Plugins packages.")
+        (name = "plugins", description = "Parse uploaded Agent Plugins packages."),
+        (name = "skills", description = "List and read the Agent Skills installed on this host.")
     )
 )]
 struct ApiDoc;
@@ -204,6 +208,8 @@ fn openapi_router() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(http_move))
         .routes(routes!(http_exec))
         .routes(routes!(http_shell))
+        .routes(routes!(http_list_skills))
+        .routes(routes!(http_get_skill))
         .routes(routes!(http_parse_plugin).layer(DefaultBodyLimit::max(plugins::MAX_ARCHIVE_BYTES)))
 }
 
@@ -439,6 +445,39 @@ async fn http_parse_plugin(body: Bytes) -> Result<Json<PluginParseResult>, Plugi
     Ok(Json(plugins::parse(body).await?))
 }
 
+/// `GET /skills` — the same data as the MCP `list_skills` tool.
+#[utoipa::path(
+    get,
+    path = "/skills",
+    tag = "skills",
+    responses(
+        (status = OK, description = "Every valid Agent Skill installed on this host, sorted by name.", body = ListSkillsResult),
+        (status = INTERNAL_SERVER_ERROR, description = "The skills directory could not be read.", body = String)
+    )
+)]
+async fn http_list_skills() -> Result<Json<ListSkillsResult>, SkillsError> {
+    Ok(Json(skills::list().await?))
+}
+
+/// `POST /skills/get` — the same data as the MCP `get_skill` tool.
+#[utoipa::path(
+    post,
+    path = "/skills/get",
+    tag = "skills",
+    request_body = GetSkillParams,
+    responses(
+        (status = OK, description = "The skill's metadata and instructions.", body = GetSkillResult),
+        (status = BAD_REQUEST, description = "The name was not a single directory name.", body = String),
+        (status = NOT_FOUND, description = "No skill has that name.", body = String),
+        (status = INTERNAL_SERVER_ERROR, description = "The skill could not be read or is invalid.", body = String)
+    )
+)]
+async fn http_get_skill(
+    Json(params): Json<GetSkillParams>,
+) -> Result<Json<GetSkillResult>, SkillsError> {
+    Ok(Json(skills::get(&params).await?))
+}
+
 /// Minimal request log, safe for MCP's long-lived SSE streams because it never
 /// buffers the body.
 async fn log_requests(request: Request, next: Next) -> Response {
@@ -572,6 +611,21 @@ impl SandboxServer {
         let result = process::shell(&params).await.map_err(McpError::from)?;
         structured(&result)
     }
+
+    #[tool(description = "List the Agent Skills installed on this host")]
+    async fn list_skills(&self) -> Result<CallToolResult, McpError> {
+        let result = skills::list().await.map_err(McpError::from)?;
+        structured(&result)
+    }
+
+    #[tool(description = "Read an Agent Skill's instructions by name")]
+    async fn get_skill(
+        &self,
+        Parameters(params): Parameters<GetSkillParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = skills::get(&params).await.map_err(McpError::from)?;
+        structured(&result)
+    }
 }
 
 /// Wrap a typed result as `structuredContent`.
@@ -614,6 +668,8 @@ mod tests {
             "/fs/move",
             "/process/exec",
             "/process/shell",
+            "/skills",
+            "/skills/get",
             "/plugins",
         ] {
             assert!(
@@ -658,6 +714,10 @@ mod tests {
             "ExecParams",
             "ExecResult",
             "ShellParams",
+            "GetSkillParams",
+            "Skill",
+            "ListSkillsResult",
+            "GetSkillResult",
             "PluginParseResult",
             "PluginRejection",
             "PluginManifest",

@@ -4,10 +4,12 @@ import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { ApiClient } from "./internal/apiClient.ts";
 import { makeFileSystem, type FileSystemService } from "./FileSystem.ts";
 import { makeProcess, type ProcessService } from "./Process.ts";
+import { makeSkills, type SkillsService } from "./Skills.ts";
 import { makeSystem, type SystemService } from "./System.ts";
 import { makeTools, type ToolsService } from "./Tools.ts";
 
-export interface Service extends SystemService, ToolsService, FileSystemService, ProcessService {}
+export interface Service
+  extends SystemService, ToolsService, FileSystemService, ProcessService, SkillsService {}
 
 export class SandboxToolkit extends Context.Service<SandboxToolkit, Service>()(
   "@sandbox-toolkit/sdk/SandboxToolkit",
@@ -24,6 +26,7 @@ export class SandboxToolkit extends Context.Service<SandboxToolkit, Service>()(
           ...makeTools(transport),
           ...makeFileSystem(transport),
           ...makeProcess(transport),
+          ...makeSkills(transport),
         });
       }),
     ).pipe(Layer.provide(ApiClient.layerNoDeps(options)));

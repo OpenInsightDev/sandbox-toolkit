@@ -6,9 +6,12 @@ import type { DescribeToolParams } from "./generated/DescribeToolParams.ts";
 import type { DescribeToolResult } from "./generated/DescribeToolResult.ts";
 import type { ExecParams } from "./generated/ExecParams.ts";
 import type { ExecResult } from "./generated/ExecResult.ts";
+import type { GetSkillParams } from "./generated/GetSkillParams.ts";
+import type { GetSkillResult } from "./generated/GetSkillResult.ts";
 import type { HealthResult } from "./generated/HealthResult.ts";
 import type { ListParams } from "./generated/ListParams.ts";
 import type { ListResult } from "./generated/ListResult.ts";
+import type { ListSkillsResult } from "./generated/ListSkillsResult.ts";
 import type { ListToolsResult } from "./generated/ListToolsResult.ts";
 import type { MkdirParams } from "./generated/MkdirParams.ts";
 import type { MkdirResult } from "./generated/MkdirResult.ts";
@@ -21,6 +24,7 @@ import type { RemoveResult } from "./generated/RemoveResult.ts";
 import type { Resource } from "./generated/Resource.ts";
 import type { ResourceKind } from "./generated/ResourceKind.ts";
 import type { ShellParams } from "./generated/ShellParams.ts";
+import type { Skill } from "./generated/Skill.ts";
 import type { StatParams } from "./generated/StatParams.ts";
 import type { StatResult } from "./generated/StatResult.ts";
 import type { TextLine } from "./generated/TextLine.ts";
@@ -40,6 +44,26 @@ export const DescribeToolResultSchema = Schema.Struct({
 export const ListToolsResultSchema = Schema.Struct({
   tools: Schema.mutable(Schema.Array(DescribeToolResultSchema)),
 }) satisfies Schema.Schema<ListToolsResult>;
+
+export const SkillSchema = Schema.Struct({
+  name: Schema.String,
+  directory: Schema.String,
+  path: Schema.String,
+  description: Schema.String,
+  license: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compatibility: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  allowedTools: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  metadata: Schema.Record(Schema.String, Schema.String),
+}) satisfies Schema.Schema<Skill>;
+
+export const ListSkillsResultSchema = Schema.Struct({
+  skills: Schema.mutable(Schema.Array(SkillSchema)),
+}) satisfies Schema.Schema<ListSkillsResult>;
+
+export const GetSkillResultSchema = Schema.Struct({
+  skill: SkillSchema,
+  content: Schema.String,
+}) satisfies Schema.Schema<GetSkillResult>;
 
 export const TextLineSchema = Schema.Struct({
   number: Schema.Number,
@@ -114,9 +138,12 @@ export type {
   DescribeToolResult,
   ExecParams,
   ExecResult,
+  GetSkillParams,
+  GetSkillResult,
   HealthResult,
   ListParams,
   ListResult,
+  ListSkillsResult,
   ListToolsResult,
   MkdirParams,
   MkdirResult,
@@ -129,6 +156,7 @@ export type {
   Resource,
   ResourceKind,
   ShellParams,
+  Skill,
   StatParams,
   StatResult,
   TextLine,

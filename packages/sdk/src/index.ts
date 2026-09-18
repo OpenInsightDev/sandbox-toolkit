@@ -26,6 +26,8 @@ export { FileSystem } from "./FileSystem.ts";
 export type { FileSystemService } from "./FileSystem.ts";
 export { Process } from "./Process.ts";
 export type { ProcessService } from "./Process.ts";
+export { Skills } from "./Skills.ts";
+export type { SkillsService } from "./Skills.ts";
 export { System } from "./System.ts";
 export type { SystemService } from "./System.ts";
 export { Tools } from "./Tools.ts";
@@ -38,9 +40,12 @@ export type {
   DescribeToolResult,
   ExecParams,
   ExecResult,
+  GetSkillParams,
+  GetSkillResult,
   HealthResult,
   ListParams,
   ListResult,
+  ListSkillsResult,
   ListToolsResult,
   MkdirParams,
   MkdirResult,
@@ -53,6 +58,7 @@ export type {
   Resource,
   ResourceKind,
   ShellParams,
+  Skill,
   StatParams,
   StatResult,
   TextLine,

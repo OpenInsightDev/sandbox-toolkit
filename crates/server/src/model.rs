@@ -521,6 +521,65 @@ pub struct PluginDiagnostic {
     pub message: String,
 }
 
+/// Parameters for the `skills/get` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct GetSkillParams {
+    /// Name of an Agent Skill, matching its directory and `SKILL.md` frontmatter.
+    pub name: String,
+}
+
+/// One Agent Skill discovered under the skills directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct Skill {
+    /// Skill name: 1–64 lowercase alphanumeric characters and hyphens.
+    pub name: String,
+    /// Name of the skill's directory, always equal to `name`.
+    pub directory: String,
+    /// Absolute path of the skill directory.
+    pub path: String,
+    /// What the skill does and when to use it.
+    pub description: String,
+    /// License name or reference to a bundled license file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// Environment requirements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    /// Space-separated pre-approved tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<String>,
+    /// Arbitrary string-to-string metadata.
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// Result of the `skills/list` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct ListSkillsResult {
+    /// Every valid skill under the skills directory, sorted by name.
+    pub skills: Vec<Skill>,
+}
+
+/// Result of the `skills/get` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(crate = "rmcp::schemars")]
+#[ts(export)]
+pub struct GetSkillResult {
+    /// Metadata for the requested skill.
+    pub skill: Skill,
+    /// The skill's instructions: the Markdown following its frontmatter.
+    pub content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use rmcp::schemars::schema_for;
