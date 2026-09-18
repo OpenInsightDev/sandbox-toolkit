@@ -1,16 +1,16 @@
 import { Context, Effect, Layer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
-import { ApiClient } from "./services/api-client.ts";
-import { makeFileSystem, type FileSystemService } from "./services/filesystem.ts";
-import { makeProcess, type ProcessService } from "./services/process.ts";
-import { makeSystem, type SystemService } from "./services/system.ts";
-import { makeTools, type ToolsService } from "./services/tools.ts";
+import { ApiClient } from "./internal/apiClient.ts";
+import { makeFileSystem, type FileSystemService } from "./FileSystem.ts";
+import { makeProcess, type ProcessService } from "./Process.ts";
+import { makeSystem, type SystemService } from "./System.ts";
+import { makeTools, type ToolsService } from "./Tools.ts";
 
 export interface Service extends SystemService, ToolsService, FileSystemService, ProcessService {}
 
 export class SandboxToolkit extends Context.Service<SandboxToolkit, Service>()(
-  "@sandbox-toolkit/sdk/client/SandboxToolkit",
+  "@sandbox-toolkit/sdk/SandboxToolkit",
 ) {
   static readonly layerNoDeps = (options: {
     readonly baseUrl: string;

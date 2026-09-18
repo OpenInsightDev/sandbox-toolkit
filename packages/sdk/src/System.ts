@@ -6,9 +6,9 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import type { SandboxToolkitError } from "../errors.ts";
-import { HealthSchema, type HealthResult } from "../schemas.ts";
-import { ApiClient, type Transport } from "./api-client.ts";
+import type { SandboxToolkitError } from "./SandboxToolkitError.ts";
+import { HealthSchema, type HealthResult } from "./Schemas.ts";
+import { ApiClient, type Transport } from "./internal/apiClient.ts";
 
 export interface SystemService {
   readonly health: Effect.Effect<HealthResult, SandboxToolkitError>;
@@ -21,7 +21,7 @@ export const makeSystem = (transport: Transport): SystemService => ({
 });
 
 export class System extends Context.Service<System, SystemService>()(
-  "@sandbox-toolkit/sdk/services/System",
+  "@sandbox-toolkit/sdk/System",
 ) {
   static readonly layerNoDeps = (options: {
     readonly baseUrl: string;

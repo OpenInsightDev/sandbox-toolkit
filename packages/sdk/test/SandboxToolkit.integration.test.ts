@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { Effect, type Layer } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { SandboxToolkit } from "../src/client.ts";
-import type { SandboxToolkitError } from "../src/errors.ts";
+import { SandboxToolkit } from "../src/SandboxToolkit.ts";
+import type { SandboxToolkitError } from "../src/SandboxToolkitError.ts";
 
 /**
  * Skipped unless `SANDBOX_TOOLKIT_BASE_URL` points at a server:

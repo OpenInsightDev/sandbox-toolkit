@@ -6,13 +6,13 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import type { SandboxToolkitError } from "../errors.ts";
+import type { SandboxToolkitError } from "./SandboxToolkitError.ts";
 import {
   DescribeToolResultSchema,
   ListToolsResultSchema,
   type DescribeToolResult,
-} from "../schemas.ts";
-import { ApiClient, type Transport } from "./api-client.ts";
+} from "./Schemas.ts";
+import { ApiClient, type Transport } from "./internal/apiClient.ts";
 
 export interface ToolsService {
   readonly listTools: Effect.Effect<ReadonlyArray<DescribeToolResult>, SandboxToolkitError>;
@@ -38,9 +38,7 @@ export const makeTools = (transport: Transport): ToolsService => ({
       .pipe(Effect.withSpan("SandboxToolkit.describeTool")),
 });
 
-export class Tools extends Context.Service<Tools, ToolsService>()(
-  "@sandbox-toolkit/sdk/services/Tools",
-) {
+export class Tools extends Context.Service<Tools, ToolsService>()("@sandbox-toolkit/sdk/Tools") {
   static readonly layerNoDeps = (options: {
     readonly baseUrl: string;
   }): Layer.Layer<Tools, never, HttpClient.HttpClient> =>

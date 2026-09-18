@@ -12,7 +12,7 @@ import {
   SandboxToolkitError,
   ServerError,
   TransportError,
-} from "../errors.ts";
+} from "../SandboxToolkitError.ts";
 
 export interface Transport {
   readonly execute: <A>(
@@ -74,7 +74,7 @@ const makeTransport = (base: HttpClient.HttpClient, baseUrl: string): Transport 
 };
 
 export class ApiClient extends Context.Service<ApiClient, Transport>()(
-  "@sandbox-toolkit/sdk/services/ApiClient",
+  "@sandbox-toolkit/sdk/internal/ApiClient",
 ) {
   static readonly layerNoDeps = (options: {
     readonly baseUrl: string;

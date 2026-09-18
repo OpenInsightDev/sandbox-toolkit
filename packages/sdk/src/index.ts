@@ -13,23 +13,23 @@
  * ```
  */
 
-export type { Service as SandboxToolkitService } from "./client.ts";
-export { SandboxToolkit } from "./client.ts";
+export type { Service as SandboxToolkitService } from "./SandboxToolkit.ts";
+export { SandboxToolkit } from "./SandboxToolkit.ts";
 export {
   InvalidRequestError,
   NotFoundError,
   SandboxToolkitError,
   ServerError,
   TransportError,
-} from "./errors.ts";
-export { FileSystem } from "./services/filesystem.ts";
-export type { FileSystemService } from "./services/filesystem.ts";
-export { Process } from "./services/process.ts";
-export type { ProcessService } from "./services/process.ts";
-export { System } from "./services/system.ts";
-export type { SystemService } from "./services/system.ts";
-export { Tools } from "./services/tools.ts";
-export type { ToolsService } from "./services/tools.ts";
+} from "./SandboxToolkitError.ts";
+export { FileSystem } from "./FileSystem.ts";
+export type { FileSystemService } from "./FileSystem.ts";
+export { Process } from "./Process.ts";
+export type { ProcessService } from "./Process.ts";
+export { System } from "./System.ts";
+export type { SystemService } from "./System.ts";
+export { Tools } from "./Tools.ts";
+export type { ToolsService } from "./Tools.ts";
 
 export type {
   CopyParams,
@@ -58,4 +58,4 @@ export type {
   TextLine,
   WriteFileParams,
   WriteFileResult,
-} from "./schemas.ts";
+} from "./Schemas.ts";

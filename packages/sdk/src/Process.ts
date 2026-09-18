@@ -6,14 +6,9 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import type { SandboxToolkitError } from "../errors.ts";
-import {
-  ExecResultSchema,
-  type ExecParams,
-  type ExecResult,
-  type ShellParams,
-} from "../schemas.ts";
-import { ApiClient, type Transport } from "./api-client.ts";
+import type { SandboxToolkitError } from "./SandboxToolkitError.ts";
+import { ExecResultSchema, type ExecParams, type ExecResult, type ShellParams } from "./Schemas.ts";
+import { ApiClient, type Transport } from "./internal/apiClient.ts";
 
 export interface ProcessService {
   readonly exec: (
@@ -48,7 +43,7 @@ export const makeProcess = (transport: Transport): ProcessService => ({
 });
 
 export class Process extends Context.Service<Process, ProcessService>()(
-  "@sandbox-toolkit/sdk/services/Process",
+  "@sandbox-toolkit/sdk/Process",
 ) {
   static readonly layerNoDeps = (options: {
     readonly baseUrl: string;

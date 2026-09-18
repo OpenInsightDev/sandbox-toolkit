@@ -2,8 +2,8 @@ import { Effect } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { describe, expect, it } from "vite-plus/test";
 
-import { SandboxToolkit } from "../src/client.ts";
-import type { SandboxToolkitError } from "../src/errors.ts";
+import { SandboxToolkit } from "../src/SandboxToolkit.ts";
+import type { SandboxToolkitError } from "../src/SandboxToolkitError.ts";
 
 const BASE_URL = "http://sandbox.test";
 

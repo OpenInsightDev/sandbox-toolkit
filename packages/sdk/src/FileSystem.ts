@@ -6,7 +6,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
-import type { SandboxToolkitError } from "../errors.ts";
+import type { SandboxToolkitError } from "./SandboxToolkitError.ts";
 import {
   CopyResultSchema,
   ListResultSchema,
@@ -30,8 +30,8 @@ import {
   type StatResult,
   type WriteFileParams,
   type WriteFileResult,
-} from "../schemas.ts";
-import { ApiClient, type Transport } from "./api-client.ts";
+} from "./Schemas.ts";
+import { ApiClient, type Transport } from "./internal/apiClient.ts";
 
 export interface FileSystemService {
   readonly readFile: (
@@ -137,7 +137,7 @@ export const makeFileSystem = (transport: Transport): FileSystemService => ({
 });
 
 export class FileSystem extends Context.Service<FileSystem, FileSystemService>()(
-  "@sandbox-toolkit/sdk/services/FileSystem",
+  "@sandbox-toolkit/sdk/FileSystem",
 ) {
   static readonly layerNoDeps = (options: {
     readonly baseUrl: string;
