@@ -104,6 +104,11 @@ async fn main() -> eyre::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let tools_dir = tools::materialize()
+        .await
+        .wrap_err("failed to materialize the bundled tools")?;
+    tracing::info!(dir = %tools_dir.display(), "materialized the bundled tools");
+
     // Cancelling this token stops every live MCP session.
     let cancellation_token = CancellationToken::new();
     let state = AppState::new();

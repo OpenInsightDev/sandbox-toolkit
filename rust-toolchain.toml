@@ -5,3 +5,4 @@
 # from the workspace root — uses nightly.
 [toolchain]
 channel = "nightly"
+components = ["clippy", "rustfmt"]

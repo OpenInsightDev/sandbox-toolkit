@@ -3,6 +3,7 @@
 //! `bindeps`.
 
 use std::{
+    ffi::{OsStr, OsString},
     io::{self, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
@@ -19,7 +20,6 @@ use thiserror::Error;
 const TOOLS_DIR: &str = "sandbox-toolkit-tools";
 
 /// Why materializing the bundled executables failed.
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum ToolError {
     /// The tools directory could not be created.
@@ -148,9 +148,22 @@ pub fn materialized_dir() -> PathBuf {
     std::env::temp_dir().join(TOOLS_DIR)
 }
 
+/// The `PATH` a spawned command should see: [`materialized_dir`] first, then
+/// `inherited`, so the bundled executables resolve by name alongside whatever
+/// the caller already had on `PATH`.
+pub fn search_path(inherited: Option<&OsStr>) -> OsString {
+    let tools = materialized_dir();
+    match inherited {
+        Some(existing) => {
+            std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(existing)))
+                .unwrap_or_else(|_| existing.to_os_string())
+        }
+        None => tools.into_os_string(),
+    }
+}
+
 /// Inflate every embedded executable into [`materialized_dir`], each written to
 /// a temporary name and atomically renamed into place. Returns that directory.
-#[allow(dead_code)]
 pub async fn materialize() -> Result<PathBuf, ToolError> {
     let dir = materialized_dir();
     tokio::fs::create_dir_all(&dir)

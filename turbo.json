@@ -27,6 +27,9 @@
     "@sandbox-toolkit/sdk#test": {
       "dependsOn": ["sandbox-toolkit-rust#generate"]
     },
+    "@sandbox-toolkit/sdk#lint": {
+      "dependsOn": ["sandbox-toolkit-rust#generate"]
+    },
     "sandbox-toolkit-rust#generate": {
       "command": ["cargo", "test", "--package=sandbox-toolkit", "export_bindings", "--locked"],
       "outputs": ["packages/sdk/src/generated/**"]
@@ -39,7 +42,17 @@
       "command": ["cargo", "test", "--workspace", "--locked", "--features", "tools"]
     },
     "sandbox-toolkit-rust#lint": {
-      "command": ["cargo", "clippy", "--workspace", "--locked", "--features", "tools"]
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--locked",
+        "--features",
+        "tools",
+        "--",
+        "-D",
+        "warnings"
+      ]
     },
     "sandbox-toolkit#build": {
       "command": ["cargo", "build", "--package=sandbox-toolkit", "--locked", "--features", "tools"]

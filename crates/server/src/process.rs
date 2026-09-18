@@ -1,6 +1,7 @@
 //! `process/exec` — the implementation shared by the HTTP and MCP adapters.
 
 use std::{
+    ffi::OsString,
     io,
     path::PathBuf,
     process::Stdio,
@@ -11,7 +12,10 @@ use std::{
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, process::Command};
 
-use crate::model::{DEFAULT_MAX_OUTPUT, ExecParams, ExecResult};
+use crate::{
+    model::{DEFAULT_MAX_OUTPUT, ExecParams, ExecResult},
+    tools,
+};
 
 /// Why running a command failed.
 #[derive(Debug, Error)]
@@ -73,6 +77,14 @@ pub async fn exec(params: &ExecParams) -> Result<ExecResult, ExecError> {
     if let Some(env) = &params.env {
         command.envs(env);
     }
+
+    let inherited_path = params
+        .env
+        .as_ref()
+        .and_then(|env| env.get("PATH"))
+        .map(OsString::from)
+        .or_else(|| std::env::var_os("PATH"));
+    command.env("PATH", tools::search_path(inherited_path.as_deref()));
 
     let output = command.output().await.map_err(|source| ExecError::Spawn {
         command: params.command.clone(),
@@ -208,6 +220,45 @@ mod tests {
         let result = exec(&params).await.unwrap();
 
         assert_eq!(result.stdout, "from-env");
+    }
+
+    #[tokio::test]
+    async fn prepends_the_tools_directory_to_path() {
+        let mut params = params("sh");
+        params.args = Some(vec!["-c".to_string(), "printf %s \"$PATH\"".to_string()]);
+
+        let result = exec(&params).await.unwrap();
+
+        let mut entries = std::env::split_paths(&result.stdout);
+        assert_eq!(
+            entries.next().as_deref(),
+            Some(crate::tools::materialized_dir().as_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn prepends_the_tools_directory_to_a_caller_supplied_path() {
+        let mut params = params("/bin/sh");
+        params.args = Some(vec!["-c".to_string(), "printf %s \"$PATH\"".to_string()]);
+        params.env = Some(std::collections::BTreeMap::from([(
+            "PATH".to_string(),
+            "/custom/bin".to_string(),
+        )]));
+
+        let result = exec(&params).await.unwrap();
+
+        let entries: Vec<_> = std::env::split_paths(&result.stdout)
+            .map(|entry| entry.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                crate::tools::materialized_dir()
+                    .to_string_lossy()
+                    .into_owned(),
+                "/custom/bin".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
