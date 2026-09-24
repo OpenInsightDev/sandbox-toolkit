@@ -166,17 +166,7 @@ export interface FileSystem {
 export const FileSystem: Context.Service<FileSystem, FileSystem> =
   Context.Service("effect/FileSystem");
 
-export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
-  Layer.effect(
-    FileSystem,
-    Effect.gen(function* () {
-      throw new Error("not implemented");
-    }),
-  );
+export const layerForWorkspace = ({ workspace: _workspace }: { workspace: string }) =>
+  Layer.effect(FileSystem, Effect.die(new Error("not implemented")));
 
-export const layer = Layer.effect(
-  FileSystem,
-  Effect.gen(function* () {
-    throw new Error("not implemented");
-  }),
-);
+export const layer = Layer.effect(FileSystem, Effect.die(new Error("not implemented")));

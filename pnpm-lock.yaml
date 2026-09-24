@@ -185,6 +185,9 @@ importers:
         specifier: 4.0.0-rc.117
         version: 4.0.0-rc.117
     devDependencies:
+      '@oxlint/plugins':
+        specifier: 1.79.0
+        version: 1.79.0
       '@types/node':
         specifier: ^26.1.1
         version: 26.6.2

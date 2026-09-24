@@ -64,6 +64,7 @@ const streamResponse = (...chunks: ReadonlyArray<Uint8Array>): Response =>
         for (const chunk of chunks) {
           controller.enqueue(chunk);
         }
+
         controller.close();
       },
     }),
@@ -81,6 +82,7 @@ const layerOf = (workspace: string | undefined, handle: Handler) => {
   const client = Client.layer({ baseUrl }).pipe(
     Layer.provide(Layer.succeed(HttpClient.HttpClient, stub(handle))),
   );
+
   const process =
     workspace === undefined ? Process.layer : Process.layerForWorkspace({ workspace });
 

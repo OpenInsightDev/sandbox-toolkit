@@ -23,6 +23,7 @@ import {
 import { route } from "./internal/prelude.ts";
 
 export { CommandFailed, ProcessEvent, StreamError };
+
 export type { ProcessError };
 
 export interface ProcessResult {
@@ -204,6 +205,7 @@ export const make = Effect.fn("Process.make")(function* (
       const request = HttpClientRequest.post(route(options.workspace, "/shell")).pipe(
         HttpClientRequest.bodyJsonUnsafe(shellRequest(renderShell(strings, values), shellOptions)),
       );
+
       const result = yield* client.json<ExecResult>(request);
 
       return result.stdout;

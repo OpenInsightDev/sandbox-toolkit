@@ -17,12 +17,15 @@ import * as Process from "../src/Process.ts";
  */
 
 const repoRoot = resolve(import.meta.dirname, "..");
+
 const manifest = "crates/sandbox-toolkit/Cargo.toml";
+
 const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbx");
 
 const hasCargo = ((): boolean => {
   try {
     execFileSync("cargo", ["--version"], { stdio: "ignore" });
+
     return true;
   } catch {
     return false;
@@ -40,10 +43,13 @@ const freePort = (): Promise<number> =>
     probe.once("error", fail);
     probe.listen(0, "127.0.0.1", () => {
       const address = probe.address();
+
       if (address === null || typeof address === "string") {
         fail(new Error("failed to reserve a port"));
+
         return;
       }
+
       const { port } = address;
       probe.close(() => done(port));
     });
@@ -74,6 +80,7 @@ const waitForServer = async (port: number): Promise<void> => {
 
 const startServer = async (root: string): Promise<Server> => {
   const port = await freePort();
+
   const child = spawn(
     serverBinary,
     ["--host", "127.0.0.1", "--port", String(port), "--root", root],
@@ -90,6 +97,7 @@ const startServer = async (root: string): Promise<Server> => {
   });
 
   let started = false;
+
   const exited = new Promise<never>((_done, fail) => {
     child.once("exit", (code) => {
       if (started) return;
@@ -195,6 +203,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* process.string({ command: "echo", args: ["hi"] });
       }),
     );
@@ -206,6 +215,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* process.exitCode({ command: "sh", args: ["-c", "exit 7"] });
       }),
     );
@@ -234,6 +244,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* process.string({
           command: "sh",
           args: ["-c", 'printf %s "$SBX_E2E_MARK"'],
@@ -249,6 +260,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         const events = yield* Stream.runCollect(
           process.stream({ command: "sh", args: ["-c", "printf out; printf err 1>&2; sleep 0.4"] }),
         );
@@ -264,6 +276,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         const events = yield* Stream.runCollect(
           process.stream({ command: "sh", args: ["-c", "sleep 0.3; exit 5"] }),
         );
@@ -279,9 +292,11 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const bytes = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         const events = yield* Stream.runCollect(
           process.stream({ command: "sh", args: ["-c", "printf '\\377'; sleep 0.3"] }),
         );
+
         const chunks: Array<Uint8Array> = [];
 
         for (const event of events) {
@@ -299,6 +314,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* Stream.runCollect(
           process.lines({ command: "sh", args: ["-c", "printf 'a\\nbb\\n'"] }),
         );
@@ -312,6 +328,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* process.$`printf %s ${"a"}${"b"}`;
       }),
     );
@@ -338,6 +355,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         const outcome = yield* process.exec({
           command: "sh",
           args: ["-c", "printf slow; sleep 0.8"],
@@ -356,6 +374,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const error = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* Effect.flip(
           process.exitCode({ command: "sbx-e2e-missing-binary", args: [] }),
         );
@@ -370,6 +389,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const error = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* Effect.flip(process.string({ command: "   ", args: [] }));
       }),
     );
@@ -381,6 +401,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const value = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return {
           sub: yield* process.string({ command: "pwd", args: [], options: { cwd: "sub" } }),
           variable: yield* process.string({
@@ -400,6 +421,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
     const error = await run(
       Effect.gen(function* () {
         const process = yield* Process.Process;
+
         return yield* Effect.flip(
           process.string({ command: "pwd", args: [], options: { cwd: "../" } }),
         );

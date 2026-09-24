@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Context, Data, Effect, Layer, Option, Predicate, Schema, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -95,6 +95,7 @@ const decodeError = (
     const decoded = yield* Effect.option(
       HttpClientResponse.schemaBodyJson(errorResponseSchema)(response),
     );
+
     const details = Option.getOrUndefined(decoded)?.error;
 
     return new ApiError({
@@ -108,7 +109,7 @@ const decodeError = (
 const toClientError = (
   error: HttpClientError.HttpClientError,
 ): Effect.Effect<never, ClientError> =>
-  error.reason._tag === "StatusCodeError"
+  Predicate.isTagged("StatusCodeError")(error.reason)
     ? Effect.flatMap(decodeError(error.reason.response), Effect.fail)
     : Effect.fail(transportError(error));
 
@@ -117,6 +118,7 @@ export const make = (
 ): Effect.Effect<Client, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const httpClient = yield* HttpClient.HttpClient;
+
     const client = httpClient.pipe(
       HttpClient.mapRequest(HttpClientRequest.prependUrl(config.baseUrl?.toString() ?? "")),
       HttpClient.filterStatusOk,
@@ -134,6 +136,8 @@ export const make = (
         Effect.gen(function* () {
           const response = yield* execute(request);
 
+          // SAFETY: `A` is the caller's choice of parsed body; the JSON payload is
+          // surfaced unchanged and only callers that own the decode use this method.
           return (yield* mapBodyError(response.json)) as A;
         }),
 

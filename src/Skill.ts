@@ -73,18 +73,8 @@ export const Skill: Context.Service<Skill, Skill> = Context.Service("skill");
  * The skill service over the mount point of a workspace, discovered under its
  * `.agents/skills` directory.
  */
-export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
-  Layer.effect(
-    Skill,
-    Effect.gen(function* () {
-      throw new Error("not implemented");
-    }),
-  );
+export const layerForWorkspace = ({ workspace: _workspace }: { workspace: string }) =>
+  Layer.effect(Skill, Effect.die(new Error("not implemented")));
 
 /** The skill service over the global mount point. */
-export const layer = Layer.effect(
-  Skill,
-  Effect.gen(function* () {
-    throw new Error("not implemented");
-  }),
-);
+export const layer = Layer.effect(Skill, Effect.die(new Error("not implemented")));

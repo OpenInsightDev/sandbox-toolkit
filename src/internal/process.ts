@@ -47,9 +47,7 @@ export const renderShell = (
   );
 
 const shellWord = (value: TemplateExpression): string =>
-  typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-    ? String(value)
-    : value.map((item) => String(item)).join(" ");
+  Array.isArray(value) ? value.map((item) => String(item)).join(" ") : String(value);
 
 export const isTemplateStrings = (
   value: TemplateStringsArray | ShellCommandOptions,
@@ -72,6 +70,7 @@ export const takeLines = (
     const char = text[index];
 
     if (char !== "\n" && char !== "\r") continue;
+
     if (char === "\r" && index + 1 === text.length) break;
 
     lines.push(text.slice(start, index));
@@ -132,7 +131,9 @@ const HEADER_LEN = 5;
 const MAX_PAYLOAD_LEN = 4 * 1024 * 1024;
 
 const STDOUT = 0;
+
 const STDERR = 1;
+
 const ERROR = 2;
 
 const EMPTY = new Uint8Array(0);
@@ -170,16 +171,19 @@ interface DecodeState {
   readonly done: boolean;
 }
 
-type Decoded =
-  | { readonly _tag: "ok"; readonly state: DecodeState; readonly frames: ReadonlyArray<Frame> }
-  | { readonly _tag: "error"; readonly message: string };
+type Decoded = Data.TaggedEnum<{
+  Ok: { readonly state: DecodeState; readonly frames: ReadonlyArray<Frame> };
+  Error: { readonly message: string };
+}>;
+
+const Decoded = Data.taggedEnum<Decoded>();
 
 /** Consumes one chunk, returning the frames it completed and the bytes left over. */
 const decodeChunk = (state: DecodeState, chunk: Uint8Array): Decoded => {
   if (state.done) {
     return chunk.length === 0
-      ? { _tag: "ok", state, frames: [] }
-      : { _tag: "error", message: "frame received after the terminal status frame" };
+      ? Decoded.Ok({ state, frames: [] })
+      : Decoded.Error({ message: "frame received after the terminal status frame" });
   }
 
   let buffer = concat([state.buffer, chunk]);
@@ -190,14 +194,15 @@ const decodeChunk = (state: DecodeState, chunk: Uint8Array): Decoded => {
     const length = ((buffer[1] << 24) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4]) >>> 0;
 
     if (channel !== STDOUT && channel !== STDERR && channel !== ERROR) {
-      return { _tag: "error", message: `unknown channel id: ${channel}` };
+      return Decoded.Error({ message: `unknown channel id: ${channel}` });
     }
+
     if (length > MAX_PAYLOAD_LEN) {
-      return {
-        _tag: "error",
+      return Decoded.Error({
         message: `frame payload of ${length} bytes exceeds the per-frame limit`,
-      };
+      });
     }
+
     if (buffer.length < HEADER_LEN + length) {
       break;
     }
@@ -209,14 +214,14 @@ const decodeChunk = (state: DecodeState, chunk: Uint8Array): Decoded => {
       const status = parseStatus(payload);
 
       if (status === undefined) {
-        return { _tag: "error", message: "status frame payload is not a status" };
+        return Decoded.Error({ message: "status frame payload is not a status" });
       }
 
       frames.push(Frame.Status({ status }));
 
       return buffer.length === 0
-        ? { _tag: "ok", state: { buffer: EMPTY, done: true }, frames }
-        : { _tag: "error", message: "frame received after the terminal status frame" };
+        ? Decoded.Ok({ state: { buffer: EMPTY, done: true }, frames })
+        : Decoded.Error({ message: "frame received after the terminal status frame" });
     }
 
     frames.push(
@@ -224,7 +229,7 @@ const decodeChunk = (state: DecodeState, chunk: Uint8Array): Decoded => {
     );
   }
 
-  return { _tag: "ok", state: { buffer, done: false }, frames };
+  return Decoded.Ok({ state: { buffer, done: false }, frames });
 };
 
 /**
@@ -246,9 +251,11 @@ const decodeFrames = <E>(
             Effect.flatMap(Ref.get(state), (current) => {
               const decoded = decodeChunk(current, chunk);
 
-              return decoded._tag === "error"
-                ? Effect.fail(new StreamError({ message: decoded.message }))
-                : Effect.as(Ref.set(state, decoded.state), [undefined, decoded.frames] as const);
+              return Decoded.$match(decoded, {
+                Error: ({ message }) => Effect.fail(new StreamError({ message })),
+                Ok: ({ state: next, frames }) =>
+                  Effect.as(Ref.set(state, next), [undefined, frames] as const),
+              });
             }),
         ),
         Stream.onEnd(
@@ -295,6 +302,7 @@ const directEvents = (result: ExecResult): Stream.Stream<ProcessEvent, CommandFa
   if (result.stdout !== "") {
     events.push(ProcessEvent.Stdout({ data: textBytes(result.stdout) }));
   }
+
   if (result.stderr !== "") {
     events.push(ProcessEvent.Stderr({ data: textBytes(result.stderr) }));
   }
@@ -310,6 +318,9 @@ const directEvents = (result: ExecResult): Stream.Stream<ProcessEvent, CommandFa
 const isExecStream = (response: HttpClientResponse.HttpClientResponse): boolean =>
   (response.headers["content-type"] ?? "").includes(EXEC_STREAM_CONTENT_TYPE);
 
+// SAFETY: the exec endpoint answers with the shared `ExecResult` envelope, so the
+// decoded JSON body is that result; its fields are read only by callers that
+// requested the matching response shape.
 const jsonBody = (
   response: HttpClientResponse.HttpClientResponse,
 ): Effect.Effect<ExecResult, ProcessError> =>
@@ -336,8 +347,12 @@ const collectedResult = (events: ReadonlyArray<ProcessEvent>): ProcessResult => 
 
   return {
     exitCode: Effect.succeed(exitCode),
-    stdout: Stream.make(concat(events.filter($is("Stdout")).map((event) => event.data))),
-    stderr: Stream.make(concat(events.filter($is("Stderr")).map((event) => event.data))),
+    stdout: Stream.make(
+      concat(events.flatMap((event) => ($is("Stdout")(event) ? [event.data] : []))),
+    ),
+    stderr: Stream.make(
+      concat(events.flatMap((event) => ($is("Stderr")(event) ? [event.data] : []))),
+    ),
   };
 };
 
