@@ -25,7 +25,7 @@ const antiSlopRules = {
   "anti-slop-effect/no-manual-tagged-construction": "error",
   "anti-slop-effect/no-service-constructor-imports": "error",
   "anti-slop-effect/prefer-effect-match": "error",
-};
+} as const;
 
 // Tests build tagged fixtures and narrow values ad hoc, which the anti-slop policy
 // rejects in application code. They stay in lint scope so `vp check` still
