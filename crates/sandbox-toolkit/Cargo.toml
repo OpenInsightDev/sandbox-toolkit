@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.104"
 # Vendored as the git submodule at `crates/axum` (tokio-rs/axum @ 7c3c6787), because
 # the released 0.8.9 has no `MethodFilter::QUERY` but the unreleased `main` does.
-axum = { path = "../axum/axum", features = ["http2"] }
+axum = { path = "../axum/axum", features = ["http2", "ws"] }
 bytes = { version = "1.12.1", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 flate2 = "1.1"

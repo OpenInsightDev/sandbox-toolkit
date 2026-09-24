@@ -1,12 +1,17 @@
-//! The exec and shell HTTP endpoints.
+//! The exec, shell and pty HTTP endpoints.
 //!
-//! Both answer in one of two shapes, chosen by the server the way the MCP Streamable
+//! exec and shell both answer in one of two shapes, chosen by the server the way the MCP Streamable
 //! HTTP transport does: a command that finishes within the request's `timeout` —
 //! [`DIRECT_RESPONSE_TIMEOUT`] when it names none — returns a single [`ExecResult`],
 //! while one that runs longer returns the multiplexed frame stream of [`exec`], keeping
 //! stdout, stderr and the terminal status apart. The probe buffers at most
 //! [`DIRECT_RESPONSE_LIMIT`] bytes, so a command that produces output faster than it exits
 //! cannot force unbounded memory.
+//!
+//! pty is addressed in two steps, because its session outlives one request: `POST .../pty`
+//! creates a session and answers with the WebSocket endpoint of [`PtySession`], which
+//! `GET .../pty/{session_id}` then attaches to. The connection speaks the frames of
+//! [`super::pty`], not the exec stream.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -15,6 +20,7 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path};
 use axum::http::header;
 use axum::http::request::Parts;
@@ -25,7 +31,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::exec::{self, ExecError, Frame};
-use super::model::{ExecRequest, ExecResult, ShellRequest};
+use super::model::{ExecRequest, ExecResult, PtyRequest, PtySession, ShellRequest};
 use crate::workspace::registry::WorkspaceEnvironment;
 use crate::{AppError, AppState};
 
@@ -51,6 +57,13 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/workspaces/{workspace_id}/shell",
             routing::post(shell_endpoint),
+        )
+        .route("/pty", routing::post(create_pty))
+        .route("/workspaces/{workspace_id}/pty", routing::post(create_pty))
+        .route("/pty/{session_id}", routing::get(attach_pty))
+        .route(
+            "/workspaces/{workspace_id}/pty/{session_id}",
+            routing::get(attach_pty),
         )
 }
 
@@ -96,6 +109,30 @@ async fn shell_endpoint(
 
     respond(stream, timeout).await
 }
+
+/// Create a pty session and answer with the endpoint that attaches to it.
+async fn create_pty(
+    _target: ProcessTarget,
+    Json(_request): Json<PtyRequest>,
+) -> Result<Json<PtySession>, AppError> {
+    Err(AppError::NotImplemented("POST pty"))
+}
+
+/// Attach to an existing pty session over a WebSocket.
+///
+/// The upgrade carries the session's frames, so the response leaves the HTTP error
+/// envelope: a rejection before the upgrade, such as a request that is not a WebSocket
+/// handshake, is answered by axum with its plain text body.
+async fn attach_pty(
+    _target: ProcessTarget,
+    Path(_captures): Path<HashMap<String, String>>,
+    upgrade: WebSocketUpgrade,
+) -> Result<Response, AppError> {
+    Ok(upgrade.on_upgrade(session_socket))
+}
+
+/// Drive one pty session over `socket`, speaking the frames of [`super::pty`].
+async fn session_socket(_socket: WebSocket) {}
 
 /// Map a failed command onto the shared HTTP error envelope.
 ///
@@ -506,5 +543,53 @@ mod tests {
 
         let frames = frames(response).await;
         assert_eq!(stream_bytes(&frames, false), b"late");
+    }
+
+    #[tokio::test]
+    async fn pty_routes_are_wired() {
+        let app = app();
+
+        let create = send(
+            &app,
+            json_request("POST", "/pty", &json!({ "command": "sh" })),
+        )
+        .await;
+        assert_eq!(create.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            json_body(create).await["error"]["code"],
+            json!("not_implemented")
+        );
+
+        // The attach route is a WebSocket endpoint, so a request that is not a
+        // handshake is rejected before any session is reached.
+        let attach = send(
+            &app,
+            Request::builder()
+                .method("GET")
+                .uri("/pty/session-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(attach.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn pty_rejects_an_unknown_workspace_before_creating_a_session() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/workspaces/missing/pty",
+                &json!({ "command": "sh" }),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            json_body(response).await["error"]["code"],
+            json!("not_found")
+        );
     }
 }

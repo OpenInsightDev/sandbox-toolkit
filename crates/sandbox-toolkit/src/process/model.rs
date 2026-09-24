@@ -9,6 +9,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::pty::TerminalSize;
+
 /// Parameters of an exec, submitted as the `POST .../exec` body.
 ///
 /// The executable and its arguments are separate tokens and never re-parsed by a
@@ -72,6 +74,31 @@ pub(crate) struct ShellRequest {
     pub(crate) timeout: Option<u64>,
 }
 
+/// Parameters of a pty session, submitted as the `POST .../pty` body.
+///
+/// The session's command is fixed at creation and streams over a WebSocket, so unlike
+/// exec and shell there is no `timeout`: the server owns the session lifetime.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[expect(
+    dead_code,
+    reason = "read by the pty session handlers, which are stubs"
+)]
+pub(crate) struct PtyRequest {
+    /// Command to run, usually an interactive shell.
+    pub(crate) command: String,
+    /// Arguments passed verbatim, as in `ExecRequest::args`.
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
+    /// Initial working directory, as in `ExecRequest::cwd`.
+    pub(crate) cwd: Option<String>,
+    /// Variables layered over the inherited environment, as in `ExecRequest::env`.
+    #[serde(default)]
+    pub(crate) env: HashMap<String, String>,
+    /// Initial terminal geometry; the runtime default when omitted.
+    pub(crate) size: Option<TerminalSize>,
+}
+
 /// How a command finished.
 ///
 /// A structured object rather than plain text, so a further outcome, such as a
@@ -119,6 +146,20 @@ pub(crate) struct ExecResult {
     pub(crate) stdout: String,
     /// Everything the command wrote to stderr.
     pub(crate) stderr: String,
+}
+
+/// A created pty session: the id addressing it and the WebSocket endpoint that attaches
+/// to it.
+///
+/// Returned by `POST .../pty`; the client then opens `endpoint` and speaks the frames
+/// of [`super::pty`].
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub(crate) struct PtySession {
+    /// Server-assigned session id.
+    pub(crate) id: String,
+    /// WebSocket endpoint to attach to, as a server-relative path.
+    pub(crate) endpoint: String,
 }
 
 #[cfg(test)]

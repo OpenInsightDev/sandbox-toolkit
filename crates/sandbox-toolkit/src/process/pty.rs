@@ -15,6 +15,8 @@
 )]
 
 use bytes::{BufMut, Bytes, BytesMut};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::model::Status;
 
@@ -73,7 +75,8 @@ pub(crate) enum Direction {
 ///
 /// A pty session is sized, and resizing an existing one sends these two integers on
 /// the resize channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub(crate) struct TerminalSize {
     pub(crate) rows: u16,
     pub(crate) cols: u16,
