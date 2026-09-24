@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use mime_guess::Mime;
@@ -51,37 +51,22 @@ pub(crate) struct FileHeaders {
     pub(crate) last_modified: Option<SystemTime>,
 }
 
-impl FileHeaders {
-    /// Buffer the file whole, or open it for streaming, by `inline_limit`.
-    async fn into_content(
-        self,
-        path: PathBuf,
-        inline_limit: u64,
-    ) -> Result<PreparedFile, ReadFileError> {
-        let content = if self.content_length <= inline_limit {
-            FileContent::Inline(tokio::fs::read(&path).await?)
-        } else {
-            // Opening here is what checks read permission before the response starts.
-            let file = tokio::fs::File::open(&path).await?;
-            FileContent::Stream(ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE))
-        };
-
-        Ok(PreparedFile {
-            content,
-            headers: self,
-        })
-    }
-}
-
 pub(crate) async fn prepare_download(
     target: &TargetFile,
     inline_limit: u64,
 ) -> Result<PreparedFile, ReadFileError> {
     let path = checked_target_file(target).await?;
-    stat_file(&path)
-        .await?
-        .into_content(path, inline_limit)
-        .await
+    let headers = stat_file(&path).await?;
+
+    let content = if headers.content_length <= inline_limit {
+        FileContent::Inline(tokio::fs::read(&path).await?)
+    } else {
+        // Opening here is what checks read permission before the response starts.
+        let file = tokio::fs::File::open(&path).await?;
+        FileContent::Stream(ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE))
+    };
+
+    Ok(PreparedFile { content, headers })
 }
 
 /// Probe the target without touching its content, as `HEAD` does.
@@ -90,23 +75,17 @@ pub(crate) async fn probe_file(target: &TargetFile) -> Result<FileHeaders, ReadF
     stat_file(&path).await
 }
 
-async fn stat_file(path: &std::path::Path) -> Result<FileHeaders, ReadFileError> {
+async fn stat_file(path: &Path) -> Result<FileHeaders, ReadFileError> {
     let metadata = tokio::fs::metadata(path).await?;
-    let modified = metadata.modified().ok();
 
     Ok(FileHeaders {
-        content_type: detect_content_type(path),
+        content_type: mime_guess::from_path(path)
+            .first()
+            .unwrap_or(FALLBACK_CONTENT_TYPE),
         content_length: metadata.len(),
         etag: etag(&metadata),
-        last_modified: modified,
+        last_modified: metadata.modified().ok(),
     })
-}
-
-/// Detection is by extension only and never sniffs content.
-fn detect_content_type(path: &std::path::Path) -> Mime {
-    mime_guess::from_path(path)
-        .first()
-        .unwrap_or(FALLBACK_CONTENT_TYPE)
 }
 
 async fn checked_target_file(target_file: &TargetFile) -> Result<PathBuf, ReadFileError> {
