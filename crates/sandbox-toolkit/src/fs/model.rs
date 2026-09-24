@@ -26,17 +26,6 @@ pub(crate) struct FilePath {
     path: Option<String>,
 }
 
-/// Text-line range requested when reading a file.
-#[derive(Debug, Default, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-pub(crate) struct ReadFileRequest {
-    /// Zero-based line offset.
-    #[serde(default)]
-    pub(crate) offset: usize,
-    /// Maximum number of lines to return; omitted means through end of file.
-    pub(crate) limit: Option<usize>,
-}
-
 /// A control-plane operation submitted as the `POST` body of a file URI.
 ///
 /// Replaces the WebDAV `COPY` and `MOVE` methods: those are not standard HTTP

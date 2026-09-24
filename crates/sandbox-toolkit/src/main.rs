@@ -169,6 +169,15 @@ enum AppError {
     #[error("workspace id is reserved: {0}")]
     WorkspaceIdReserved(String),
 
+    /// The operation needs a file but the target is a directory.
+    #[error("target is not a file: {0}")]
+    NotAFile(String),
+
+    /// The operation needs a directory but the target is a file.
+    #[expect(dead_code, reason = "no directory-scoped operation is wired up yet")]
+    #[error("target is not a directory: {0}")]
+    NotADirectory(String),
+
     /// The resource does not support the method the request used.
     ///
     /// The `Allow` header required by HTTP for a 405 is added by axum when this
@@ -242,7 +251,9 @@ impl AppError {
         match self {
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::NotAFile(_) | Self::NotADirectory(_) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Conflict(_) | Self::WorkspaceIdReserved(_) => StatusCode::CONFLICT,
             Self::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
@@ -260,6 +271,8 @@ impl AppError {
             Self::NotImplemented(_) => "not_implemented",
             Self::NotFound(_) => "not_found",
             Self::BadRequest(_) => "bad_request",
+            Self::NotAFile(_) => "not_a_file",
+            Self::NotADirectory(_) => "not_a_directory",
             Self::Conflict(_) => "conflict",
             Self::WorkspaceIdReserved(_) => "workspace_id_reserved",
             Self::MethodNotAllowed(_) => "method_not_allowed",

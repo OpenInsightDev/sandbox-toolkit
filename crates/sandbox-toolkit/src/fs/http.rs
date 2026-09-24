@@ -16,19 +16,22 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::file::{ReadFileError, read_file};
-use super::model::{FileOperation, FilePath, ReadFileRequest};
+use super::file::{
+    FileContent, FileHeaders, INLINE_BODY_LIMIT, ReadFileError, prepare_download, probe_file,
+};
+use super::model::{FileOperation, FilePath};
 use crate::workspace::registry::TargetFile;
 use crate::{AppError, AppState};
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{FromRequestParts, OriginalUri, Path as AxumPath, Query, State};
+use axum::extract::{FromRequestParts, OriginalUri, Path as AxumPath, RawQuery, State};
 use axum::http::Method;
-use axum::http::header::{self, HeaderName, HeaderValue};
+use axum::http::header::{self, HeaderValue};
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{self, MethodRouter};
+use tokio_stream::StreamExt;
 
 /// Build the file router.
 ///
@@ -51,6 +54,7 @@ pub(crate) fn router() -> Router<AppState> {
 /// Route table shared by the workspace root and every file below it.
 fn file_routes() -> MethodRouter<AppState> {
     routing::get(get_file)
+        .head(head_file)
         .post(post_file)
         .put(put_file)
         .delete(delete_file)
@@ -93,40 +97,36 @@ impl FromRequestParts<AppState> for FileTarget {
     }
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-struct ReadQuery {
-    offset: Option<u64>,
-    limit: Option<u64>,
+/// Reject the `type` query parameter on data-plane requests.
+///
+/// `type` selects a control-plane operation, which `QUERY`, `PATCH` and `POST`
+/// carry; on `GET` and `HEAD` the combination is `405 method_not_allowed`.
+fn reject_type(RawQuery(query): &RawQuery) -> Result<(), AppError> {
+    let has_type = query.as_deref().is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "type")
+    });
+    if has_type {
+        return Err(AppError::MethodNotAllowed(Method::GET));
+    }
+
+    Ok(())
 }
 
-struct ReadRange(ReadFileRequest);
-
-impl FromRequestParts<AppState> for ReadRange {
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let Query(query) = Query::<ReadQuery>::from_request_parts(parts, _state)
-            .await
-            .map_err(|_| AppError::BadRequest("offset and limit must be integers".to_owned()))?;
-        Ok(Self(ReadFileRequest {
-            offset: query
-                .offset
-                .unwrap_or(0)
-                .try_into()
-                .map_err(|_| AppError::BadRequest("offset is too large".to_owned()))?,
-            limit: query
-                .limit
-                .map(|value| {
-                    value
-                        .try_into()
-                        .map_err(|_| AppError::BadRequest("limit is too large".to_owned()))
-                })
-                .transpose()?,
-        }))
+/// A data-plane request must carry no body, so any data frame rejects it.
+async fn ensure_empty_body(body: Body) -> Result<(), AppError> {
+    let mut stream = body.into_data_stream();
+    while let Some(frame) = stream.next().await {
+        let frame = frame.map_err(|error| {
+            AppError::BadRequest(format!("failed to read request body: {error}"))
+        })?;
+        if !frame.is_empty() {
+            return Err(AppError::BadRequest(
+                "request body must be empty".to_owned(),
+            ));
+        }
     }
+
+    Ok(())
 }
 
 fn validate_path(value: &str) -> Result<PathBuf, AppError> {
@@ -153,40 +153,43 @@ fn validate_path(value: &str) -> Result<PathBuf, AppError> {
 fn map_read_error(error: ReadFileError) -> AppError {
     match error {
         ReadFileError::NotFound(path) => AppError::NotFound(path),
+        ReadFileError::NotAFile(path) => AppError::NotAFile(path),
         ReadFileError::InvalidFile(message) => AppError::BadRequest(message),
         ReadFileError::Io(error) => AppError::Internal(error.into()),
     }
 }
 
-/// The `Depth` request header (RFC 4918), absent from [`axum::http::header`],
-/// which models only non-WebDAV headers.
-const DEPTH: HeaderName = HeaderName::from_static("depth");
+impl FileHeaders {
+    /// Stamp the data-plane headers onto a response built from the content.
+    ///
+    /// Inserting after the body is built matters: `IntoResponse` for bytes
+    /// guesses `Content-Type` from the payload, and only a real `HeaderMap`
+    /// insert reliably overrides that guess.
+    fn stamp_on(&self, response: &mut Response) {
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(self.content_type.as_ref())
+                .expect("a MIME type is a valid header value"),
+        );
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from(self.content_length),
+        );
+        headers.insert(
+            header::ETAG,
+            HeaderValue::from_str(&self.etag).expect("an entity-tag is a valid header value"),
+        );
+        headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("none"));
+        headers.insert(header::LAST_MODIFIED, self.last_modified());
+    }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum FileDepth {
-    /// `Depth: 0`: the target file.
-    #[default]
-    Zero,
-    /// `Depth: 1`: the target directory and its direct children.
-    One,
-}
-
-impl<S> FromRequestParts<S> for FileDepth
-where
-    S: Send + Sync,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let Some(value) = parts.headers.get(&DEPTH) else {
-            return Ok(Self::default());
-        };
-
-        match value.as_bytes() {
-            b"0" => Ok(Self::Zero),
-            b"1" => Ok(Self::One),
-            _ => Err(AppError::BadRequest("Depth must be 0 or 1".to_owned())),
-        }
+    fn last_modified(&self) -> HeaderValue {
+        self.last_modified
+            .map(|time| HeaderValue::from_str(&httpdate::fmt_http_date(time)))
+            .transpose()
+            .expect("an HTTP date is a valid header value")
+            .unwrap_or_else(|| HeaderValue::from_static("Thu, 01 Jan 1970 00:00:00 GMT"))
     }
 }
 
@@ -223,13 +226,43 @@ where
 async fn get_file(
     State(_state): State<AppState>,
     target: FileTarget,
-    range: ReadRange,
-    _depth: FileDepth,
+    query: RawQuery,
     OriginalUri(_original_uri): OriginalUri,
+    body: Body,
 ) -> Result<Response, AppError> {
-    let body = read_file(target.0, range.0).await.map_err(map_read_error)?;
+    reject_type(&query)?;
+    ensure_empty_body(body).await?;
 
-    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response())
+    let prepared = prepare_download(&target.0, INLINE_BODY_LIMIT)
+        .await
+        .map_err(map_read_error)?;
+
+    let mut response = match prepared.content {
+        FileContent::Inline(bytes) => bytes.into_response(),
+        FileContent::Stream(stream) => Body::from_stream(stream).into_response(),
+    };
+    prepared.headers.stamp_on(&mut response);
+
+    Ok(response)
+}
+
+/// `HEAD` runs the same validation as `GET` but answers headers only.
+async fn head_file(
+    State(_state): State<AppState>,
+    target: FileTarget,
+    query: RawQuery,
+    OriginalUri(_original_uri): OriginalUri,
+    body: Body,
+) -> Result<Response, AppError> {
+    reject_type(&query)?;
+    ensure_empty_body(body).await?;
+
+    let headers = probe_file(&target.0).await.map_err(map_read_error)?;
+
+    let mut response = Body::empty().into_response();
+    headers.stamp_on(&mut response);
+
+    Ok(response)
 }
 
 async fn post_file(
@@ -274,14 +307,168 @@ async fn method_not_allowed(method: Method) -> AppError {
 #[cfg(test)]
 mod tests {
 
+    use axum::Router;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Request, StatusCode, header};
+    use axum::response::Response;
     use tower::ServiceExt;
 
     use crate::AppState;
     use crate::workspace::registry::test_support::TempDir;
 
     use super::router;
+
+    async fn call(app: &Router, request: Request<Body>) -> Response {
+        app.clone().oneshot(request).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_serves_a_file_with_data_plane_headers() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let path = dir.path().join("note.txt");
+        let uri = format!("/fs{}", path.display());
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain");
+        assert_eq!(headers.get(header::CONTENT_LENGTH).unwrap(), "5");
+        assert_eq!(headers.get(header::ACCEPT_RANGES).unwrap(), "none");
+        assert!(headers.contains_key(header::ETAG));
+        assert!(headers.contains_key(header::LAST_MODIFIED));
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn head_returns_the_same_headers_without_a_body() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let uri = format!("/fs{}", dir.path().join("note.txt").display());
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("HEAD")
+                .uri(&uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers.get(header::CONTENT_LENGTH).unwrap(), "5");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain");
+        assert!(headers.contains_key(header::ETAG));
+        assert!(headers.contains_key(header::LAST_MODIFIED));
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_rejects_a_type_parameter_a_body_and_a_directory() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let file_uri = format!("/fs{}", dir.path().join("note.txt").display());
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .uri(format!("{file_uri}?type=metadata"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .uri(&file_uri)
+                .header(header::CONTENT_LENGTH, "3")
+                .body(Body::from("abc"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .uri(format!("/fs{}", dir.path().display()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"].as_str(), Some("not_a_file"));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .uri(format!("/fs{}", dir.path().join("missing.txt").display()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_serves_a_file_through_a_workspace() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let state = AppState::new(".");
+        state
+            .workspaces()
+            .register("docs", &dir.root())
+            .await
+            .unwrap();
+        let app = router().with_state(state);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .uri("/workspaces/docs/fs/note.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"hello");
+    }
 
     #[tokio::test]
     async fn rejects_workspace_paths_that_escape_the_root() {

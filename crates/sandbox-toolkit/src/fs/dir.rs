@@ -155,7 +155,7 @@ async fn metadata(path: &std::path::Path) -> Result<FileMetadata, DirectoryError
     })
 }
 
-fn etag(metadata: &std::fs::Metadata) -> String {
+pub(super) fn etag(metadata: &std::fs::Metadata) -> String {
     let modified = metadata
         .modified()
         .ok()
