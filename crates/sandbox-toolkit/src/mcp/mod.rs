@@ -42,7 +42,7 @@ pub(crate) struct ToolkitServer;
 impl ToolkitServer {
     /// Every tool the toolkit exposes, gathered from the module that owns it.
     fn tool_router() -> ToolRouter<Self> {
-        Self::workspace_tools() + Self::file_tools()
+        Self::workspace_tools() + Self::file_tools() + Self::process_tools()
     }
 }
 

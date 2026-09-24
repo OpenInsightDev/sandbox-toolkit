@@ -1,9 +1,11 @@
 //! Wire types of the process API exported to TypeScript.
 //!
-//! Their `TS` derivations are the client-side types.
+//! Their `TS` derivations are the client-side types and their `JsonSchema`
+//! derivations describe the MCP exec tool.
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -11,7 +13,7 @@ use ts_rs::TS;
 ///
 /// The executable and its arguments are separate tokens and never re-parsed by a
 /// shell, which is what distinguishes exec from shell.
-#[derive(Debug, Deserialize, TS)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub(crate) struct ExecRequest {
     /// Executable to run: a path, or a bare name resolved through `PATH`.
@@ -30,6 +32,24 @@ pub(crate) struct ExecRequest {
     /// to a stream, in milliseconds; the server's default when omitted. It bounds only the
     /// wait for a result and never terminates the command.
     pub(crate) timeout: Option<u64>,
+}
+
+/// Parameters of the exec MCP tool.
+///
+/// MCP has no route to carry addressing, so the workspace a command runs in becomes a
+/// field here, mirroring the endpoint that mounts it: a named workspace matches
+/// `POST /workspaces/{workspace_id}/exec`, an absent one matches `POST /exec`. The
+/// remaining parameters are the ones of [`ExecRequest`].
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[expect(dead_code, reason = "read by the exec MCP tool, which is a stub")]
+pub(crate) struct ExecToolRequest {
+    /// Workspace the command runs in; absent runs it in direct mode, where `cwd` must
+    /// be an absolute path.
+    pub(crate) workspace_id: Option<String>,
+    /// The command and its environment, as in the `POST .../exec` body.
+    #[serde(flatten)]
+    pub(crate) exec: ExecRequest,
 }
 
 /// Parameters of a shell, submitted as the `POST .../shell` body.
@@ -56,7 +76,7 @@ pub(crate) struct ShellRequest {
 ///
 /// A structured object rather than plain text, so a further outcome, such as a
 /// signal or a timeout, is an added variant instead of a new channel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub(crate) enum Status {
@@ -90,7 +110,7 @@ impl Status {
 ///
 /// Output is decoded as UTF-8, replacing invalid sequences; a client that needs the
 /// exact bytes reads the exec frame stream instead.
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub(crate) struct ExecResult {
     /// How the command finished.
