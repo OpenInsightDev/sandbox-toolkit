@@ -51,6 +51,15 @@ pub(crate) struct RegisterMcpRequest {
     pub(crate) server: McpServer,
 }
 
+/// Selects a registered MCP server by id.
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub(crate) struct McpId {
+    /// Identifier of the MCP server.
+    #[expect(dead_code, reason = "read by the MCP tool wrapper")]
+    pub(crate) mcp_id: String,
+}
+
 /// A registered MCP server, exposed to clients as a handle to its endpoint.
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
