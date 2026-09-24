@@ -46,6 +46,7 @@
 | `{base}/{path}` | `QUERY`  | `glob`      | 通配匹配      |
 | `{base}/{path}` | `QUERY`  | `realpath`  | 解析真实路径  |
 | `{base}/{path}` | `QUERY`  | `access`    | 探测访问权限  |
+| `{base}/{path}` | `QUERY`  | `lines`     | 按行读取文件  |
 | `{base}/{path}` | `PUT`    | —           | 写入文件      |
 | `{base}/{path}` | `PUT`    | `directory` | 创建目录      |
 | `{base}/{path}` | `PUT`    | `symlink`   | 创建符号链接  |
@@ -59,6 +60,32 @@
 `QUERY`、`PATCH`、`POST` 缺少 `type` 返回 `422 unsupported_type`；`type` 与所用方法不匹配（如 `PUT ?type=metadata`）返回 `405 method_not_allowed`；操作要求的资源类型与目标不符（对目录 `GET`、对文件 `QUERY ?type=list` 或 `QUERY ?type=glob`）返回 `400 not_a_file` / `400 not_a_directory`。
 
 ### 读取类型
+
+#### `GET`
+
+下载目标文件的原始字节。请求使用无 `type` 的空请求体；目标为文件，包括解析后指向文件的符号链接。
+
+响应头：
+
+| 头部             | 说明                                              |
+| ---------------- | ------------------------------------------------- |
+| `Content-Type`   | 文件类型；无法检测时为 `application/octet-stream` |
+| `Content-Length` | 文件字节数                                        |
+| `ETag`           | 当前文件版本                                      |
+| `Last-Modified`  | 文件系统修改时间                                  |
+| `Accept-Ranges`  | `none`                                            |
+
+服务端按文件大小选择响应方式：
+
+- 大小不超过 `8 MiB` 时直接返回响应体；
+- 大小超过 `8 MiB` 时以 HTTP/2 响应流发送原始字节；
+- 阈值为服务端配置；
+- 开始发送响应体前完成路径、权限、文件类型、ETag 和大小校验；
+- 流式读取使用固定大小缓冲区，客户端断开后关闭文件；I/O 错误终止响应。
+
+`type` 存在返回 `405 method_not_allowed`；请求体非空返回 `400 bad_request`；目标为目录返回 `400 not_a_file`；资源不存在返回 `404`。
+
+`HEAD` 使用相同校验并返回上述响应头，响应体为空。
 
 #### `QUERY ?type=metadata`
 
@@ -102,6 +129,35 @@
 - 返回顺序稳定，`offset` 按该顺序切分；
 - 递归查询还受服务端总条目数或响应大小上限约束，达到即截断并置 `truncated`；
 - 目标是文件（包括指向文件的符号链接）时返回 `400 not_a_directory`。
+
+#### `QUERY ?type=lines`
+
+按行读取文本文件的指定范围。
+
+输入（query）：
+
+| 字段     | 类型    | 说明                                      |
+| -------- | ------- | ----------------------------------------- |
+| `offset` | integer | 起始行序号，从 `0` 开始；不带时从首行开始 |
+| `limit`  | integer | 最多返回的行数；不带时使用服务端上限      |
+
+输出：
+
+```json
+{
+  "lines": ["first line", "second line"],
+  "offset": 10,
+  "truncated": true
+}
+```
+
+- `lines` 按文件中的逻辑行顺序返回，不包含行尾的 `\\n` 或 `\\r\\n`；空行作为空字符串返回；
+- `offset` 表示首个返回行的零基序号；请求超出文件末尾时返回空数组，不视为错误；
+- 文件末尾没有换行符时，末尾内容仍作为一行返回；
+- `truncated` 表示服务端因 `limit` 或响应大小上限未返回全部后续行；没有后续行时为 `false`；
+- 默认按 UTF-8 解码；内容不是合法 UTF-8 时返回 `422 invalid_request`；
+- `offset` 必须为非负整数，`limit` 必须为正整数；参数非法返回 `400 bad_request`；
+- 目标是目录时返回 `400 not_a_file`。
 
 #### `QUERY ?type=glob`
 
@@ -410,10 +466,3 @@ HTTP 状态码表达通用语义，`error.code` 提供稳定的机器可读分�
 | `422` | `unsupported_type`      | `type` 缺失或不支持                   |
 
 工作区相关错误码见 [Workspace.md](./Workspace.md)，如只读工作区返回 `403 read_only_workspace`。
-
-## 待补能力
-
-以下能力已被 FileSystem 接口要求，但本设计尚未覆盖，待需要时按既有约定补充端点。
-
-- 按行读取：`GET` 只提供原始字节，缺少按行切分的文本读取。
-- 范围读取：`GET`/`HEAD` 未定义 `Range` 或等效的 `offset`/长度部分读取。
