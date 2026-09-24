@@ -15,7 +15,7 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::{AppError, AppState, Cli, fs, process, workspace};
+use crate::{AppError, AppState, Cli, fs, mcp, process, workspace};
 
 /// Build the API router.
 fn api_router() -> Router<AppState> {
@@ -23,6 +23,7 @@ fn api_router() -> Router<AppState> {
         .merge(workspace::router())
         .merge(fs::router())
         .merge(process::router())
+        .merge(mcp::router())
         // The MCP transport answers `POST` for JSON-RPC calls, `GET` for the
         // server-to-client stream and `DELETE` to end a session, so it owns every
         // method on the path.

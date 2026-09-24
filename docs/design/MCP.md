@@ -88,6 +88,40 @@ DELETE /mcps/{mcp_id}
 }
 ```
 
+## 导出
+
+```
+GET /mcps?format=mcp-json
+GET /workspaces/{id}/mcps?format=mcp-json
+```
+
+`format=mcp-json` 把该挂载点下可用的 MCP 导出为 [Agent Plugins mcp.json](https://agent-plugins.org/plugin-authors/mcp-servers) 文档，使 Agent Plugins 客户端可直接消费；未指定 `format` 时按“查询与管理”返回清单。
+
+- 文档严格遵循 mcp.json 的封闭格式：顶层只有 `$schema` 与 `mcpServers`，`$schema` 固定为 `https://agent-plugins.org/schemas/1.0.0/mcp.schema.json`；
+- `mcpServers` 的键为 MCP `id`，覆盖该挂载点下全部已注册 MCP，无论注册时声明的是 `stdio` 还是 `streamable-http`；
+- 每个值都是 `streamable-http` 条目，`url` 指向该注册的规范端点，见“MCP 端点”：注册为 `stdio` 的条目经 stdio 代理、注册为 `streamable-http` 的条目经远程代理，均对外统一为 Streamable HTTP，因此导出文档无需、也不包含注册时声明的 `server` 配置；
+- `url` 由请求推导的外部基址（`scheme` + `Host`）拼成绝对地址；
+- 直接模式导出全局 MCP，工作区模式导出该工作区条目并合并全局 MCP，同名时工作区条目覆盖全局条目；
+- 工作区条目指向 `/workspaces/{id}/mcps/{mcp_id}/mcp`，被合并的全局条目仍指向其全局端点 `/mcps/{mcp_id}/mcp`。
+
+工作区导出示例，`validator` 注册为 `stdio`、经 stdio 代理呈现，`deployment-api` 则来自合并的全局 MCP：
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "validator": {
+      "type": "streamable-http",
+      "url": "https://sandbox.example.com/workspaces/docs/mcps/validator/mcp"
+    },
+    "deployment-api": {
+      "type": "streamable-http",
+      "url": "https://sandbox.example.com/mcps/deployment-api/mcp"
+    }
+  }
+}
+```
+
 ## 工作区耦合
 
 工作区仍挂有 MCP 资源时不能注销，返回 `409 workspace_in_use`，须先注销这些资源；注销 MCP 只终止自己启动的子进程，不删除、不修改工作区本身。该约束由工作区 API 统一执行。
@@ -123,12 +157,12 @@ DELETE /mcps/{mcp_id}
 
 沿用 [FileSystem.md](./FileSystem.md) 的统一 JSON 信封：状态码表达通用语义，`error.code` 提供稳定的机器可读分类。
 
-| 状态  | `error.code`            | 场景                    |
-| ----- | ----------------------- | ----------------------- |
-| `400` | `bad_request`           | `id` 等参数非法         |
-| `404` | `not_found`             | MCP 或工作区不存在      |
-| `405` | `method_not_allowed`    | 端点不支持该方法        |
-| `409` | `conflict`              | `id` 在同一挂载点已存在 |
-| `409` | `workspace_in_use`      | 工作区仍挂有 MCP 而注销 |
-| `422` | `invalid_mcp`           | server 配置校验失败     |
-| `422` | `unsupported_transport` | 不支持的传输类型        |
+| 状态  | `error.code`            | 场景                      |
+| ----- | ----------------------- | ------------------------- |
+| `400` | `bad_request`           | `id`、`format` 等参数非法 |
+| `404` | `not_found`             | MCP 或工作区不存在        |
+| `405` | `method_not_allowed`    | 端点不支持该方法          |
+| `409` | `conflict`              | `id` 在同一挂载点已存在   |
+| `409` | `workspace_in_use`      | 工作区仍挂有 MCP 而注销   |
+| `422` | `invalid_mcp`           | server 配置校验失败       |
+| `422` | `unsupported_transport` | 不支持的传输类型          |

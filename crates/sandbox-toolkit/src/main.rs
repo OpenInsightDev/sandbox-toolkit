@@ -7,6 +7,7 @@
 
 mod binary;
 mod fs;
+mod mcp;
 mod process;
 mod server;
 mod workspace;
@@ -197,6 +198,27 @@ enum AppError {
     #[error("precondition required: {0}")]
     PreconditionRequired(String),
 
+    /// A registered MCP server configuration failed validation.
+    ///
+    /// Raised when a `server` object does not satisfy the constraints of the
+    /// transport it names, which `docs/design/MCP.md` maps to `422 invalid_mcp`.
+    #[error("invalid MCP configuration: {0}")]
+    InvalidMcp(String),
+
+    /// The request names an MCP transport the service does not support.
+    ///
+    /// Raised for a `type` such as `sse`, which `docs/design/MCP.md` maps to
+    /// `422 unsupported_transport`.
+    #[error("unsupported MCP transport: {0}")]
+    UnsupportedTransport(String),
+
+    /// A workspace still has resources mounted that must be removed first.
+    ///
+    /// Raised when unregistering a workspace that owns MCP entries, which
+    /// `docs/design/MCP.md` maps to `409 workspace_in_use`.
+    #[error("workspace is in use: {0}")]
+    WorkspaceInUse(String),
+
     /// An unexpected internal failure.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -213,6 +235,8 @@ impl AppError {
             Self::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             Self::PreconditionRequired(_) => StatusCode::PRECONDITION_REQUIRED,
+            Self::InvalidMcp(_) | Self::UnsupportedTransport(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::WorkspaceInUse(_) => StatusCode::CONFLICT,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -228,6 +252,9 @@ impl AppError {
             Self::MethodNotAllowed(_) => "method_not_allowed",
             Self::PreconditionFailed(_) => "precondition_failed",
             Self::PreconditionRequired(_) => "precondition_required",
+            Self::InvalidMcp(_) => "invalid_mcp",
+            Self::UnsupportedTransport(_) => "unsupported_transport",
+            Self::WorkspaceInUse(_) => "workspace_in_use",
             Self::Internal(_) => "internal_error",
         }
     }
