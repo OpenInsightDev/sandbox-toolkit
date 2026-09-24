@@ -7,7 +7,6 @@
 
 mod binary;
 mod fs;
-mod mcp;
 mod process;
 mod server;
 mod workspace;

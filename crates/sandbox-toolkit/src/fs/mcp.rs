@@ -7,7 +7,7 @@ use rmcp::{tool, tool_router};
 use super::model::{
     DirectoryResponse, FileMetadata, FilePath, RelocateFileRequest, WriteFileRequest,
 };
-use crate::mcp::{ToolkitServer, not_implemented};
+use crate::server::{ToolkitServer, not_implemented};
 
 #[tool_router(router = file_tools, vis = "pub(crate)")]
 impl ToolkitServer {

@@ -5,7 +5,7 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
 
 use super::model::{ExecResult, ExecToolRequest};
-use crate::mcp::{ToolkitServer, not_implemented};
+use crate::server::{ToolkitServer, not_implemented};
 
 #[tool_router(router = process_tools, vis = "pub(crate)")]
 impl ToolkitServer {

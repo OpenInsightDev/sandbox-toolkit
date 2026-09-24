@@ -5,7 +5,7 @@ use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
 
 use super::model::{CreateWorkspaceRequest, Workspace, WorkspaceId, WorkspaceList};
-use crate::mcp::{ToolkitServer, not_implemented};
+use crate::server::{ToolkitServer, not_implemented};
 
 #[tool_router(router = workspace_tools, vis = "pub(crate)")]
 impl ToolkitServer {

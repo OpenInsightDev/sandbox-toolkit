@@ -119,5 +119,5 @@ MCP 工具是单次请求-响应，无请求头与长连接，因此下列功能
 ## 模块布局
 
 - 每个功能一个模块，内含共享模型 `model`、HTTP 调用面，以及功能逻辑，如工作区的 `registry`；
-- MCP 调用面集中在 `mcp` 模块下与功能同名的子模块，如 `mcp::workspace`、`mcp::fs`，复用功能的模型与逻辑；
-- `mcp` 模块把所有工具注册到同一个 `/mcp` server。
+- MCP 调用面作为功能模块内与功能同名的子模块，如 `workspace/mcp.rs`、`fs/mcp.rs`，复用功能的模型与逻辑；
+- 所有 MCP 工具注册到 `server` 中同一个会话级 server，并挂载为 `/mcp` 端点。
