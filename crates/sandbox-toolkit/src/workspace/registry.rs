@@ -48,13 +48,6 @@ pub(crate) enum WorkspaceError {
 /// so a command references its root through the variable instead of carrying the
 /// remote absolute path itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the exec, shell and pty handlers, which are not written yet"
-    )
-)]
 pub(crate) struct WorkspaceEnvironment {
     /// Variable name, derived from the workspace id.
     pub(crate) name: String,
@@ -209,13 +202,6 @@ impl WorkspaceRegistry {
     /// Where [`WorkspaceRegistry::resolve`] hands a module a root to confine
     /// operations to, this hands a process the same root as a variable, so a
     /// command never has to hardcode the remote absolute path.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed by the exec, shell and pty handlers, which are not written yet"
-        )
-    )]
     pub(crate) fn environment(&self, id: &str) -> Result<WorkspaceEnvironment, WorkspaceError> {
         let workspaces = self.read();
         let workspace = workspaces
@@ -297,13 +283,6 @@ fn validate_id(id: &str) -> Result<(), WorkspaceError> {
 ///
 /// Uppercasing and mapping `-` to `_` yields a valid POSIX name; ids exclude `_`,
 /// so the mapping is reversible and two ids never share a name.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by the exec, shell and pty handlers, which are not written yet"
-    )
-)]
 fn environment_variable_name(id: &str) -> String {
     let mut name = String::with_capacity(ENVIRONMENT_PREFIX.len() + id.len());
     name.push_str(ENVIRONMENT_PREFIX);

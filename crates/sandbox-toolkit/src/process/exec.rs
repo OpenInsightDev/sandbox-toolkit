@@ -15,7 +15,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the exec surface and the stream decoders are not wired up yet"
+        reason = "the frame decoders serve clients and tests, never the server"
     )
 )]
 
@@ -36,7 +36,7 @@ use tokio::{
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tokio_util::io::ReaderStream;
 
-use super::model::{ExecRequest, Status};
+use super::model::{ExecRequest, ShellRequest, Status};
 use crate::binary;
 use crate::workspace::registry::WorkspaceEnvironment;
 
@@ -99,6 +99,16 @@ impl Frame {
             Self::Stdout(_) => Channel::Stdout,
             Self::Stderr(_) => Channel::Stderr,
             Self::Status(_) => Channel::Error,
+        }
+    }
+
+    /// Size of the payload, for a caller bounding how much it buffers.
+    pub(crate) fn payload_len(&self) -> usize {
+        match self {
+            Self::Stdout(bytes) | Self::Stderr(bytes) => bytes.len(),
+            Self::Status(status) => serde_json::to_vec(status)
+                .expect("a status frame always serializes to JSON")
+                .len(),
         }
     }
 
@@ -218,6 +228,9 @@ pub(crate) enum FrameError {
 /// Frames buffered before a slow reader back-pressures the process.
 const FRAME_BUFFER: usize = 32;
 
+/// Interpreter a shell request falls back to when it names none.
+const DEFAULT_SHELL: &str = "sh";
+
 /// Why running a command failed.
 #[derive(Debug, Error)]
 pub(crate) enum ExecError {
@@ -267,6 +280,19 @@ pub(crate) async fn exec(
         .spawn()
 }
 
+/// Run `request`, returning the frames of its response.
+///
+/// Semantics are those of [`exec`], with the interpreter parsing `script` as its
+/// single argument.
+pub(crate) async fn shell(
+    request: ShellRequest,
+    workspace: Option<WorkspaceEnvironment>,
+) -> Result<ReceiverStream<Frame>, ExecError> {
+    CommandSpec::from_shell(request, workspace.as_ref())
+        .await?
+        .spawn()
+}
+
 impl CommandSpec {
     /// Resolve an exec request into a spawnable command.
     async fn from_exec(
@@ -277,7 +303,43 @@ impl CommandSpec {
             return Err(ExecError::EmptyCommand);
         }
 
-        let cwd = match request.cwd.as_deref() {
+        Self::resolve(
+            request.command,
+            request.args,
+            request.cwd,
+            request.env,
+            workspace,
+        )
+        .await
+    }
+
+    /// Resolve a shell request into a spawnable command.
+    async fn from_shell(
+        request: ShellRequest,
+        workspace: Option<&WorkspaceEnvironment>,
+    ) -> Result<Self, ExecError> {
+        let interpreter = request.shell.unwrap_or_else(|| DEFAULT_SHELL.to_owned());
+
+        Self::resolve(
+            interpreter,
+            vec!["-c".to_owned(), request.script],
+            request.cwd,
+            request.env,
+            workspace,
+        )
+        .await
+    }
+
+    /// Resolve the addressing mode, working directory and environment shared by exec
+    /// and shell.
+    async fn resolve(
+        program: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        env: HashMap<String, String>,
+        workspace: Option<&WorkspaceEnvironment>,
+    ) -> Result<Self, ExecError> {
+        let cwd = match cwd.as_deref() {
             Some(cwd) => resolve_cwd(cwd, workspace).await?,
             None => workspace.map_or_else(|| PathBuf::from("."), |w| w.value.clone()),
         };
@@ -293,16 +355,14 @@ impl CommandSpec {
                 )
             })
             .chain(
-                request
-                    .env
-                    .into_iter()
+                env.into_iter()
                     .map(|(name, value)| (name, OsString::from(value))),
             )
             .collect();
 
         Ok(Self {
-            program: request.command,
-            args: request.args,
+            program,
+            args,
             cwd,
             env,
         })
@@ -790,6 +850,56 @@ mod tests {
         assert!(matches!(
             exec(request("definitely-not-a-real-command", &[]), None).await,
             Err(ExecError::Spawn { .. })
+        ));
+    }
+
+    fn shell_request(script: &str) -> ShellRequest {
+        ShellRequest {
+            script: script.to_owned(),
+            cwd: None,
+            env: HashMap::new(),
+            shell: None,
+        }
+    }
+
+    /// Run a shell request expected to spawn, collecting its whole response.
+    async fn run_shell(request: ShellRequest) -> Vec<Frame> {
+        shell(request, None).await.unwrap().collect().await
+    }
+
+    #[tokio::test]
+    async fn shell_runs_a_script_through_the_default_interpreter() {
+        let frames = run_shell(shell_request("printf out; printf err >&2; exit 4")).await;
+
+        assert_eq!(stream_bytes(&frames, false), b"out");
+        assert_eq!(stream_bytes(&frames, true), b"err");
+        assert_eq!(final_status(&frames), Status::Exited { code: 4 });
+    }
+
+    #[tokio::test]
+    async fn reports_an_unknown_shell_as_a_spawn_error() {
+        let request = ShellRequest {
+            shell: Some("definitely-not-a-real-shell".to_owned()),
+            ..shell_request("true")
+        };
+
+        assert!(matches!(
+            shell(request, None).await,
+            Err(ExecError::Spawn { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn shell_shares_the_workspace_boundary() {
+        let dir = TempDir::new();
+        let request = ShellRequest {
+            cwd: Some("../outside".to_owned()),
+            ..shell_request("true")
+        };
+
+        assert!(matches!(
+            shell(request, Some(workspace(&dir))).await,
+            Err(ExecError::InvalidCwd { .. })
         ));
     }
 }

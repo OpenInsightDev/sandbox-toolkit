@@ -13,13 +13,6 @@ use ts_rs::TS;
 /// shell, which is what distinguishes exec from shell.
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "read by the exec handler, which is not wired up yet"
-    )
-)]
 pub(crate) struct ExecRequest {
     /// Executable to run: a path, or a bare name resolved through `PATH`.
     pub(crate) command: String,
@@ -33,6 +26,24 @@ pub(crate) struct ExecRequest {
     /// takes this value instead.
     #[serde(default)]
     pub(crate) env: HashMap<String, String>,
+}
+
+/// Parameters of a shell, submitted as the `POST .../shell` body.
+///
+/// The script is a single argument to the interpreter, so unlike exec it is tokenized
+/// by a shell rather than verbatim.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+pub(crate) struct ShellRequest {
+    /// Script content, parsed by the interpreter rather than passed through.
+    pub(crate) script: String,
+    /// Working directory, as in `ExecRequest`.
+    pub(crate) cwd: Option<String>,
+    /// Variables layered over the inherited environment, as in `ExecRequest`.
+    #[serde(default)]
+    pub(crate) env: HashMap<String, String>,
+    /// Interpreter to run the script, resolved through `PATH`; `sh` when omitted.
+    pub(crate) shell: Option<String>,
 }
 
 /// How a command finished.
@@ -66,6 +77,22 @@ impl Status {
             Self::Success | Self::Failed { .. } => None,
         }
     }
+}
+
+/// A command's outcome together with its output, returned when the response was not
+/// upgraded to a stream.
+///
+/// Output is decoded as UTF-8, replacing invalid sequences; a client that needs the
+/// exact bytes reads the exec frame stream instead.
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub(crate) struct ExecResult {
+    /// How the command finished.
+    pub(crate) status: Status,
+    /// Everything the command wrote to stdout.
+    pub(crate) stdout: String,
+    /// Everything the command wrote to stderr.
+    pub(crate) stderr: String,
 }
 
 #[cfg(test)]

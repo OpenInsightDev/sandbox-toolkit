@@ -7,13 +7,14 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::{AppError, AppState, Cli, fs, mcp, workspace};
+use crate::{AppError, AppState, Cli, fs, mcp, process, workspace};
 
 /// Build the API router.
 fn api_router() -> Router<AppState> {
     Router::new()
         .merge(workspace::router())
         .merge(fs::router())
+        .merge(process::router())
         .merge(mcp::router())
         // Every error response carries the JSON envelope described in
         // `docs/design/FileSystem.md`, including requests that match no route.
