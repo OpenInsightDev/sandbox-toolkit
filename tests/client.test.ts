@@ -7,7 +7,7 @@ import {
 } from "effect/unstable/http";
 import { expect, test } from "vite-plus/test";
 
-import { ApiError, Client, TransportError, layer } from "./client.ts";
+import { ApiError, Client, TransportError, layer } from "../src/internal/client.ts";
 
 const baseUrl = "http://sandbox.test";
 

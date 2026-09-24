@@ -16,14 +16,14 @@ export default defineConfig({
       typeCheck: true,
     },
     // Only lint the package's own sources, leaving vendored trees alone.
-    ignorePatterns: ["/*", "!/src"],
+    ignorePatterns: ["/*", "!/src", "!/tests"],
   },
   fmt: {
     // Only format the package's own sources, leaving vendored trees alone.
     // `src/generated/**` is written by `cargo test` via ts-rs; reformatting it would churn on every regeneration.
-    ignorePatterns: ["/*", "!/src", "src/generated/**"],
+    ignorePatterns: ["/*", "!/src", "!/tests", "src/generated/**"],
   },
   test: {
-    include: ["src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    include: ["tests/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
   },
 });

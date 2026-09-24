@@ -7,9 +7,9 @@ import {
 } from "effect/unstable/http";
 import { expect, test } from "vite-plus/test";
 
-import type { Status } from "./generated/Status.ts";
-import * as Client from "./internal/client.ts";
-import * as Process from "./Process.ts";
+import type { Status } from "../src/generated/Status.ts";
+import * as Client from "../src/internal/client.ts";
+import * as Process from "../src/Process.ts";
 
 const baseUrl = "http://sandbox.test";
 
