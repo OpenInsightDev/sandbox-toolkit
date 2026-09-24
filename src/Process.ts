@@ -1,8 +1,29 @@
 import { Context, Effect, Layer, Stream } from "effect";
+import { HttpClientRequest } from "effect/unstable/http";
 import type { TemplateExpression } from "effect/unstable/process/ChildProcess";
-import type { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
+import { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
 
-export type ProcessError = never;
+import type { ExecResult } from "./generated/ExecResult.ts";
+import { Client } from "./internal/client.ts";
+import {
+  CommandFailed,
+  ProcessEvent,
+  StreamError,
+  endLines,
+  execRequest,
+  isTemplateStrings,
+  renderShell,
+  responseEvents,
+  responseExec,
+  responseResult,
+  shellRequest,
+  takeLines,
+  type ProcessError,
+} from "./internal/process.ts";
+import { route } from "./internal/prelude.ts";
+
+export { CommandFailed, ProcessEvent, StreamError };
+export type { ProcessError };
 
 export interface ProcessResult {
   /**
@@ -41,6 +62,17 @@ export interface CommandOptions {
    * environment. The child will not receive `PATH` unless `env` includes it.
    */
   readonly env?: Record<string, string | undefined> | undefined;
+  /**
+   * How long the server waits for the command to finish before upgrading the
+   * response to the frame stream, in milliseconds.
+   *
+   * **Details**
+   *
+   * It bounds only the wait for a direct result and never terminates the
+   * command. `Process.stream` defaults it to `0`, so the response upgrades as
+   * soon as it can; the other operations leave the server's default in place.
+   */
+  readonly timeout?: number | undefined;
 }
 
 export interface ShellCommandOptions extends CommandOptions {
@@ -57,9 +89,37 @@ export class Process extends Context.Service<
   Process,
   {
     /**
-     * Spawn a command and return a handle for interaction.
+     * Run a command and return its result, collecting the command's output
+     * into a single value.
+     *
+     * **Details**
+     *
+     * Both response shapes are handled: the multiplexed frame stream is drained
+     * when the server upgrades to it, and the direct result is used otherwise.
      */
-    spawn(command: Command): Effect.Effect<ProcessResult, ProcessError>;
+    result(command: Command): Effect.Effect<ProcessResult, ProcessError>;
+
+    /**
+     * Run a command and stream its multiplexed output: the `Stdout` and
+     * `Stderr` chunks as they arrive, ending with a single `Exit` event.
+     *
+     * **Details**
+     *
+     * Both response shapes are handled: the frame stream is decoded when the
+     * server upgrades to it, and the events are synthesized from the direct
+     * result otherwise. A command that could not run, or a stream that is
+     * truncated or malformed, fails the stream.
+     */
+    stream(command: Command): Stream.Stream<ProcessEvent, ProcessError>;
+
+    /**
+     * Run a command and hand back whichever shape the server answered with:
+     * the collected result for a direct response, the multiplexed event
+     * stream for an upgraded one.
+     */
+    exec(
+      command: Command,
+    ): Effect.Effect<ProcessResult | Stream.Stream<ProcessEvent, ProcessError>, ProcessError>;
 
     $: {
       (
@@ -80,14 +140,15 @@ export class Process extends Context.Service<
     exitCode(command: Command): Effect.Effect<ExitCode, ProcessError>;
 
     /**
-     * Run a command and return the lines of its output as an array of strings.
+     * Run a command and stream the lines of its output, without their line
+     * endings.
      */
     lines(
       command: Command,
       options?: {
         readonly includeStderr?: boolean | undefined;
       },
-    ): Effect.Effect<Array<string>, ProcessError>;
+    ): Stream.Stream<string, ProcessError>;
 
     /**
      * Run a command and return its output as a string.
@@ -101,17 +162,119 @@ export class Process extends Context.Service<
   }
 >()("process") {}
 
-export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
-  Layer.effect(
-    Process,
-    Effect.gen(function* () {
-      throw new Error("not implemented");
-    }),
-  );
+export const make = Effect.fn("Process.make")(function* (
+  options: { workspace?: string | undefined } = {},
+) {
+  const client = yield* Client;
 
-export const layer = Layer.effect(
-  Process,
-  Effect.gen(function* () {
-    throw new Error("not implemented");
-  }),
-);
+  const execHttpRequest = (command: Command): HttpClientRequest.HttpClientRequest =>
+    HttpClientRequest.post(route(options.workspace, "/exec")).pipe(
+      HttpClientRequest.bodyJsonUnsafe(execRequest(command)),
+    );
+
+  const eventStream = (command: Command): Stream.Stream<ProcessEvent, ProcessError> =>
+    Stream.unwrap(Effect.map(client.execute(execHttpRequest(command)), responseEvents));
+
+  // The response shape is the server's choice: a command that outlives the probe
+  // is answered with the frame stream, a shorter one with the direct result.
+  const result = (command: Command): Effect.Effect<ProcessResult, ProcessError> =>
+    Effect.flatMap(client.execute(execHttpRequest(command)), responseResult);
+
+  const exec = (
+    command: Command,
+  ): Effect.Effect<ProcessResult | Stream.Stream<ProcessEvent, ProcessError>, ProcessError> =>
+    Effect.flatMap(client.execute(execHttpRequest(command)), responseExec);
+
+  const stream = (command: Command): Stream.Stream<ProcessEvent, ProcessError> =>
+    eventStream({
+      ...command,
+      options: { ...command.options, timeout: command.options?.timeout ?? 0 },
+    });
+
+  const runShell = (
+    shellOptions: ShellCommandOptions,
+    strings: TemplateStringsArray,
+    values: ReadonlyArray<TemplateExpression>,
+  ): Effect.Effect<string, ProcessError> =>
+    Effect.gen(function* () {
+      const request = HttpClientRequest.post(route(options.workspace, "/shell")).pipe(
+        HttpClientRequest.bodyJsonUnsafe(shellRequest(renderShell(strings, values), shellOptions)),
+      );
+      const result = yield* client.json<ExecResult>(request);
+
+      return result.stdout;
+    });
+
+  function dollar(
+    strings: TemplateStringsArray,
+    ...values: ReadonlyArray<TemplateExpression>
+  ): Effect.Effect<string, ProcessError>;
+  function dollar(
+    shellOptions: ShellCommandOptions,
+  ): (
+    strings: TemplateStringsArray,
+    ...values: ReadonlyArray<TemplateExpression>
+  ) => Effect.Effect<string, ProcessError>;
+  function dollar(
+    first: TemplateStringsArray | ShellCommandOptions,
+    ...values: ReadonlyArray<TemplateExpression>
+  ):
+    | Effect.Effect<string, ProcessError>
+    | ((
+        strings: TemplateStringsArray,
+        ...values: ReadonlyArray<TemplateExpression>
+      ) => Effect.Effect<string, ProcessError>) {
+    if (isTemplateStrings(first)) {
+      return runShell({}, first, values);
+    }
+
+    return (strings, ...args) => runShell(first, strings, args);
+  }
+
+  const outputText = (
+    command: Command,
+    outputOptions?: { readonly includeStderr?: boolean | undefined },
+  ): Stream.Stream<string, ProcessError> =>
+    Stream.unwrap(
+      Effect.map(result(command), (collected) => {
+        const stdout = Stream.decodeText(collected.stdout);
+
+        return outputOptions?.includeStderr === true
+          ? Stream.concat(stdout, Stream.decodeText(collected.stderr))
+          : stdout;
+      }),
+    );
+
+  const string = (
+    command: Command,
+    stringOptions?: { readonly includeStderr?: boolean | undefined },
+  ): Effect.Effect<string, ProcessError> => Stream.mkString(outputText(command, stringOptions));
+
+  const lines = (
+    command: Command,
+    linesOptions?: { readonly includeStderr?: boolean | undefined },
+  ): Stream.Stream<string, ProcessError> =>
+    outputText(command, linesOptions).pipe(
+      Stream.mapAccum(() => "", takeLines, { onHalt: endLines }),
+    );
+
+  return Process.of({
+    result,
+    exec,
+    $: dollar,
+    stream,
+    exitCode: (command) => Effect.flatMap(result(command), (result) => result.exitCode),
+    lines,
+    string,
+  });
+});
+
+/**
+ * The process service over a workspace, where `cwd` is a workspace-relative
+ * path.
+ */
+export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
+  Layer.effect(Process, make({ workspace }));
+
+/** The process service in direct mode, where `cwd` is an absolute path. */
+export const layer = Layer.effect(Process, make());
