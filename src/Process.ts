@@ -177,19 +177,23 @@ export const make = Effect.fn("Process.make")(function* (
 
   // The response shape is the server's choice: a command that outlives the probe
   // is answered with the frame stream, a shorter one with the direct result.
-  const result = (command: Command): Effect.Effect<ProcessResult, ProcessError> =>
-    Effect.flatMap(client.execute(execHttpRequest(command)), responseResult);
+  const result = ((command) =>
+    Effect.flatMap(
+      client.execute(execHttpRequest(command)),
+      responseResult,
+    )) satisfies Process["Service"]["result"];
 
-  const exec = (
-    command: Command,
-  ): Effect.Effect<ProcessResult | Stream.Stream<ProcessEvent, ProcessError>, ProcessError> =>
-    Effect.flatMap(client.execute(execHttpRequest(command)), responseExec);
+  const exec = ((command) =>
+    Effect.flatMap(
+      client.execute(execHttpRequest(command)),
+      responseExec,
+    )) satisfies Process["Service"]["exec"];
 
-  const stream = (command: Command): Stream.Stream<ProcessEvent, ProcessError> =>
+  const stream = ((command) =>
     eventStream({
       ...command,
       options: { ...command.options, timeout: command.options?.timeout ?? 0 },
-    });
+    })) satisfies Process["Service"]["stream"];
 
   const runShell = (
     shellOptions: ShellCommandOptions,
@@ -205,17 +209,17 @@ export const make = Effect.fn("Process.make")(function* (
       return result.stdout;
     });
 
-  function dollar(
+  function $(
     strings: TemplateStringsArray,
     ...values: ReadonlyArray<TemplateExpression>
   ): Effect.Effect<string, ProcessError>;
-  function dollar(
+  function $(
     shellOptions: ShellCommandOptions,
   ): (
     strings: TemplateStringsArray,
     ...values: ReadonlyArray<TemplateExpression>
   ) => Effect.Effect<string, ProcessError>;
-  function dollar(
+  function $(
     first: TemplateStringsArray | ShellCommandOptions,
     ...values: ReadonlyArray<TemplateExpression>
   ):
@@ -245,25 +249,26 @@ export const make = Effect.fn("Process.make")(function* (
       }),
     );
 
-  const string = (
-    command: Command,
-    stringOptions?: { readonly includeStderr?: boolean | undefined },
-  ): Effect.Effect<string, ProcessError> => Stream.mkString(outputText(command, stringOptions));
+  const exitCode = ((command) =>
+    Effect.flatMap(
+      result(command),
+      (collected) => collected.exitCode,
+    )) satisfies Process["Service"]["exitCode"];
 
-  const lines = (
-    command: Command,
-    linesOptions?: { readonly includeStderr?: boolean | undefined },
-  ): Stream.Stream<string, ProcessError> =>
+  const string = ((command, stringOptions) =>
+    Stream.mkString(outputText(command, stringOptions))) satisfies Process["Service"]["string"];
+
+  const lines = ((command, linesOptions) =>
     outputText(command, linesOptions).pipe(
       Stream.mapAccum(() => "", takeLines, { onHalt: endLines }),
-    );
+    )) satisfies Process["Service"]["lines"];
 
   return Process.of({
     result,
     exec,
-    $: dollar,
+    $,
     stream,
-    exitCode: (command) => Effect.flatMap(result(command), (result) => result.exitCode),
+    exitCode,
     lines,
     string,
   });
