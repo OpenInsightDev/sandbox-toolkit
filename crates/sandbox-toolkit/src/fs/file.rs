@@ -20,8 +20,13 @@ pub(crate) enum ReadFileError {
     Io(#[from] std::io::Error),
 }
 
-/// Largest file served as one buffered response body; larger files stream.
-pub(crate) const INLINE_BODY_LIMIT: u64 = 8 * 1024 * 1024;
+/// How a `GET` sends the bytes of a file.
+pub(crate) enum DownloadMode {
+    /// Buffer the whole file and send it as one response body.
+    Direct,
+    /// Send the bytes through a fixed-size-buffer stream.
+    Stream,
+}
 
 /// Bytes pulled from the file per read while streaming.
 const STREAM_BUFFER_SIZE: usize = 64 * 1024;
@@ -53,17 +58,18 @@ pub(crate) struct FileHeaders {
 
 pub(crate) async fn prepare_download(
     target: &TargetFile,
-    inline_limit: u64,
+    mode: DownloadMode,
 ) -> Result<PreparedFile, ReadFileError> {
     let path = checked_target_file(target).await?;
     let headers = stat_file(&path).await?;
 
-    let content = if headers.content_length <= inline_limit {
-        FileContent::Inline(tokio::fs::read(&path).await?)
-    } else {
-        // Opening here is what checks read permission before the response starts.
-        let file = tokio::fs::File::open(&path).await?;
-        FileContent::Stream(ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE))
+    let content = match mode {
+        DownloadMode::Direct => FileContent::Inline(tokio::fs::read(&path).await?),
+        DownloadMode::Stream => {
+            // Opening here is what checks read permission before the response starts.
+            let file = tokio::fs::File::open(&path).await?;
+            FileContent::Stream(ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE))
+        }
     };
 
     Ok(PreparedFile { content, headers })
@@ -122,28 +128,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn reads_a_small_file_whole() {
-        let dir = TempDir::new();
-        tokio::fs::write(dir.path().join("a.txt"), "hello")
-            .await
-            .unwrap();
-
-        let prepared = prepare_download(&TargetFile::Absolute(dir.path().join("a.txt")), 1024)
-            .await
-            .unwrap();
-
-        assert_eq!(prepared.headers.content_length, 5);
-        assert_eq!(prepared.headers.content_type, mime_guess::mime::TEXT_PLAIN);
-        assert!(prepared.headers.etag.starts_with('"'));
-        assert!(prepared.headers.last_modified.is_some());
-        let FileContent::Inline(bytes) = prepared.content else {
-            panic!("a file under the inline limit must be buffered");
-        };
-        assert_eq!(bytes, b"hello");
-    }
-
-    #[tokio::test]
-    async fn streams_a_file_over_the_inline_limit() {
+    async fn direct_mode_buffers_the_whole_file() {
         let dir = TempDir::new();
         let content: Vec<u8> = (0..10_000u32)
             .flat_map(|value| value.to_be_bytes())
@@ -152,24 +137,51 @@ mod tests {
             .await
             .unwrap();
 
-        let prepared = prepare_download(&TargetFile::Absolute(dir.path().join("big.bin")), 1024)
-            .await
-            .unwrap();
+        let prepared = prepare_download(
+            &TargetFile::Absolute(dir.path().join("big.bin")),
+            DownloadMode::Direct,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(prepared.headers.content_length, 40_000);
         assert_eq!(
             prepared.headers.content_type,
             mime_guess::mime::APPLICATION_OCTET_STREAM
         );
+        assert!(prepared.headers.etag.starts_with('"'));
+        assert!(prepared.headers.last_modified.is_some());
+        let FileContent::Inline(bytes) = prepared.content else {
+            panic!("direct mode must buffer the whole file");
+        };
+        assert_eq!(bytes, content);
+    }
+
+    #[tokio::test]
+    async fn stream_mode_sends_the_whole_file() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("a.txt"), "hello")
+            .await
+            .unwrap();
+
+        let prepared = prepare_download(
+            &TargetFile::Absolute(dir.path().join("a.txt")),
+            DownloadMode::Stream,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(prepared.headers.content_length, 5);
+        assert_eq!(prepared.headers.content_type, mime_guess::mime::TEXT_PLAIN);
         let FileContent::Stream(stream) = prepared.content else {
-            panic!("a file over the inline limit must stream");
+            panic!("stream mode must stream the file");
         };
         let mut body = Vec::new();
         tokio::pin!(stream);
         while let Some(chunk) = stream.next().await {
             body.extend_from_slice(&chunk.unwrap());
         }
-        assert_eq!(body, content);
+        assert_eq!(body, b"hello");
     }
 
     #[tokio::test]
@@ -198,9 +210,12 @@ mod tests {
             .await
             .unwrap();
 
-        let prepared = prepare_download(&TargetFile::Absolute(dir.path().join("link")), 1024)
-            .await
-            .unwrap();
+        let prepared = prepare_download(
+            &TargetFile::Absolute(dir.path().join("link")),
+            DownloadMode::Direct,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(prepared.headers.content_length, 5);
     }
@@ -209,11 +224,18 @@ mod tests {
     async fn rejects_a_directory_and_a_missing_file() {
         let dir = TempDir::new();
 
-        let result = prepare_download(&TargetFile::Absolute(dir.path().to_owned()), 1024).await;
+        let result = prepare_download(
+            &TargetFile::Absolute(dir.path().to_owned()),
+            DownloadMode::Direct,
+        )
+        .await;
         assert!(matches!(result, Err(ReadFileError::NotAFile(_))));
 
-        let result =
-            prepare_download(&TargetFile::Absolute(dir.path().join("missing")), 1024).await;
+        let result = prepare_download(
+            &TargetFile::Absolute(dir.path().join("missing")),
+            DownloadMode::Direct,
+        )
+        .await;
         assert!(matches!(result, Err(ReadFileError::NotFound(_))));
     }
 }

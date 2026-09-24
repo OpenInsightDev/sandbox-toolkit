@@ -17,7 +17,7 @@ use std::{
 };
 
 use super::file::{
-    FileContent, FileHeaders, INLINE_BODY_LIMIT, ReadFileError, prepare_download, probe_file,
+    DownloadMode, FileContent, FileHeaders, ReadFileError, prepare_download, probe_file,
 };
 use super::model::{FileOperation, FilePath};
 use crate::workspace::registry::TargetFile;
@@ -97,19 +97,34 @@ impl FromRequestParts<AppState> for FileTarget {
     }
 }
 
-/// Reject the `type` query parameter on data-plane requests.
+/// Resolve the response shape of a `GET`.
 ///
-/// `type` selects a control-plane operation, which `QUERY`, `PATCH` and `POST`
-/// carry; on `GET` and `HEAD` the combination is `405 method_not_allowed`.
-fn reject_type(RawQuery(query): &RawQuery) -> Result<(), AppError> {
-    let has_type = query.as_deref().is_some_and(|query| {
-        url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "type")
-    });
-    if has_type {
-        return Err(AppError::MethodNotAllowed(Method::GET));
+/// `stream` streams the raw bytes; without a `type` the whole content is sent as
+/// one body. Any other `type` names a control-plane operation, so the
+/// combination is `405 method_not_allowed`.
+fn download_mode(query: &RawQuery) -> Result<DownloadMode, AppError> {
+    match query_value(query, "type").as_deref() {
+        None => Ok(DownloadMode::Direct),
+        Some("stream") => Ok(DownloadMode::Stream),
+        Some(_) => Err(AppError::MethodNotAllowed(Method::GET)),
+    }
+}
+
+/// Reject a `type` on `HEAD`, whose response shape is fixed.
+fn reject_type(query: &RawQuery) -> Result<(), AppError> {
+    if query_value(query, "type").is_some() {
+        return Err(AppError::MethodNotAllowed(Method::HEAD));
     }
 
     Ok(())
+}
+
+/// The first value of a query parameter, percent decoded once.
+fn query_value(query: &RawQuery, key: &str) -> Option<String> {
+    let raw = query.0.as_deref()?;
+    url::form_urlencoded::parse(raw.as_bytes())
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
 }
 
 /// A data-plane request must carry no body, so any data frame rejects it.
@@ -221,7 +236,7 @@ where
     }
 }
 
-/// The response shape depends on the target file, which is why this handler
+/// The response shape depends on the `type` parameter, which is why this handler
 /// returns [`Response`] rather than a concrete JSON type.
 async fn get_file(
     State(_state): State<AppState>,
@@ -230,10 +245,10 @@ async fn get_file(
     OriginalUri(_original_uri): OriginalUri,
     body: Body,
 ) -> Result<Response, AppError> {
-    reject_type(&query)?;
+    let mode = download_mode(&query)?;
     ensure_empty_body(body).await?;
 
-    let prepared = prepare_download(&target.0, INLINE_BODY_LIMIT)
+    let prepared = prepare_download(&target.0, mode)
         .await
         .map_err(map_read_error)?;
 
@@ -385,7 +400,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_rejects_a_type_parameter_a_body_and_a_directory() {
+    async fn get_streams_a_file_when_type_is_stream() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let uri = format!("/fs{}?type=stream", dir.path().join("note.txt").display());
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain");
+        assert_eq!(headers.get(header::CONTENT_LENGTH).unwrap(), "5");
+        assert_eq!(headers.get(header::ACCEPT_RANGES).unwrap(), "none");
+        assert!(headers.contains_key(header::ETAG));
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn get_rejects_a_mismatched_type_a_body_and_a_directory() {
         let dir = TempDir::new();
         tokio::fs::write(dir.path().join("note.txt"), "hello")
             .await
@@ -397,6 +440,17 @@ mod tests {
             &app,
             Request::builder()
                 .uri(format!("{file_uri}?type=metadata"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("{file_uri}?type=stream"))
                 .body(Body::empty())
                 .unwrap(),
         )
