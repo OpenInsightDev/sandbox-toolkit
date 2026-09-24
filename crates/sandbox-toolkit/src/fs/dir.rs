@@ -26,14 +26,42 @@ pub(crate) enum DirectoryError {
 pub(crate) async fn read_directory(
     target: &TargetFile,
 ) -> Result<DirectoryResponse, DirectoryError> {
-    let path = checked_target(target).await?;
-    let mut directory = tokio::fs::read_dir(&path).await?;
-    let mut entries = Vec::new();
+    read_directory_with_depth(target, false).await
+}
 
-    while let Some(entry) = directory.next_entry().await? {
-        entries.push(resource_entry(entry).await?);
+/// Read a directory and every descendant, equivalent to WebDAV `PROPFIND` with
+/// `Depth: infinity`.
+///
+/// Symbolic links are reported as entries but never followed, so a self-referential
+/// link cannot make the walk diverge.
+pub(crate) async fn read_directory_recursive(
+    target: &TargetFile,
+) -> Result<DirectoryResponse, DirectoryError> {
+    read_directory_with_depth(target, true).await
+}
+
+/// Walk `target`, descending into subdirectories when `recursive`.
+async fn read_directory_with_depth(
+    target: &TargetFile,
+    recursive: bool,
+) -> Result<DirectoryResponse, DirectoryError> {
+    let path = checked_target(target).await?;
+    let mut entries = Vec::new();
+    let mut pending = vec![path.clone()];
+
+    while let Some(directory) = pending.pop() {
+        let mut read_dir = tokio::fs::read_dir(&directory).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
+            let (child, child_path) = resource_entry(entry).await?;
+            // `resource_entry` classifies from `symlink_metadata`, so a symlink is
+            // never `Directory` and is only listed, not traversed. Reusing the entry's
+            // own path avoids rebuilding it from the display string.
+            if recursive && child.kind == ResourceKind::Directory {
+                pending.push(child_path);
+            }
+            entries.push(child);
+        }
     }
-    entries.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(DirectoryResponse {
         path: path.display().to_string(),
@@ -124,7 +152,9 @@ async fn ensure_within_workspace(
     }
 }
 
-async fn resource_entry(entry: tokio::fs::DirEntry) -> Result<ResourceEntry, DirectoryError> {
+async fn resource_entry(
+    entry: tokio::fs::DirEntry,
+) -> Result<(ResourceEntry, std::path::PathBuf), DirectoryError> {
     let path = entry.path();
     let metadata = tokio::fs::symlink_metadata(&path).await?;
     let kind = if metadata.is_dir() {
@@ -140,14 +170,16 @@ async fn resource_entry(entry: tokio::fs::DirEntry) -> Result<ResourceEntry, Dir
         )));
     };
 
-    Ok(ResourceEntry {
+    let entry = ResourceEntry {
         name: entry.file_name().to_string_lossy().into_owned(),
         path: path.display().to_string(),
         kind,
         size: metadata.is_file().then_some(metadata.len()),
         etag: etag(&metadata),
         modified_at: modified_at(&metadata),
-    })
+    };
+
+    Ok((entry, path))
 }
 
 impl From<MetadataError> for DirectoryError {
@@ -166,7 +198,7 @@ mod tests {
     use crate::workspace::registry::test_support::TempDir;
 
     #[tokio::test]
-    async fn reads_sorted_direct_children() {
+    async fn reads_direct_children() {
         let dir = TempDir::new();
         tokio::fs::write(dir.path().join("z.txt"), "z")
             .await
@@ -175,8 +207,62 @@ mod tests {
         let target = TargetFile::Absolute(dir.path().to_owned());
 
         let response = read_directory(&target).await.unwrap();
-        assert_eq!(response.entries[0].name, "a");
-        assert_eq!(response.entries[1].name, "z.txt");
+        let mut names: Vec<&str> = response
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "z.txt"]);
+    }
+
+    #[tokio::test]
+    async fn recursive_read_walks_the_whole_subtree() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir_all(dir.path().join("a/b"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("a/b/c.txt"), "c")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("z.txt"), "z")
+            .await
+            .unwrap();
+        let target = TargetFile::Absolute(dir.path().to_owned());
+
+        let response = read_directory_recursive(&target).await.unwrap();
+        let mut names: Vec<&str> = response
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "b", "c.txt", "z.txt"]);
+    }
+
+    #[tokio::test]
+    async fn recursive_read_does_not_follow_symlinks() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir(dir.path().join("a")).await.unwrap();
+        tokio::fs::symlink(dir.path(), dir.path().join("loop"))
+            .await
+            .unwrap();
+        let target = TargetFile::Absolute(dir.path().to_owned());
+
+        let response = read_directory_recursive(&target).await.unwrap();
+        let mut names: Vec<&str> = response
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "loop"]);
+        let loop_entry = response
+            .entries
+            .iter()
+            .find(|entry| entry.name == "loop")
+            .unwrap();
+        assert_eq!(loop_entry.kind, ResourceKind::Symlink);
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::dir::{DirectoryError, create_directory, read_directory};
+use super::dir::{DirectoryError, create_directory, read_directory, read_directory_recursive};
 use super::file::{
     DownloadMode, FileContent, FileHeaders, ReadFileError, prepare_download, probe_file,
 };
@@ -200,6 +200,18 @@ fn query_operation(query: &RawQuery) -> Result<QueryOperation, AppError> {
         None => Err(AppError::UnsupportedType(
             "QUERY requires a `type`".to_owned(),
         )),
+    }
+}
+
+/// Whether `type=list` should recurse into subdirectories.
+///
+/// A missing `depth` lists direct children; only `infinity` is accepted and walks
+/// the whole subtree, matching WebDAV's `PROPFIND` `Depth` semantics.
+fn list_recursive(query: &RawQuery) -> Result<bool, AppError> {
+    match query_value(query, "depth").as_deref() {
+        None => Ok(false),
+        Some("infinity") => Ok(true),
+        Some(value) => Err(AppError::BadRequest(format!("unsupported depth: {value}"))),
     }
 }
 
@@ -438,9 +450,12 @@ async fn query_resource(
             )
             .await?;
 
-            let directory = read_directory(&target.resource)
-                .await
-                .map_err(map_directory_error)?;
+            let directory = if list_recursive(&query)? {
+                read_directory_recursive(&target.resource).await
+            } else {
+                read_directory(&target.resource).await
+            }
+            .map_err(map_directory_error)?;
 
             Ok(Json(&directory).into_response())
         }
@@ -959,7 +974,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_list_returns_sorted_direct_children() {
+    async fn query_list_returns_direct_children() {
         let dir = TempDir::new();
         tokio::fs::write(dir.path().join("z.txt"), "hello")
             .await
@@ -986,15 +1001,99 @@ mod tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let entries = body["entries"].as_array().unwrap();
-        let names: Vec<&str> = entries
+        let mut names: Vec<&str> = entries
             .iter()
             .map(|entry| entry["name"].as_str().unwrap())
             .collect();
+        names.sort_unstable();
         assert_eq!(names, ["a", "link", "z.txt"]);
-        assert_eq!(entries[0]["kind"], "directory");
-        assert_eq!(entries[1]["kind"], "symlink");
-        assert_eq!(entries[2]["kind"], "file");
-        assert_eq!(entries[2]["size"], 5);
+        let by_name = |name: &str| entries.iter().find(|entry| entry["name"] == name).unwrap();
+        assert_eq!(by_name("a")["kind"], "directory");
+        assert_eq!(by_name("link")["kind"], "symlink");
+        assert_eq!(by_name("z.txt")["kind"], "file");
+        assert_eq!(by_name("z.txt")["size"], 5);
+    }
+
+    #[tokio::test]
+    async fn query_list_recurses_with_depth_infinity() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir_all(dir.path().join("a/b"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("a/b/c.txt"), "hello")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("z.txt"), "z")
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+        let base = format!("/fs{}?type=list", dir.path().display());
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(&base)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = body["entries"].as_array().unwrap();
+        let mut names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "z.txt"]);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!("{base}&depth=infinity"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = body["entries"].as_array().unwrap();
+        let mut names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "b", "c.txt", "z.txt"]);
+        let c_txt = entries
+            .iter()
+            .find(|entry| entry["name"] == "c.txt")
+            .unwrap();
+        assert_eq!(c_txt["kind"], "file");
+        assert_eq!(c_txt["size"], 5);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!("{base}&depth=2"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"].as_str(), Some("bad_request"));
     }
 
     #[tokio::test]
