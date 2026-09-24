@@ -17,11 +17,12 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use super::dir::{DirectoryError, create_directory, read_directory};
 use super::file::{
     DownloadMode, FileContent, FileHeaders, ReadFileError, prepare_download, probe_file,
 };
 use super::meta::{MetadataError, read_metadata};
-use super::model::{ResourceOperation, ResourcePath};
+use super::model::{ResourceMetadata, ResourceOperation, ResourcePath};
 use crate::workspace::registry::TargetFile;
 use crate::{AppError, AppState};
 use axum::Json;
@@ -29,6 +30,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, OriginalUri, Path as AxumPath, RawQuery, State};
 use axum::http::Method;
+use axum::http::StatusCode;
 use axum::http::header::{self, HeaderValue};
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
@@ -260,6 +262,33 @@ fn map_metadata_error(error: MetadataError) -> AppError {
     }
 }
 
+fn map_directory_error(error: DirectoryError) -> AppError {
+    match error {
+        DirectoryError::NotFound(path) => AppError::NotFound(path),
+        DirectoryError::NotDirectory(path) => AppError::NotADirectory(path),
+        // A missing parent and an occupied target are both WebDAV `MKCOL`
+        // conflicts, which is what `DirectoryError` exists to keep apart.
+        DirectoryError::AlreadyExists(_) | DirectoryError::ParentNotFound(_) => {
+            AppError::Conflict(error.to_string())
+        }
+        DirectoryError::OutsideWorkspace(path) => {
+            AppError::BadRequest(format!("path escapes workspace: {path}"))
+        }
+        DirectoryError::Io(error) => AppError::Internal(error.into()),
+    }
+}
+
+/// Serialize `metadata` and stamp the `ETag` its `etag` field carries.
+fn json_resource(metadata: &ResourceMetadata, status: StatusCode) -> Response {
+    let mut response = Json(metadata).into_response();
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&metadata.etag).expect("an entity-tag is a valid header value"),
+    );
+    response
+}
+
 impl FileHeaders {
     /// Stamp the data-plane headers onto a response built from the content.
     ///
@@ -395,15 +424,21 @@ async fn query_resource(
                 .await
                 .map_err(map_metadata_error)?;
 
-            let mut response = Json(&metadata).into_response();
-            response.headers_mut().insert(
-                header::ETAG,
-                HeaderValue::from_str(&metadata.etag)
-                    .expect("an entity-tag is a valid header value"),
-            );
-            Ok(response)
+            Ok(json_resource(&metadata, StatusCode::OK))
         }
-        QueryOperation::List => Err(AppError::NotImplemented("QUERY list")),
+        QueryOperation::List => {
+            ensure_empty_body(
+                body,
+                AppError::InvalidRequest("list takes no request body".to_owned()),
+            )
+            .await?;
+
+            let directory = read_directory(&target.resource)
+                .await
+                .map_err(map_directory_error)?;
+
+            Ok(Json(&directory).into_response())
+        }
         QueryOperation::Glob => Err(AppError::NotImplemented("QUERY glob")),
         QueryOperation::Realpath => Err(AppError::NotImplemented("QUERY realpath")),
         QueryOperation::Access => Err(AppError::NotImplemented("QUERY access")),
@@ -423,12 +458,30 @@ async fn post_resource(
 
 async fn put_resource(
     State(_state): State<AppState>,
-    AxumPath(_resource): AxumPath<ResourcePath>,
+    target: ResourceTarget,
+    query: RawQuery,
     _conditions: ConditionalHeaders,
     OriginalUri(_original_uri): OriginalUri,
-    _body: Body,
+    body: Body,
 ) -> Result<Response, AppError> {
-    Err(AppError::NotImplemented("PUT resource"))
+    match request_type(&query)?.as_deref() {
+        Some("directory") => {
+            target.require_resource_path()?;
+            ensure_empty_body(
+                body,
+                AppError::InvalidRequest("directory takes no request body".to_owned()),
+            )
+            .await?;
+
+            let metadata = create_directory(&target.resource)
+                .await
+                .map_err(map_directory_error)?;
+
+            Ok(json_resource(&metadata, StatusCode::CREATED))
+        }
+        Some(_) => Err(AppError::MethodNotAllowed(Method::PUT)),
+        None => Err(AppError::NotImplemented("PUT resource")),
+    }
 }
 
 async fn delete_resource(
@@ -855,7 +908,7 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri(format!("{uri}?type=list"))
+                .uri(format!("{uri}?type=glob"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -898,6 +951,199 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn query_list_returns_sorted_direct_children() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("z.txt"), "hello")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(dir.path().join("a")).await.unwrap();
+        tokio::fs::symlink("z.txt", dir.path().join("link"))
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!("/fs{}?type=list", dir.path().display()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = body["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["a", "link", "z.txt"]);
+        assert_eq!(entries[0]["kind"], "directory");
+        assert_eq!(entries[1]["kind"], "symlink");
+        assert_eq!(entries[2]["kind"], "file");
+        assert_eq!(entries[2]["size"], 5);
+    }
+
+    #[tokio::test]
+    async fn query_list_lists_the_workspace_root() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let state = AppState::new(".");
+        state
+            .workspaces()
+            .register("docs", &dir.root())
+            .await
+            .unwrap();
+        let app = router().with_state(state);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri("/workspaces/docs/fs?type=list")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["entries"][0]["name"], "note.txt");
+    }
+
+    #[tokio::test]
+    async fn query_list_rejects_a_file_and_a_missing_directory() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!(
+                    "/fs{}?type=list",
+                    dir.path().join("note.txt").display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"].as_str(), Some("not_a_directory"));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!(
+                    "/fs{}?type=list",
+                    dir.path().join("missing").display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_directory_creates_one_directory() {
+        let dir = TempDir::new();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/fs{}?type=directory",
+                    dir.path().join("child").display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(response.headers().contains_key(header::ETAG));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["kind"], "directory");
+        assert_eq!(body["name"], "child");
+        assert!(dir.path().join("child").is_dir());
+    }
+
+    #[tokio::test]
+    async fn put_directory_reports_conflicts_and_unknown_types() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir(dir.path().join("existing"))
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/fs{}?type=directory",
+                    dir.path().join("existing").display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/fs{}?type=directory",
+                    dir.path().join("missing/child").display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/fs{}?type=metadata",
+                    dir.path().join("child").display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

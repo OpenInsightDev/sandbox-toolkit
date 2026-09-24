@@ -174,7 +174,6 @@ enum AppError {
     NotAFile(String),
 
     /// The operation needs a directory but the target is a file.
-    #[expect(dead_code, reason = "no directory-scoped operation is wired up yet")]
     #[error("target is not a directory: {0}")]
     NotADirectory(String),
 

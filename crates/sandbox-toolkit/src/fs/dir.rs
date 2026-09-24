@@ -60,8 +60,13 @@ pub(crate) async fn create_directory(
     let parent = path
         .parent()
         .ok_or_else(|| DirectoryError::ParentNotFound(path.display().to_string()))?;
-    if !tokio::fs::metadata(parent).await?.is_dir() {
-        return Err(DirectoryError::ParentNotFound(parent.display().to_string()));
+    match tokio::fs::metadata(parent).await {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(DirectoryError::ParentNotFound(parent.display().to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DirectoryError::ParentNotFound(parent.display().to_string()));
+        }
+        Err(error) => return Err(error.into()),
     }
 
     tokio::fs::create_dir(&path).await.map_err(|error| {
