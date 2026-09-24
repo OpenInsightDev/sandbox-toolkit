@@ -21,6 +21,7 @@ use super::dir::{DirectoryError, create_directory, read_directory, read_director
 use super::file::{
     DownloadMode, FileContent, FileHeaders, ReadFileError, prepare_download, probe_file,
 };
+use super::glob::{self, GlobError, GlobRequest};
 use super::meta::{MetadataError, read_metadata};
 use super::model::{ResourceMetadata, ResourceOperation, ResourcePath};
 use crate::workspace::registry::TargetFile;
@@ -223,6 +224,47 @@ fn query_value(query: &RawQuery, key: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
+/// Every value of a repeatable query parameter, percent decoded once.
+fn query_values(query: &RawQuery, key: &str) -> Vec<String> {
+    let Some(raw) = query.0.as_deref() else {
+        return Vec::new();
+    };
+    url::form_urlencoded::parse(raw.as_bytes())
+        .filter(|(name, _)| name == key)
+        .map(|(_, value)| value.into_owned())
+        .collect()
+}
+
+/// A query parameter parsed as a non-negative integer.
+fn query_usize(query: &RawQuery, key: &str) -> Result<Option<usize>, AppError> {
+    match query_value(query, key) {
+        None => Ok(None),
+        Some(value) => value
+            .parse()
+            .map(Some)
+            .map_err(|_| AppError::BadRequest(format!("invalid {key}: {value}"))),
+    }
+}
+
+/// The inputs of a `QUERY ?type=glob`.
+fn glob_request(query: &RawQuery) -> Result<GlobRequest, AppError> {
+    let pattern = query_value(query, "pattern")
+        .filter(|pattern| !pattern.is_empty())
+        .ok_or_else(|| AppError::BadRequest("glob requires a `pattern`".to_owned()))?;
+
+    let limit = query_usize(query, "limit")?;
+    if limit == Some(0) {
+        return Err(AppError::BadRequest("limit must be positive".to_owned()));
+    }
+
+    Ok(GlobRequest {
+        pattern,
+        exclude: query_values(query, "exclude"),
+        offset: query_usize(query, "offset")?.unwrap_or(0),
+        limit,
+    })
+}
+
 /// A read request must carry no body, so any data frame rejects it with the
 /// failure its caller reports.
 async fn ensure_empty_body(body: Body, rejection: AppError) -> Result<(), AppError> {
@@ -276,6 +318,18 @@ fn map_metadata_error(error: MetadataError) -> AppError {
             AppError::BadRequest(format!("path escapes workspace: {path}"))
         }
         MetadataError::Io(error) => AppError::Internal(error.into()),
+    }
+}
+
+fn map_glob_error(error: GlobError) -> AppError {
+    match error {
+        GlobError::NotFound(path) => AppError::NotFound(path),
+        GlobError::NotDirectory(path) => AppError::NotADirectory(path),
+        GlobError::OutsideWorkspace(path) => {
+            AppError::BadRequest(format!("path escapes workspace: {path}"))
+        }
+        GlobError::InvalidPattern(message) => AppError::BadRequest(message),
+        GlobError::Io(error) => AppError::Internal(error.into()),
     }
 }
 
@@ -459,7 +513,19 @@ async fn query_resource(
 
             Ok(Json(&directory).into_response())
         }
-        QueryOperation::Glob => Err(AppError::NotImplemented("QUERY glob")),
+        QueryOperation::Glob => {
+            ensure_empty_body(
+                body,
+                AppError::InvalidRequest("glob takes no request body".to_owned()),
+            )
+            .await?;
+
+            let directory = glob::search(&target.resource, &glob_request(&query)?)
+                .await
+                .map_err(map_glob_error)?;
+
+            Ok(Json(&directory).into_response())
+        }
         QueryOperation::Realpath => Err(AppError::NotImplemented("QUERY realpath")),
         QueryOperation::Access => Err(AppError::NotImplemented("QUERY access")),
         QueryOperation::Lines => Err(AppError::NotImplemented("QUERY lines")),
@@ -924,6 +990,9 @@ mod tests {
             assert_eq!(body["error"]["code"].as_str(), code);
         }
 
+        // `glob` belongs to `QUERY`, so it is routed to the handler; a missing
+        // `pattern` is then the handler's own bad request rather than a routing
+        // failure.
         let response = call(
             &app,
             Request::builder()
@@ -933,7 +1002,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1168,6 +1237,141 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn query_glob_matches_a_pattern_in_a_workspace() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir(dir.path().join("nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("a.txt"), "a")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("b.md"), "b")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("nested/c.txt"), "c")
+            .await
+            .unwrap();
+        let state = AppState::new(".");
+        state
+            .workspaces()
+            .register("docs", &dir.root())
+            .await
+            .unwrap();
+        let app = router().with_state(state);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri("/workspaces/docs/fs?type=glob&pattern=**/*.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = body["entries"].as_array().unwrap();
+        let mut names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a.txt", "c.txt"]);
+        assert_eq!(body["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn query_glob_excludes_and_truncates() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir(dir.path().join("nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("a.txt"), "a")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("b.md"), "b")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("nested/c.txt"), "c")
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!(
+                    "/fs{}?type=glob&pattern=**/*&exclude=nested&limit=1",
+                    dir.path().display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        // Hits arrive in walk order, whose identity the filesystem does not fix.
+        let name = entries[0]["name"].as_str().unwrap();
+        assert!(["a.txt", "b.md"].contains(&name), "{name}");
+        assert_eq!(body["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn query_glob_rejects_a_file_and_a_missing_pattern() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+
+        for (uri, code) in [
+            (
+                format!(
+                    "/fs{}?type=glob&pattern=*",
+                    dir.path().join("note.txt").display()
+                ),
+                "not_a_directory",
+            ),
+            (
+                format!("/fs{}?type=glob", dir.path().display()),
+                "bad_request",
+            ),
+            (
+                format!("/fs{}?type=glob&pattern=[", dir.path().display()),
+                "bad_request",
+            ),
+        ] {
+            let response = call(
+                &app,
+                Request::builder()
+                    .method("QUERY")
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["code"].as_str(), Some(code), "{uri}");
+        }
     }
 
     #[tokio::test]

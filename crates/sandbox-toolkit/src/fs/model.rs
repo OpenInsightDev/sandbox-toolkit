@@ -107,6 +107,8 @@ pub(crate) struct ResourceEntry {
 pub(crate) struct DirectoryResponse {
     pub(crate) path: String,
     pub(crate) entries: Vec<ResourceEntry>,
+    /// Whether the server withheld entries past the returned slice.
+    pub(crate) truncated: bool,
 }
 
 /// Everything one resource reports about itself.

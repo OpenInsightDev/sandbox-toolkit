@@ -66,6 +66,8 @@ async fn read_directory_with_depth(
     Ok(DirectoryResponse {
         path: path.display().to_string(),
         entries,
+        // A directory read is never paginated, so nothing is withheld.
+        truncated: false,
     })
 }
 
@@ -108,7 +110,9 @@ pub(crate) async fn create_directory(
     Ok(read_metadata(target).await?)
 }
 
-async fn checked_target(target: &TargetFile) -> Result<std::path::PathBuf, DirectoryError> {
+pub(super) async fn checked_target(
+    target: &TargetFile,
+) -> Result<std::path::PathBuf, DirectoryError> {
     let path = target.path();
     let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -152,7 +156,7 @@ async fn ensure_within_workspace(
     }
 }
 
-async fn resource_entry(
+pub(super) async fn resource_entry(
     entry: tokio::fs::DirEntry,
 ) -> Result<(ResourceEntry, std::path::PathBuf), DirectoryError> {
     let path = entry.path();
