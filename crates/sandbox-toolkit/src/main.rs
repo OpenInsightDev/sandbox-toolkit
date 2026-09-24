@@ -43,22 +43,22 @@ async fn main() -> Result<()> {
 fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,sandbox_toolkit=debug"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sbx=debug"));
 
     fmt().with_env_filter(filter).init();
 }
 
 /// Command line interface used to configure and start the server.
 #[derive(Debug, Clone, Parser)]
-#[command(name = "sandbox-toolkit", version, about, long_about = None)]
+#[command(name = "sbx", version, about, long_about = None)]
 struct Cli {
     /// Interface address the HTTP server binds to.
     #[arg(
         long,
         value_name = "ADDR",
         default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST),
-        env = "SANDBOX_TOOLKIT_HOST",
+        env = "SBX_HOST",
     )]
     host: IpAddr,
 
@@ -68,17 +68,12 @@ struct Cli {
         short,
         value_name = "PORT",
         default_value_t = 3000,
-        env = "SANDBOX_TOOLKIT_PORT"
+        env = "SBX_PORT"
     )]
     port: u16,
 
     /// Root directory that filesystem routes are confined to.
-    #[arg(
-        long,
-        value_name = "DIR",
-        default_value = ".",
-        env = "SANDBOX_TOOLKIT_ROOT"
-    )]
+    #[arg(long, value_name = "DIR", default_value = ".", env = "SBX_ROOT")]
     root: PathBuf,
 }
 

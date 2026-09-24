@@ -3,6 +3,11 @@ name = "sandbox-toolkit"
 version = "0.0.1"
 edition = "2024"
 
+# The project is `sandbox-toolkit`; only the installed command is `sbx`.
+[[bin]]
+name = "sbx"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 # Vendored as the git submodule at `crates/axum` (tokio-rs/axum @ 7c3c6787), because

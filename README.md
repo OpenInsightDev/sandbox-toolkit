@@ -57,13 +57,13 @@ http://127.0.0.1:3000/mcp
 
 ## Configuration
 
-| Flag     | Environment Variable   | Description                         | Default                      |
-| -------- | ---------------------- | ----------------------------------- | ---------------------------- |
-| `--root` | `SANDBOX_TOOLKIT_ROOT` | Root directory the server may touch | `.`                          |
-| `--host` | `SANDBOX_TOOLKIT_HOST` | Bind address                        | `127.0.0.1`                  |
-| `--port` | `SANDBOX_TOOLKIT_PORT` | Bind port                           | `3000`                       |
-| —        | `RUST_LOG`             | Log filter (e.g. `debug`)           | `info,sandbox_toolkit=debug` |
+| Flag     | Environment Variable | Description                         | Default          |
+| -------- | -------------------- | ----------------------------------- | ---------------- |
+| `--root` | `SBX_ROOT`           | Root directory the server may touch | `.`              |
+| `--host` | `SBX_HOST`           | Bind address                        | `127.0.0.1`      |
+| `--port` | `SBX_PORT`           | Bind port                           | `3000`           |
+| —        | `RUST_LOG`           | Log filter (e.g. `debug`)           | `info,sbx=debug` |
 
 ## License
 
-MIT
+MIT License.
