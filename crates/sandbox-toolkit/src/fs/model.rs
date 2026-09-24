@@ -1,4 +1,4 @@
-//! Wire types shared by the file control and data plane.
+//! Wire types shared by the control and data plane.
 //!
 //! The same types also describe the MCP tools in [`super`], so their
 //! `JsonSchema` derivations are the tool input and output schemas.
@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Captures shared by every file URI.
+/// Captures shared by every resource URI.
 ///
 /// `path` is `None` only for the workspace root, which is addressed as
 /// `/workspaces/{workspace_id}/fs` (or with a trailing slash) because a
@@ -19,14 +19,14 @@ use ts_rs::TS;
 /// [`OriginalUri`]: axum::extract::OriginalUri
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-#[expect(dead_code, reason = "read by the file handlers, which are stubs")]
-pub(crate) struct FilePath {
+#[expect(dead_code, reason = "read by the resource handlers, which are stubs")]
+pub(crate) struct ResourcePath {
     workspace_id: String,
     #[serde(default)]
     path: Option<String>,
 }
 
-/// A control-plane operation submitted as the `POST` body of a file URI.
+/// A control-plane operation submitted as the `POST` body of a resource URI.
 ///
 /// Replaces the WebDAV `COPY` and `MOVE` methods: those are not standard HTTP
 /// methods, so axum cannot route them, and their parameters are structured rather
@@ -37,20 +37,20 @@ pub(crate) struct FilePath {
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case", tag = "operation")]
-#[expect(dead_code, reason = "read by the file handlers, which are stubs")]
-pub(crate) enum FileOperation {
-    /// Duplicate the target file at `destination`.
+#[expect(dead_code, reason = "read by the resource handlers, which are stubs")]
+pub(crate) enum ResourceOperation {
+    /// Duplicate the target resource at `destination`.
     Copy {
-        /// Workspace-relative path of the new file.
+        /// Workspace-relative path of the new resource.
         destination: String,
         /// Whether an existing `destination` may be replaced. Absent means the
         /// target must not exist.
         #[serde(default)]
         overwrite: bool,
     },
-    /// Move the target file to `destination`, removing it from `path`.
+    /// Move the target resource to `destination`, removing it from `path`.
     Move {
-        /// Workspace-relative path of the new file.
+        /// Workspace-relative path of the new resource.
         destination: String,
         /// Whether an existing `destination` may be replaced. Absent means the
         /// target must not exist.
@@ -62,10 +62,10 @@ pub(crate) enum FileOperation {
 /// Write parameters for a file: the target path plus its content.
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-#[expect(dead_code, reason = "read by the file handlers, which are stubs")]
+#[expect(dead_code, reason = "read by the resource handlers, which are stubs")]
 pub(crate) struct WriteFileRequest {
     #[serde(flatten)]
-    file: FilePath,
+    resource: ResourcePath,
     /// New file content, replacing any existing content.
     content: String,
 }
@@ -73,18 +73,18 @@ pub(crate) struct WriteFileRequest {
 /// Copy or move parameters: the source path plus the operation to apply.
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-#[expect(dead_code, reason = "read by the file handlers, which are stubs")]
-pub(crate) struct RelocateFileRequest {
+#[expect(dead_code, reason = "read by the resource handlers, which are stubs")]
+pub(crate) struct RelocateResourceRequest {
     #[serde(flatten)]
-    file: FilePath,
+    resource: ResourcePath,
     #[serde(flatten)]
-    operation: FileOperation,
+    operation: ResourceOperation,
 }
 
-#[derive(Debug, Serialize, JsonSchema, TS)]
+#[derive(Debug, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum FileType {
+pub(crate) enum ResourceKind {
     File,
     Directory,
     Symlink,
@@ -93,10 +93,10 @@ pub(crate) enum FileType {
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct FileEntry {
+pub(crate) struct ResourceEntry {
     pub(crate) name: String,
     pub(crate) path: String,
-    pub(crate) file_type: FileType,
+    pub(crate) kind: ResourceKind,
     pub(crate) size: Option<u64>,
     pub(crate) etag: String,
     pub(crate) modified_at: String,
@@ -106,15 +106,27 @@ pub(crate) struct FileEntry {
 #[ts(export)]
 pub(crate) struct DirectoryResponse {
     pub(crate) path: String,
-    pub(crate) entries: Vec<FileEntry>,
+    pub(crate) entries: Vec<ResourceEntry>,
 }
 
+/// Everything one resource reports about itself.
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
-pub(crate) struct FileMetadata {
+pub(crate) struct ResourceMetadata {
+    /// Final path component; empty for a root directory.
+    pub(crate) name: String,
+    /// Path in the request's addressing mode: workspace-relative, or remote
+    /// absolute. Empty addresses the workspace root.
     pub(crate) path: String,
-    pub(crate) file_type: FileType,
-    pub(crate) size: Option<u64>,
+    pub(crate) kind: ResourceKind,
+    /// Content size in bytes; a directory or symlink carries no content and
+    /// reports `0`.
+    pub(crate) size: u64,
     pub(crate) etag: String,
+    /// Filesystem modification time, RFC 3339.
     pub(crate) modified_at: String,
+    /// Link target, verbatim as stored; only for `kind=symlink`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) target: Option<String>,
 }

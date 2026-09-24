@@ -106,6 +106,15 @@ impl TargetFile {
         }
     }
 
+    /// The target as its addressing mode spells it: the workspace-relative
+    /// path, or the remote absolute path. Empty addresses the workspace root.
+    pub(crate) fn address(&self) -> String {
+        match self {
+            Self::Workspace { relative_path, .. } => relative_path.display().to_string(),
+            Self::Absolute(path) => path.display().to_string(),
+        }
+    }
+
     pub(crate) fn workspace_root(&self) -> Option<&Path> {
         match self {
             Self::Workspace { workspace, .. } => Some(workspace.root()),

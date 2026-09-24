@@ -203,6 +203,17 @@ enum AppError {
     #[error("precondition required: {0}")]
     PreconditionRequired(String),
 
+    /// The request body does not fit the schema of the `type` it names.
+    ///
+    /// A separate variant from [`Self::BadRequest`] because the machine-readable
+    /// code tells a malformed body apart from a malformed path or query.
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
+    /// The request names a `type` outside the file API's endpoint table.
+    #[error("unsupported type: {0}")]
+    UnsupportedType(String),
+
     /// A registered MCP server configuration failed validation.
     ///
     /// Raised when a `server` object does not satisfy the constraints of the
@@ -258,7 +269,10 @@ impl AppError {
             Self::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             Self::PreconditionRequired(_) => StatusCode::PRECONDITION_REQUIRED,
-            Self::InvalidMcp(_) | Self::UnsupportedTransport(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::InvalidMcp(_)
+            | Self::UnsupportedTransport(_)
+            | Self::InvalidRequest(_)
+            | Self::UnsupportedType(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::WorkspaceInUse(_) => StatusCode::CONFLICT,
             Self::ReadOnlyWorkspace(_) | Self::ManagedWorkspace(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -280,6 +294,8 @@ impl AppError {
             Self::PreconditionRequired(_) => "precondition_required",
             Self::InvalidMcp(_) => "invalid_mcp",
             Self::UnsupportedTransport(_) => "unsupported_transport",
+            Self::InvalidRequest(_) => "invalid_request",
+            Self::UnsupportedType(_) => "unsupported_type",
             Self::WorkspaceInUse(_) => "workspace_in_use",
             Self::ReadOnlyWorkspace(_) => "read_only_workspace",
             Self::ManagedWorkspace(_) => "managed_workspace",

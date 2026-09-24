@@ -1,10 +1,9 @@
-//! Directory operations shared by the HTTP and MCP file surfaces.
-
-use std::time::UNIX_EPOCH;
+//! Directory operations shared by the HTTP and MCP resource surfaces.
 
 use thiserror::Error;
 
-use super::model::{DirectoryResponse, FileEntry, FileMetadata, FileType};
+use super::meta::{MetadataError, etag, modified_at, read_metadata};
+use super::model::{DirectoryResponse, ResourceEntry, ResourceKind, ResourceMetadata};
 use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
@@ -32,7 +31,7 @@ pub(crate) async fn read_directory(
     let mut entries = Vec::new();
 
     while let Some(entry) = directory.next_entry().await? {
-        entries.push(file_entry(entry).await?);
+        entries.push(resource_entry(entry).await?);
     }
     entries.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -46,7 +45,9 @@ pub(crate) async fn read_directory(
 ///
 /// The operation deliberately does not create missing parents and never replaces an
 /// existing resource; callers can map those errors to `409 Conflict`.
-pub(crate) async fn create_directory(target: &TargetFile) -> Result<FileMetadata, DirectoryError> {
+pub(crate) async fn create_directory(
+    target: &TargetFile,
+) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
     ensure_within_workspace(target, &path).await?;
 
@@ -71,7 +72,7 @@ pub(crate) async fn create_directory(target: &TargetFile) -> Result<FileMetadata
         }
     })?;
 
-    metadata(&path).await
+    Ok(read_metadata(target).await?)
 }
 
 async fn checked_target(target: &TargetFile) -> Result<std::path::PathBuf, DirectoryError> {
@@ -118,15 +119,15 @@ async fn ensure_within_workspace(
     }
 }
 
-async fn file_entry(entry: tokio::fs::DirEntry) -> Result<FileEntry, DirectoryError> {
+async fn resource_entry(entry: tokio::fs::DirEntry) -> Result<ResourceEntry, DirectoryError> {
     let path = entry.path();
     let metadata = tokio::fs::symlink_metadata(&path).await?;
-    let file_type = if metadata.is_dir() {
-        FileType::Directory
+    let kind = if metadata.is_dir() {
+        ResourceKind::Directory
     } else if metadata.is_file() {
-        FileType::File
+        ResourceKind::File
     } else if metadata.file_type().is_symlink() {
-        FileType::Symlink
+        ResourceKind::Symlink
     } else {
         return Err(DirectoryError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -134,44 +135,24 @@ async fn file_entry(entry: tokio::fs::DirEntry) -> Result<FileEntry, DirectoryEr
         )));
     };
 
-    Ok(FileEntry {
+    Ok(ResourceEntry {
         name: entry.file_name().to_string_lossy().into_owned(),
         path: path.display().to_string(),
-        file_type,
+        kind,
         size: metadata.is_file().then_some(metadata.len()),
         etag: etag(&metadata),
         modified_at: modified_at(&metadata),
     })
 }
 
-async fn metadata(path: &std::path::Path) -> Result<FileMetadata, DirectoryError> {
-    let value = tokio::fs::symlink_metadata(path).await?;
-    Ok(FileMetadata {
-        path: path.display().to_string(),
-        file_type: FileType::Directory,
-        size: None,
-        etag: etag(&value),
-        modified_at: modified_at(&value),
-    })
-}
-
-pub(super) fn etag(metadata: &std::fs::Metadata) -> String {
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("\"{}-{}\"", metadata.len(), modified)
-}
-
-fn modified_at(metadata: &std::fs::Metadata) -> String {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_default()
+impl From<MetadataError> for DirectoryError {
+    fn from(error: MetadataError) -> Self {
+        match error {
+            MetadataError::NotFound(path) => Self::NotFound(path),
+            MetadataError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
+            MetadataError::Io(error) => Self::Io(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -199,7 +180,7 @@ mod tests {
         let target = TargetFile::Absolute(dir.path().join("child"));
 
         let metadata = create_directory(&target).await.unwrap();
-        assert!(matches!(metadata.file_type, FileType::Directory));
+        assert_eq!(metadata.kind, ResourceKind::Directory);
         assert!(dir.path().join("child").is_dir());
         assert!(matches!(
             create_directory(&target).await,

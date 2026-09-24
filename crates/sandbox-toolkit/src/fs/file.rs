@@ -5,7 +5,7 @@ use mime_guess::Mime;
 use thiserror::Error;
 use tokio_util::io::ReaderStream;
 
-use super::dir::etag;
+use super::meta::etag;
 use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
