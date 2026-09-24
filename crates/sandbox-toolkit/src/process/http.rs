@@ -1,11 +1,12 @@
 //! The exec and shell HTTP endpoints.
 //!
 //! Both answer in one of two shapes, chosen by the server the way the MCP Streamable
-//! HTTP transport does: a command that finishes within [`DIRECT_RESPONSE_TIMEOUT`]
-//! returns a single [`ExecResult`], while one that runs longer returns the
-//! multiplexed frame stream of [`exec`], keeping stdout, stderr and the terminal
-//! status apart. The probe buffers at most [`DIRECT_RESPONSE_LIMIT`] bytes, so a
-//! command that produces output faster than it exits cannot force unbounded memory.
+//! HTTP transport does: a command that finishes within the request's `timeout` —
+//! [`DIRECT_RESPONSE_TIMEOUT`] when it names none — returns a single [`ExecResult`],
+//! while one that runs longer returns the multiplexed frame stream of [`exec`], keeping
+//! stdout, stderr and the terminal status apart. The probe buffers at most
+//! [`DIRECT_RESPONSE_LIMIT`] bytes, so a command that produces output faster than it exits
+//! cannot force unbounded memory.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -28,7 +29,8 @@ use super::model::{ExecRequest, ExecResult, ShellRequest};
 use crate::workspace::registry::WorkspaceEnvironment;
 use crate::{AppError, AppState};
 
-/// How long a command may run before its response is upgraded to a stream.
+/// How long a command may run before its response is upgraded to a stream, when the
+/// request names no `timeout`.
 const DIRECT_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Most output the probe buffers before it gives up on a direct response.
@@ -79,14 +81,20 @@ async fn exec_endpoint(
     target: ProcessTarget,
     Json(request): Json<ExecRequest>,
 ) -> Result<Response, AppError> {
-    respond(exec::exec(request, target.0).await?).await
+    let timeout = probe_timeout(request.timeout);
+    let stream = exec::exec(request, target.0).await?;
+
+    respond(stream, timeout).await
 }
 
 async fn shell_endpoint(
     target: ProcessTarget,
     Json(request): Json<ShellRequest>,
 ) -> Result<Response, AppError> {
-    respond(exec::shell(request, target.0).await?).await
+    let timeout = probe_timeout(request.timeout);
+    let stream = exec::shell(request, target.0).await?;
+
+    respond(stream, timeout).await
 }
 
 /// Map a failed command onto the shared HTTP error envelope.
@@ -99,9 +107,15 @@ impl From<ExecError> for AppError {
     }
 }
 
-/// Answer `stream` with a direct result or the stream itself.
-async fn respond(stream: ReceiverStream<Frame>) -> Result<Response, AppError> {
-    respond_with(stream, DIRECT_RESPONSE_TIMEOUT, DIRECT_RESPONSE_LIMIT).await
+/// The probe deadline of a request: its `timeout` in milliseconds, or
+/// [`DIRECT_RESPONSE_TIMEOUT`] when it names none.
+fn probe_timeout(request_timeout: Option<u64>) -> Duration {
+    request_timeout.map_or(DIRECT_RESPONSE_TIMEOUT, Duration::from_millis)
+}
+
+/// Answer `stream` with a direct result or the stream itself, waiting up to `timeout`.
+async fn respond(stream: ReceiverStream<Frame>, timeout: Duration) -> Result<Response, AppError> {
+    respond_with(stream, timeout, DIRECT_RESPONSE_LIMIT).await
 }
 
 /// Wait up to `timeout` for the terminal status, buffering at most `limit` bytes.
@@ -383,6 +397,7 @@ mod tests {
             ],
             cwd: None,
             env: HashMap::new(),
+            timeout: None,
         };
         let stream = exec::exec(request, None).await.unwrap();
 
@@ -422,5 +437,74 @@ mod tests {
         let frames = frames(response).await;
         assert_eq!(stream_bytes(&frames, false), b"late");
         assert_eq!(final_status(&frames), Status::Success);
+    }
+
+    #[tokio::test]
+    async fn a_short_request_timeout_upgrades_the_response() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/exec",
+                &json!({
+                    "command": "sh",
+                    "args": ["-c", "sleep 0.3; printf late"],
+                    "timeout": 50,
+                }),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+            STREAM_CONTENT_TYPE
+        );
+
+        let frames = frames(response).await;
+        assert_eq!(stream_bytes(&frames, false), b"late");
+    }
+
+    #[tokio::test]
+    async fn a_long_request_timeout_keeps_a_slow_command_direct() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/exec",
+                &json!({
+                    "command": "sh",
+                    "args": ["-c", "sleep 0.3; printf late"],
+                    "timeout": 5000,
+                }),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+            "application/json"
+        );
+        assert_eq!(json_body(response).await["stdout"], json!("late"));
+    }
+
+    #[tokio::test]
+    async fn shell_honors_the_request_timeout() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/shell",
+                &json!({ "script": "sleep 0.3; printf late", "timeout": 50 }),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+            STREAM_CONTENT_TYPE
+        );
+
+        let frames = frames(response).await;
+        assert_eq!(stream_bytes(&frames, false), b"late");
     }
 }

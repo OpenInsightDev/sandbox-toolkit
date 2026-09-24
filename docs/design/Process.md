@@ -2,7 +2,7 @@
 
 区分 exec 和 pty：
 
-- exec 模仿 mcp 协议的 streamable-http，由服务端决定是否把响应升级成 http/2 流：如果命令很快执行则直接返回代表执行结果的响应；如果命令执行一定时间则升级流，在流中多路返回 stdout 和 stderr，以及最终的 exit code；
+- exec 模仿 mcp 协议的 streamable-http，由服务端决定是否把响应升级成 http/2 流：如果命令在请求的 `timeout` 内结束则直接返回代表执行结果的响应；否则升级流，在流中多路返回 stdout 和 stderr，以及最终的 exit code；
 - pty 提供专门的一套 session 管理 API，每个 session 通过 websocket 实现双向通信；
 
 具体设计参考 k8s api server 和 docker 的 remote api 设计。
@@ -20,12 +20,13 @@ exec、shell 与 pty 各占一个子路由：
 
 exec 直接执行一个可执行文件，参数逐项传递，不经过 shell 解析：
 
-| 参数      | 说明                    |
-| --------- | ----------------------- |
-| `command` | 可执行文件的路径或名称  |
-| `args`    | 参数数组，逐项组成 argv |
-| `cwd`     | 工作目录                |
-| `env`     | 环境变量                |
+| 参数      | 说明                                                               |
+| --------- | ------------------------------------------------------------------ |
+| `command` | 可执行文件的路径或名称                                             |
+| `args`    | 参数数组，逐项组成 argv                                            |
+| `cwd`     | 工作目录                                                           |
+| `env`     | 环境变量                                                           |
+| `timeout` | 等待命令结束以直接返回结果的上限（毫秒），超时则升级为流；缺省 500 |
 
 ## shell
 
@@ -38,7 +39,7 @@ shell 执行一段脚本，由 shell 解释器负责解析：
 | `env`    | 环境变量                                         |
 | `shell`  | 可选，指定使用的 shell 解释器；不指定时使用 `sh` |
 
-shell 与 exec 共用同一套执行和响应语义。
+shell 与 exec 共用同一套执行和响应语义，`timeout` 含义同上。
 
 ## pty session
 

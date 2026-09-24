@@ -26,6 +26,10 @@ pub(crate) struct ExecRequest {
     /// takes this value instead.
     #[serde(default)]
     pub(crate) env: HashMap<String, String>,
+    /// How long the server waits for the command to finish before upgrading the response
+    /// to a stream, in milliseconds; the server's default when omitted. It bounds only the
+    /// wait for a result and never terminates the command.
+    pub(crate) timeout: Option<u64>,
 }
 
 /// Parameters of a shell, submitted as the `POST .../shell` body.
@@ -44,6 +48,8 @@ pub(crate) struct ShellRequest {
     pub(crate) env: HashMap<String, String>,
     /// Interpreter to run the script, resolved through `PATH`; `sh` when omitted.
     pub(crate) shell: Option<String>,
+    /// Stream-upgrade wait, as in `ExecRequest::timeout`.
+    pub(crate) timeout: Option<u64>,
 }
 
 /// How a command finished.

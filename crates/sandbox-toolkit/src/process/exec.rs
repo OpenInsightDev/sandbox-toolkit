@@ -697,6 +697,7 @@ mod tests {
             args: args.iter().copied().map(str::to_owned).collect(),
             cwd: None,
             env: HashMap::new(),
+            timeout: None,
         }
     }
 
@@ -859,6 +860,7 @@ mod tests {
             cwd: None,
             env: HashMap::new(),
             shell: None,
+            timeout: None,
         }
     }
 
