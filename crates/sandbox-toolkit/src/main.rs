@@ -10,6 +10,7 @@ mod fs;
 mod mcp;
 mod process;
 mod server;
+mod skill;
 mod workspace;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -214,6 +215,22 @@ enum AppError {
     #[error("workspace is in use: {0}")]
     WorkspaceInUse(String),
 
+    /// The workspace is read-only and rejects the requested mutation.
+    ///
+    /// Raised for a workspace whose `access` property is `read-only`, which
+    /// `docs/design/Workspace.md` and `docs/design/FileSystem.md` map to
+    /// `403 read_only_workspace`; the workspaces the Skill API derives are
+    /// always read-only.
+    #[error("workspace is read-only: {0}")]
+    ReadOnlyWorkspace(String),
+
+    /// The workspace is derived and managed by another resource.
+    ///
+    /// Raised when deleting a workspace the Skill API derives, which
+    /// `docs/design/Skill.md` maps to `403 managed_workspace`.
+    #[error("workspace is managed: {0}")]
+    ManagedWorkspace(String),
+
     /// An unexpected internal failure.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -232,6 +249,7 @@ impl AppError {
             Self::PreconditionRequired(_) => StatusCode::PRECONDITION_REQUIRED,
             Self::InvalidMcp(_) | Self::UnsupportedTransport(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::WorkspaceInUse(_) => StatusCode::CONFLICT,
+            Self::ReadOnlyWorkspace(_) | Self::ManagedWorkspace(_) => StatusCode::FORBIDDEN,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -250,6 +268,8 @@ impl AppError {
             Self::InvalidMcp(_) => "invalid_mcp",
             Self::UnsupportedTransport(_) => "unsupported_transport",
             Self::WorkspaceInUse(_) => "workspace_in_use",
+            Self::ReadOnlyWorkspace(_) => "read_only_workspace",
+            Self::ManagedWorkspace(_) => "managed_workspace",
             Self::Internal(_) => "internal_error",
         }
     }
