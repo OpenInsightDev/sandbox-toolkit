@@ -8,12 +8,19 @@ import {
   type Sink,
   type Stream,
 } from "effect";
-import type { OpenFlag, File } from "effect/FileSystem";
+import type { OpenFlag, File, WatchOptions, WatchEvent } from "effect/FileSystem";
 
 export type FileSystemError = PlatformError.PlatformError;
 
 export interface FileSystem {
-  readonly access: (path: string) => Effect.Effect<void, FileSystemError>;
+  readonly access: (
+    path: string,
+    options?: {
+      readonly ok?: boolean | undefined;
+      readonly readable?: boolean | undefined;
+      readonly writable?: boolean | undefined;
+    },
+  ) => Effect.Effect<void, FileSystemError>;
 
   readonly copy: (
     fromPath: string,
@@ -46,6 +53,28 @@ export interface FileSystem {
       readonly recursive?: boolean | undefined;
     },
   ) => Effect.Effect<void, FileSystemError>;
+
+  readonly makeTempDirectory: (options?: {
+    readonly directory?: string | undefined;
+    readonly prefix?: string | undefined;
+  }) => Effect.Effect<string, FileSystemError>;
+
+  readonly makeTempDirectoryScoped: (options?: {
+    readonly directory?: string | undefined;
+    readonly prefix?: string | undefined;
+  }) => Effect.Effect<string, FileSystemError, Scope.Scope>;
+
+  readonly makeTempFile: (options?: {
+    readonly directory?: string | undefined;
+    readonly prefix?: string | undefined;
+    readonly suffix?: string | undefined;
+  }) => Effect.Effect<string, FileSystemError>;
+
+  readonly makeTempFileScoped: (options?: {
+    readonly directory?: string | undefined;
+    readonly prefix?: string | undefined;
+    readonly suffix?: string | undefined;
+  }) => Effect.Effect<string, FileSystemError, Scope.Scope>;
 
   readonly readDirectory: (
     path: string,
@@ -109,6 +138,11 @@ export interface FileSystem {
     atime: Date | number,
     mtime: Date | number,
   ) => Effect.Effect<void, FileSystemError>;
+
+  readonly watch: (
+    path: string,
+    options?: WatchOptions,
+  ) => Stream.Stream<WatchEvent, FileSystemError>;
 
   readonly writeFile: (
     path: string,
