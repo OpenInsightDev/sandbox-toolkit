@@ -1,0 +1,382 @@
+//! Frames of a pty session's WebSocket connection.
+//!
+//! A pty session runs over a WebSocket, so every message already carries its own
+//! boundary: the first byte selects a channel and the rest is the payload, with no
+//! length prefix. That is what separates these frames from the length-prefixed exec
+//! stream frames in [`super::frame`], which multiplex one HTTP stream.
+//!
+//! The channel set is closed, so a connection never creates channels. It has no
+//! stderr because a pty folds stderr into stdout, and the process outcome shares the
+//! exit channel rather than taking a channel of its own.
+
+#![expect(
+    dead_code,
+    reason = "consumed by the pty session handlers, which are not written yet"
+)]
+
+use bytes::{BufMut, Bytes, BytesMut};
+
+use super::frame::TerminalSize;
+use super::model::Status;
+
+/// A mux channel of a pty connection.
+///
+/// The discriminants are wire identifiers; reordering them changes the format.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Channel {
+    /// Client to server: input for the remote process.
+    Stdin = 0,
+    /// Server to client: output of the remote process, with stderr folded in.
+    Stdout = 1,
+    /// Server to client: the process outcome, carrying the exit code or an error.
+    Exit = 3,
+    /// Client to server: a new terminal size.
+    Resize = 4,
+    /// Either direction: end the session.
+    Close = 255,
+}
+
+impl Channel {
+    pub(crate) const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub(crate) fn from_u8(id: u8) -> Result<Self, FrameError> {
+        match id {
+            0 => Ok(Self::Stdin),
+            1 => Ok(Self::Stdout),
+            3 => Ok(Self::Exit),
+            4 => Ok(Self::Resize),
+            255 => Ok(Self::Close),
+            other => Err(FrameError::UnknownChannel(other)),
+        }
+    }
+
+    pub(crate) const fn direction(self) -> Direction {
+        match self {
+            Self::Stdin | Self::Resize => Direction::ClientToServer,
+            Self::Stdout | Self::Exit => Direction::ServerToClient,
+            Self::Close => Direction::Bidirectional,
+        }
+    }
+}
+
+/// Which peer may send on a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    ClientToServer,
+    ServerToClient,
+    Bidirectional,
+}
+
+/// One WebSocket message on a pty connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Frame {
+    Stdin(Bytes),
+    Stdout(Bytes),
+    /// The process outcome, which ends the output stream.
+    Exit(Status),
+    /// A resize request from the client.
+    Resize(TerminalSize),
+    /// A request to end the session.
+    Close,
+}
+
+impl Frame {
+    pub(crate) const fn channel(&self) -> Channel {
+        match self {
+            Self::Stdin(_) => Channel::Stdin,
+            Self::Stdout(_) => Channel::Stdout,
+            Self::Exit(_) => Channel::Exit,
+            Self::Resize(_) => Channel::Resize,
+            Self::Close => Channel::Close,
+        }
+    }
+
+    pub(crate) const fn direction(&self) -> Direction {
+        self.channel().direction()
+    }
+
+    /// Encodes the frame as a whole WebSocket message: the channel byte and then the
+    /// payload.
+    pub(crate) fn encode(&self) -> Bytes {
+        let payload = self.payload();
+        let mut message = BytesMut::with_capacity(1 + payload.len());
+        message.put_u8(self.channel().as_u8());
+        message.put_slice(&payload);
+        message.freeze()
+    }
+
+    /// Decodes one whole WebSocket message.
+    pub(crate) fn decode(message: &[u8]) -> Result<Self, FrameError> {
+        let Some((&id, payload)) = message.split_first() else {
+            return Err(FrameError::EmptyMessage);
+        };
+
+        Self::from_payload(Channel::from_u8(id)?, payload)
+    }
+
+    fn payload(&self) -> Bytes {
+        match self {
+            Self::Stdin(bytes) | Self::Stdout(bytes) => bytes.clone(),
+            Self::Exit(status) => serde_json::to_vec(status)
+                .expect("a status frame always serializes to JSON")
+                .into(),
+            Self::Resize(size) => Bytes::copy_from_slice(&size.to_wire()),
+            Self::Close => Bytes::new(),
+        }
+    }
+
+    fn from_payload(channel: Channel, payload: &[u8]) -> Result<Self, FrameError> {
+        let frame = match channel {
+            Channel::Stdin => Self::Stdin(Bytes::copy_from_slice(payload)),
+            Channel::Stdout => Self::Stdout(Bytes::copy_from_slice(payload)),
+            Channel::Exit => {
+                Self::Exit(serde_json::from_slice(payload).map_err(FrameError::InvalidStatus)?)
+            }
+            Channel::Resize => Self::Resize(TerminalSize::from_wire(payload).ok_or(
+                FrameError::InvalidPayload {
+                    channel,
+                    expected: TerminalSize::WIRE_LEN,
+                    length: payload.len(),
+                },
+            )?),
+            // A close signal carries no information, so any payload is ignored.
+            Channel::Close => Self::Close,
+        };
+
+        Ok(frame)
+    }
+}
+
+/// Tracks the order of frames on one pty connection: [`Frame::Exit`] is terminal for
+/// output, leaving only [`Frame::Close`], and nothing follows [`Frame::Close`].
+#[derive(Debug, Default)]
+pub(crate) struct SessionFrames {
+    exited: bool,
+    closed: bool,
+}
+
+impl SessionFrames {
+    /// Decodes one WebSocket message, rejecting a frame that [`Frame::Exit`] or
+    /// [`Frame::Close`] already ended.
+    pub(crate) fn decode(&mut self, message: &[u8]) -> Result<Frame, FrameError> {
+        if self.closed {
+            return Err(FrameError::FrameAfterClose);
+        }
+
+        let frame = Frame::decode(message)?;
+        match &frame {
+            Frame::Close => self.closed = true,
+            Frame::Exit(_) if self.exited => return Err(FrameError::FrameAfterExit),
+            Frame::Exit(_) => self.exited = true,
+            _ if self.exited => return Err(FrameError::FrameAfterExit),
+            _ => {}
+        }
+
+        Ok(frame)
+    }
+
+    pub(crate) const fn exited(&self) -> bool {
+        self.exited
+    }
+
+    pub(crate) const fn is_closed(&self) -> bool {
+        self.closed
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum FrameError {
+    #[error("empty WebSocket message carries no channel byte")]
+    EmptyMessage,
+    #[error("unknown channel id: {0}")]
+    UnknownChannel(u8),
+    #[error("channel {channel:?} payload must be at least {expected} bytes, got {length}")]
+    InvalidPayload {
+        channel: Channel,
+        expected: usize,
+        length: usize,
+    },
+    #[error("exit frame payload is not valid JSON")]
+    InvalidStatus(#[source] serde_json::Error),
+    #[error("frame received after the terminal exit frame")]
+    FrameAfterExit,
+    #[error("frame received after the close frame")]
+    FrameAfterClose,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn samples() -> Vec<Frame> {
+        vec![
+            Frame::Stdin(Bytes::from_static(b"in")),
+            Frame::Stdout(Bytes::from_static(b"out")),
+            Frame::Exit(Status::Exited { code: 3 }),
+            Frame::Resize(TerminalSize { rows: 24, cols: 80 }),
+            Frame::Close,
+        ]
+    }
+
+    #[test]
+    fn channel_ids_are_wire_stable() {
+        assert_eq!(Channel::Stdin.as_u8(), 0);
+        assert_eq!(Channel::Stdout.as_u8(), 1);
+        assert_eq!(Channel::Exit.as_u8(), 3);
+        assert_eq!(Channel::Resize.as_u8(), 4);
+        assert_eq!(Channel::Close.as_u8(), 255);
+    }
+
+    #[test]
+    fn channels_carry_their_direction() {
+        assert_eq!(Channel::Stdin.direction(), Direction::ClientToServer);
+        assert_eq!(Channel::Resize.direction(), Direction::ClientToServer);
+        assert_eq!(Channel::Stdout.direction(), Direction::ServerToClient);
+        assert_eq!(Channel::Exit.direction(), Direction::ServerToClient);
+        assert_eq!(Channel::Close.direction(), Direction::Bidirectional);
+    }
+
+    #[test]
+    fn round_trips_every_frame() {
+        for frame in samples() {
+            assert_eq!(Frame::decode(&frame.encode()).unwrap(), frame);
+        }
+    }
+
+    #[test]
+    fn round_trips_every_status() {
+        let statuses = [
+            Status::Success,
+            Status::Exited { code: 1 },
+            Status::Failed {
+                message: "spawn failed".to_owned(),
+            },
+        ];
+
+        for status in statuses {
+            let frame = Frame::Exit(status);
+            assert_eq!(Frame::decode(&frame.encode()).unwrap(), frame);
+        }
+    }
+
+    #[test]
+    fn a_message_is_a_whole_frame() {
+        assert_eq!(
+            Frame::Stdin(Bytes::from_static(b"hi")).encode().as_ref(),
+            b"\x00hi"
+        );
+        assert_eq!(Frame::Close.encode().as_ref(), b"\xff");
+    }
+
+    #[test]
+    fn exit_payload_is_json() {
+        let status = Status::Exited { code: 2 };
+        let encoded = Frame::Exit(status.clone()).encode();
+
+        assert_eq!(
+            encoded.slice(1..).as_ref(),
+            serde_json::to_vec(&status).unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_message() {
+        assert!(matches!(Frame::decode(&[]), Err(FrameError::EmptyMessage)));
+    }
+
+    #[test]
+    fn rejects_a_stderr_channel() {
+        // A pty folds stderr into stdout, so id 2 is not a channel.
+        assert!(matches!(
+            Frame::decode(&[2]),
+            Err(FrameError::UnknownChannel(2))
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unknown_channel() {
+        assert!(matches!(
+            Frame::decode(&[5]),
+            Err(FrameError::UnknownChannel(5))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_resize_payload_shorter_than_two_integers() {
+        assert!(matches!(
+            Frame::decode(&[Channel::Resize.as_u8(), 0, 0, 0]),
+            Err(FrameError::InvalidPayload {
+                channel: Channel::Resize,
+                expected: 4,
+                length: 3,
+            })
+        ));
+    }
+
+    #[test]
+    fn accepts_a_resize_payload_with_trailing_bytes() {
+        // The size is a minimum, so a later, larger encoding still decodes.
+        let frame = Frame::decode(&[Channel::Resize.as_u8(), 0, 24, 0, 80, 9, 9]).unwrap();
+
+        assert_eq!(frame, Frame::Resize(TerminalSize { rows: 24, cols: 80 }));
+    }
+
+    #[test]
+    fn ignores_the_payload_of_a_close_signal() {
+        assert_eq!(
+            Frame::decode(&[Channel::Close.as_u8(), 1, 2]).unwrap(),
+            Frame::Close
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_exit_payload() {
+        assert!(matches!(
+            Frame::decode(&[Channel::Exit.as_u8(), b'n', b'/', b'a']),
+            Err(FrameError::InvalidStatus(_))
+        ));
+    }
+
+    #[test]
+    fn only_close_follows_the_exit_frame() {
+        let mut frames = SessionFrames::default();
+        frames
+            .decode(&Frame::Exit(Status::Success).encode())
+            .unwrap();
+        assert!(frames.exited());
+
+        assert!(matches!(
+            frames.decode(&Frame::Stdout(Bytes::from_static(b"late")).encode()),
+            Err(FrameError::FrameAfterExit)
+        ));
+        assert!(matches!(
+            frames.decode(&Frame::Exit(Status::Success).encode()),
+            Err(FrameError::FrameAfterExit)
+        ));
+
+        // The connection still closes normally after the exit frame.
+        frames.decode(&Frame::Close.encode()).unwrap();
+        assert!(frames.is_closed());
+    }
+
+    #[test]
+    fn nothing_follows_the_close_frame() {
+        let mut frames = SessionFrames::default();
+        frames
+            .decode(&Frame::Stdout(Bytes::from_static(b"out")).encode())
+            .unwrap();
+        frames.decode(&Frame::Close.encode()).unwrap();
+
+        assert!(matches!(
+            frames.decode(&Frame::Stdin(Bytes::from_static(b"in")).encode()),
+            Err(FrameError::FrameAfterClose)
+        ));
+        assert!(matches!(
+            frames.decode(&Frame::Close.encode()),
+            Err(FrameError::FrameAfterClose)
+        ));
+    }
+}

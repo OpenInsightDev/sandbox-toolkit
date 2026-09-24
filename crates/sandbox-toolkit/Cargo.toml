@@ -1,0 +1,43 @@
+[package]
+name = "sandbox-toolkit"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+# Vendored as the git submodule at `crates/axum` (tokio-rs/axum @ 7c3c6787), because
+# the released 0.8.9 has no `MethodFilter::QUERY` but the unreleased `main` does.
+axum = { path = "../axum/axum", features = ["http2"] }
+bytes = { version = "1.12.1", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+flate2 = "1.1"
+rmcp = { version = "3.4.1", features = ["transport-streamable-http-server"] }
+schemars = "1.0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ropey = "1.6"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tokio-util = { version = "0.7.19", features = ["codec", "io-util"] }
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ts-rs = "12.0.1"
+
+[build-dependencies]
+flate2 = "1.1"
+tar = "0.4"
+# Only deflate entries need to be read.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+
+[features]
+default = []
+binaries = ["jaq", "uv", "deno"]
+jaq = []
+uv = []
+deno = []
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives the router in workspace tests.
+tower = { version = "0.5.3", features = ["util"] }
