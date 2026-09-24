@@ -9,7 +9,6 @@ mod mcp;
 pub(crate) mod model;
 
 mod dir;
-mod files;
-mod read;
+mod file;
 
 pub(crate) use self::http::router;

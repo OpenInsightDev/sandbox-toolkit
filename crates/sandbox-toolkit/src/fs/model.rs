@@ -44,7 +44,7 @@ pub(crate) struct ReadFileRequest {
 /// than header-shaped. Whether the source version must match stays a request
 /// header, see [`ConditionalHeaders`].
 ///
-/// [`ConditionalHeaders`]: super::files::ConditionalHeaders
+/// [`ConditionalHeaders`]: super::http::ConditionalHeaders
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case", tag = "operation")]
