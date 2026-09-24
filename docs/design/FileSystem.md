@@ -48,6 +48,7 @@
 | `{base}/{path}` | `QUERY`  | `realpath`  | 解析真实路径  |
 | `{base}/{path}` | `QUERY`  | `access`    | 探测访问权限  |
 | `{base}/{path}` | `QUERY`  | `lines`     | 按行读取文件  |
+| `{base}/{path}` | `QUERY`  | `watch`     | 监听变更      |
 | `{base}/{path}` | `PUT`    | —           | 写入文件      |
 | `{base}/{path}` | `PUT`    | `directory` | 创建目录      |
 | `{base}/{path}` | `PUT`    | `symlink`   | 创建符号链接  |
@@ -212,6 +213,30 @@
 
 - 跟随符号链接探测其目标；目标不存在（含悬空链接）返回 `404`；
 - 工作区模式下 `writable` 还反映工作区 `read-only` 属性，只读工作区返回 `false`（见 [Workspace.md](./Workspace.md)）。
+
+#### `QUERY ?type=watch`
+
+监听目标资源的变更并持续推送事件，目标可为文件或目录。
+
+输入（query）：
+
+| 字段        | 类型    | 说明                                             |
+| ----------- | ------- | ------------------------------------------------ |
+| `recursive` | boolean | 为 `true` 时递归监听子目录；不带时只监听直接子项 |
+
+输出为换行分隔的 JSON（`Content-Type: application/x-ndjson`），每行一个 `WatchEvent`，随变更逐条产生：
+
+| 字段    | 类型                           | 说明                                                 |
+| ------- | ------------------------------ | ---------------------------------------------------- |
+| `event` | `create` / `update` / `remove` | 变更种类                                             |
+| `path`  | string                         | 变更资源的路径，寻址模式与 `metadata` 的 `path` 一致 |
+
+- `create` 表示新资源出现，`update` 表示已有资源的内容或元数据变化，`remove` 表示资源消失；重命名表现为旧路径 `remove` 与目标路径 `create`；
+- 只报告监听建立之后的变更，不含初始快照；初始状态先用 `QUERY ?type=list` 或 `QUERY ?type=metadata` 获取；
+- 事件只携带路径，消费方按路径重新读取当前状态即可，重复事件按同一路径幂等处理；
+- 目标为符号链接时解析到其真实目标，递归监听不跟随目录符号链接（同 `QUERY ?type=glob`）；
+- 事件按发生顺序推送；单个连接的发送缓冲达到上限时终止该流，消费方重连后重新同步；
+- 目标不存在返回 `404`；`recursive` 非布尔返回 `400 bad_request`。
 
 ### 变更类型
 
