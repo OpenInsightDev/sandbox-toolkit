@@ -118,34 +118,32 @@ impl FromRequestParts<AppState> for ResourceTarget {
 
 /// Every `type` value the resource API accepts.
 ///
-/// A name outside this list is `422 unsupported_type`; what a listed name means
-/// for the request's method is that method's business to decide.
-const KNOWN_TYPES: &[&str] = &[
-    "stream",
-    "metadata",
-    "list",
-    "glob",
-    "realpath",
-    "access",
-    "lines",
-    "directory",
-    "symlink",
-    "patch",
-    "truncate",
-    "copy",
-    "move",
-];
+/// What a type means depends on the request's method; parsing only decides
+/// whether the name is known at all, so an unknown name is `422
+/// unsupported_type` before any method sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString)]
+#[strum(serialize_all = "snake_case")]
+enum ResourceType {
+    Stream,
+    Metadata,
+    List,
+    Glob,
+    Realpath,
+    Access,
+    Lines,
+    Directory,
+    Symlink,
+    Patch,
+    Truncate,
+    Copy,
+    Move,
+}
 
-/// The `type` parameter, checked against [`KNOWN_TYPES`].
-fn request_type(query: &RawQuery) -> Result<Option<String>, AppError> {
-    let Some(name) = query_value(query, "type") else {
-        return Ok(None);
-    };
-    if KNOWN_TYPES.contains(&name.as_str()) {
-        Ok(Some(name))
-    } else {
-        Err(AppError::UnsupportedType(name))
-    }
+/// The `type` parameter, parsed into the operation it names.
+fn request_type(query: &RawQuery) -> Result<Option<ResourceType>, AppError> {
+    query_value(query, "type")
+        .map(|name| name.parse().map_err(|_| AppError::UnsupportedType(name)))
+        .transpose()
 }
 
 /// Resolve the response shape of a `GET`.
@@ -154,9 +152,9 @@ fn request_type(query: &RawQuery) -> Result<Option<String>, AppError> {
 /// one body. Any other `type` names a control-plane operation, so the
 /// combination is `405 method_not_allowed`.
 fn download_mode(query: &RawQuery) -> Result<DownloadMode, AppError> {
-    match request_type(query)?.as_deref() {
+    match request_type(query)? {
         None => Ok(DownloadMode::Direct),
-        Some("stream") => Ok(DownloadMode::Stream),
+        Some(ResourceType::Stream) => Ok(DownloadMode::Stream),
         Some(_) => Err(AppError::MethodNotAllowed(Method::GET)),
     }
 }
@@ -179,22 +177,29 @@ enum QueryOperation {
     Lines,
 }
 
+impl TryFrom<ResourceType> for QueryOperation {
+    type Error = AppError;
+
+    fn try_from(value: ResourceType) -> Result<Self, Self::Error> {
+        match value {
+            ResourceType::Metadata => Ok(Self::Metadata),
+            ResourceType::List => Ok(Self::List),
+            ResourceType::Glob => Ok(Self::Glob),
+            ResourceType::Realpath => Ok(Self::Realpath),
+            ResourceType::Access => Ok(Self::Access),
+            ResourceType::Lines => Ok(Self::Lines),
+            _ => Err(AppError::MethodNotAllowed(Method::QUERY)),
+        }
+    }
+}
+
 /// Resolve the `type` of a `QUERY`, which is required.
 fn query_operation(query: &RawQuery) -> Result<QueryOperation, AppError> {
-    let Some(name) = request_type(query)? else {
-        return Err(AppError::UnsupportedType(
+    match request_type(query)? {
+        Some(resource_type) => resource_type.try_into(),
+        None => Err(AppError::UnsupportedType(
             "QUERY requires a `type`".to_owned(),
-        ));
-    };
-
-    match name.as_str() {
-        "metadata" => Ok(QueryOperation::Metadata),
-        "list" => Ok(QueryOperation::List),
-        "glob" => Ok(QueryOperation::Glob),
-        "realpath" => Ok(QueryOperation::Realpath),
-        "access" => Ok(QueryOperation::Access),
-        "lines" => Ok(QueryOperation::Lines),
-        _ => Err(AppError::MethodNotAllowed(Method::QUERY)),
+        )),
     }
 }
 
@@ -464,8 +469,8 @@ async fn put_resource(
     OriginalUri(_original_uri): OriginalUri,
     body: Body,
 ) -> Result<Response, AppError> {
-    match request_type(&query)?.as_deref() {
-        Some("directory") => {
+    match request_type(&query)? {
+        Some(ResourceType::Directory) => {
             target.require_resource_path()?;
             ensure_empty_body(
                 body,
