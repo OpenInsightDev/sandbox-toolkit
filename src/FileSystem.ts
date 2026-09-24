@@ -1,6 +1,7 @@
 import {
   Context,
   Effect,
+  Layer,
   PlatformError,
   type ByteSize,
   type Scope,
@@ -130,3 +131,18 @@ export interface FileSystem {
 
 export const FileSystem: Context.Service<FileSystem, FileSystem> =
   Context.Service("effect/FileSystem");
+
+export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
+  Layer.effect(
+    FileSystem,
+    Effect.gen(function* () {
+      throw new Error("not implemented");
+    }),
+  );
+
+export const layer = Layer.effect(
+  FileSystem,
+  Effect.gen(function* () {
+    throw new Error("not implemented");
+  }),
+);
