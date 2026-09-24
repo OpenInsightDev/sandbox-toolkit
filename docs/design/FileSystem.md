@@ -325,7 +325,7 @@
 | `COPY` / `MOVE`   | `POST ?type=copy` / `POST ?type=move`      |
 | `DELETE`          | `DELETE`                                   |
 | `LOCK` / `UNLOCK` | 不采用，并发控制由 ETag 条件请求承担       |
-| `OPTIONS`         | 不采用，能力由端点与 `type` 定义           |
+| `OPTIONS`         | 仅上传端点使用                             |
 
 ## 两种寻址模式
 
@@ -432,7 +432,34 @@ ETag 代表一次提交的乐观锁版本。客户端读取资源并保存 ETag�
 
 ### 大文件上传
 
-保留大文件上传模式，具体形式（上传会话、分块上传或断点续传）待实际需求明确后设计；新增操作同样以 `QUERY`/`POST`/`PUT`/`PATCH` + `type` 表达。
+大文件走 [tus 1.0.0](https://tus.io/protocols/resumable-upload) 核心协议，并启用 `creation`、`termination`、`concatenation` 扩展。tus 的方法、请求头、状态码与 `OPTIONS` 能力集合全部按该协议；上传端点不适用本文的 `type` 与错误码。
+
+上传是 FileSystem 的子路由，与 `/fs` 同级：
+
+| 端点                        | 方法      |
+| --------------------------- | --------- |
+| `{upload-base}`             | `OPTIONS` |
+| `{upload-base}`             | `POST`    |
+| `{upload-base}/{upload_id}` | `HEAD`    |
+| `{upload-base}/{upload_id}` | `PATCH`   |
+| `{upload-base}/{upload_id}` | `DELETE`  |
+
+`{upload-base}` 在工作区模式为 `/workspaces/{id}/upload`，绝对路径模式为 `/upload`。
+
+上传只负责把字节汇聚成完整文件；完整文件通过与小文件写入相同的写闸门提交到目标 FileSystem 路径：
+
+- 目标路径与提交条件随创建请求给出，承载方式见“待定”；
+- 提交在写闸门内完成条件检查、原子替换与版本递增，成功即目标路径获得新 ETag；
+- `partial` 上传只是暂存分块，不构成 FileSystem 资源；`final` 拼装完成时按 `Upload-Concat` 的顺序合成整份文件并一次性提交；
+- 提交目标的条件语义与其它变更相同（见“条件请求”），并在提交时于写闸门内校验，以覆盖分块上传过程中目标被其它写者改变的情况；
+- 目标路径、工作区属性约束沿用既有规则（见“简化并严格的路径模型”、[Workspace.md](./Workspace.md) 的工作区属性）。
+
+#### 待定
+
+- 目标路径与提交条件在创建请求中的承载方式（`Upload-Metadata` 或按路径寻址的创建 URL）；
+- 上传会话的状态存放、暂存位置与清理策略（`Upload-Expires` 或 `termination`）；
+- `Tus-Max-Size` 取值与单次 `PATCH` 分块大小约束；
+- 是否启用 `creation-with-upload`、`checksum`。
 
 ## 错误协议
 
