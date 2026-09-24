@@ -24,7 +24,7 @@
 | `HEAD`   | 只返回响应头                                  |
 | `QUERY`  | 控制面读取，必须带 `type`                     |
 | `PUT`    | 在目标路径创建或替换资源，`type` 区分资源种类 |
-| `PATCH`  | 修改已有资源的元数据，必须带 `type`           |
+| `PATCH`  | 修改已有资源（元数据或内容），必须带 `type`   |
 | `POST`   | 作用于目标资源的动作，必须带 `type`           |
 | `DELETE` | 删除资源，目录递归删除                        |
 
@@ -43,14 +43,16 @@
 | `{base}/{path}` | `HEAD`   | —           | 探测资源      |
 | `{base}/{path}` | `QUERY`  | `metadata`  | 查询单个资源  |
 | `{base}/{path}` | `QUERY`  | `list`      | 列目录        |
+| `{base}/{path}` | `QUERY`  | `glob`      | 通配匹配      |
 | `{base}/{path}` | `PUT`    | —           | 写入文件      |
 | `{base}/{path}` | `PUT`    | `directory` | 创建目录      |
 | `{base}/{path}` | `PATCH`  | `metadata`  | 修改元数据    |
+| `{base}/{path}` | `PATCH`  | `patch`     | 应用文本补丁  |
 | `{base}/{path}` | `POST`   | `copy`      | 复制          |
 | `{base}/{path}` | `POST`   | `move`      | 移动 / 重命名 |
 | `{base}/{path}` | `DELETE` | —           | 删除          |
 
-`QUERY`、`PATCH`、`POST` 缺少 `type` 返回 `422 unsupported_type`；`type` 与所用方法不匹配（如 `PUT ?type=metadata`）返回 `405 method_not_allowed`；操作要求的资源类型与目标不符（对目录 `GET`、对文件 `QUERY ?type=list`）返回 `400 not_a_file` / `400 not_a_directory`。
+`QUERY`、`PATCH`、`POST` 缺少 `type` 返回 `422 unsupported_type`；`type` 与所用方法不匹配（如 `PUT ?type=metadata`）返回 `405 method_not_allowed`；操作要求的资源类型与目标不符（对目录 `GET`、对文件 `QUERY ?type=list` 或 `QUERY ?type=glob`）返回 `400 not_a_file` / `400 not_a_directory`。
 
 ### 读取类型
 
@@ -97,6 +99,28 @@
 - 递归查询还受服务端总条目数或响应大小上限约束，达到即截断并置 `truncated`；
 - 目标是文件（包括指向文件的符号链接）时返回 `400 not_a_directory`。
 
+#### `QUERY ?type=glob`
+
+在目标目录子树内按模式定位资源。
+
+输入（query）：
+
+| 字段      | 类型     | 说明                                   |
+| --------- | -------- | -------------------------------------- |
+| `pattern` | string   | 必填，相对搜索根目录的匹配模式         |
+| `exclude` | string[] | 可选，命中即排除的附加模式，可重复出现 |
+| `offset`  | integer  | 起始条目序号，不带时从首条开始         |
+| `limit`   | integer  | 单次返回的条目上限，不带时用服务端上限 |
+
+`pattern` 与 `exclude` 用标准 glob 语法，相对目标目录、整串匹配。
+
+输出与 `QUERY ?type=list` 相同。
+
+- 目标目录本身不作为命中条目；文件、目录与符号链接都可命中，但遍历不跟随目录符号链接；
+- 命中 `exclude` 的目录连同其子树跳过，其它条目剔除；
+- 结果按相对目标目录的路径升序排列，`offset` 按该顺序切分，达到服务端上限即截断并置 `truncated`；
+- `pattern` 缺失或非法返回 `400 bad_request`；目标是文件返回 `400 not_a_directory`。
+
 ### 变更类型
 
 #### `PUT`
@@ -125,6 +149,28 @@
 - body 只接受可变字段，如 `mode`（权限）与 `modified_at`（修改时间）；
 - 出现不可变字段（如 `kind`、`size`、`etag`）返回 `422 invalid_request`；
 - 必须带 `If-Match`，成功返回更新后的 `metadata`。
+
+#### `PATCH ?type=patch`
+
+对已有文本文件应用补丁，避免整文件重传，只需提交差异部分。
+
+```json
+{
+  "format": "unified",
+  "patch": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+}
+```
+
+| 字段     | 类型   | 说明                           |
+| -------- | ------ | ------------------------------ |
+| `format` | string | 补丁种类，目前仅支持 `unified` |
+| `patch`  | string | 按该种类编码的补丁文本         |
+
+- 补丁种类由 body 的 `format` 声明，目前只接受 `unified`，即标准 unified diff format；`format` 缺失或不受支持返回 `422 unsupported_type`，`patch` 缺失或类型不符返回 `422 invalid_request`；
+- 补丁中的文件头路径仅作说明，不参与寻址；目标始终由 URL 路径决定，只有 hunk 内容应用到目标文件；
+- 目标必须为文本文件：目录返回 `400 not_a_file`，无法按文本解码的文件返回 `422 invalid_request`；
+- 补丁必须干净地应用到当前内容，上下文不匹配等无法应用的情况返回 `409 patch_conflict`，且不做任何修改；应用是原子的，要么整体成功，要么目标保持原样；
+- 版本条件与其它变更一致：必须带匹配当前版本的 `If-Match`，成功返回更新后的 `metadata`，并在 `ETag` 头返回新版本。
 
 #### `POST ?type=copy` 与 `POST ?type=move`
 
@@ -217,6 +263,7 @@ ETag 是服务端生成的不透明**强验证器**。文件、目录和符号�
 | 创建文件或目录 | 必须提供 `If-None-Match: *`，确保目标不存在         |
 | 覆盖文件       | 必须提供匹配当前版本的 `If-Match`                   |
 | 修改元数据     | 必须提供匹配当前版本的 `If-Match`                   |
+| 应用补丁       | 必须提供匹配当前版本的 `If-Match`                   |
 | 删除文件或目录 | 必须提供匹配当前版本的 `If-Match`                   |
 | 移动           | 源必须提供匹配当前版本的 `If-Match`                 |
 | 复制           | 源必须提供匹配当前版本的 `If-Match`                 |
@@ -285,6 +332,7 @@ HTTP 状态码表达通用语义，`error.code` 提供稳定的机器可读分�
 | `400` | `not_a_directory`       | 操作要求目录，目标是文件              |
 | `404` | `not_found`             | 资源不存在                            |
 | `405` | `method_not_allowed`    | 方法与 `type` 组合不适用              |
+| `409` | `patch_conflict`        | 补丁无法应用到当前内容                |
 | `412` | `etag_mismatch`         | ETag 条件不满足                       |
 | `428` | `precondition_required` | 缺少操作要求的条件请求头或目标 ETag   |
 | `422` | `invalid_request`       | body 不符合该 `type` 的 schema        |
