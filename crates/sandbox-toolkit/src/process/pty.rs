@@ -3,7 +3,7 @@
 //! A pty session runs over a WebSocket, so every message already carries its own
 //! boundary: the first byte selects a channel and the rest is the payload, with no
 //! length prefix. That is what separates these frames from the length-prefixed exec
-//! stream frames in [`super::frame`], which multiplex one HTTP stream.
+//! stream frames in [`super::exec`], which multiplex one HTTP stream.
 //!
 //! The channel set is closed, so a connection never creates channels. It has no
 //! stderr because a pty folds stderr into stdout, and the process outcome shares the
@@ -16,7 +16,6 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::frame::TerminalSize;
 use super::model::Status;
 
 /// A mux channel of a pty connection.
@@ -68,6 +67,41 @@ pub(crate) enum Direction {
     ClientToServer,
     ServerToClient,
     Bidirectional,
+}
+
+/// Terminal geometry in character cells.
+///
+/// A pty session is sized, and resizing an existing one sends these two integers on
+/// the resize channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalSize {
+    pub(crate) rows: u16,
+    pub(crate) cols: u16,
+}
+
+impl TerminalSize {
+    /// Bytes on the wire: rows then cols, both big-endian.
+    pub(crate) const WIRE_LEN: usize = 4;
+
+    pub(crate) fn to_wire(self) -> [u8; Self::WIRE_LEN] {
+        let mut wire = [0u8; Self::WIRE_LEN];
+        wire[..2].copy_from_slice(&self.rows.to_be_bytes());
+        wire[2..].copy_from_slice(&self.cols.to_be_bytes());
+        wire
+    }
+
+    /// Reads the leading [`Self::WIRE_LEN`] bytes and ignores any trailing bytes, so
+    /// a later, larger encoding of the size stays decodable.
+    pub(crate) fn from_wire(payload: &[u8]) -> Option<Self> {
+        let [rows_hi, rows_lo, cols_hi, cols_lo, ..] = payload else {
+            return None;
+        };
+
+        Some(Self {
+            rows: u16::from_be_bytes([*rows_hi, *rows_lo]),
+            cols: u16::from_be_bytes([*cols_hi, *cols_lo]),
+        })
+    }
 }
 
 /// One WebSocket message on a pty connection.

@@ -2,8 +2,38 @@
 //!
 //! Their `TS` derivations are the client-side types.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+/// Parameters of an exec, submitted as the `POST .../exec` body.
+///
+/// The executable and its arguments are separate tokens and never re-parsed by a
+/// shell, which is what distinguishes exec from shell.
+#[derive(Debug, Deserialize, TS)]
+#[ts(export)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the exec handler, which is not wired up yet"
+    )
+)]
+pub(crate) struct ExecRequest {
+    /// Executable to run: a path, or a bare name resolved through `PATH`.
+    pub(crate) command: String,
+    /// Arguments passed verbatim, one argv entry each.
+    #[serde(default)]
+    pub(crate) args: Vec<String>,
+    /// Working directory: workspace-relative in workspace mode, absolute in direct
+    /// mode. Defaults to the workspace root, or the server's directory in direct mode.
+    pub(crate) cwd: Option<String>,
+    /// Variables layered over the inherited environment; a name a workspace also sets
+    /// takes this value instead.
+    #[serde(default)]
+    pub(crate) env: HashMap<String, String>,
+}
 
 /// How a command finished.
 ///
