@@ -28,6 +28,42 @@ exec 直接执行一个可执行文件，参数逐项传递，不经过 shell �
 | `env`     | 环境变量                                                           |
 | `timeout` | 等待命令结束以直接返回结果的上限（毫秒），超时则升级为流；缺省 500 |
 
+### 响应
+
+由服务端按 `timeout` 在两种形态间选择：
+
+- 命令在 `timeout` 内结束，返回 JSON 结果（`Content-Type: application/json`）；stdout、stderr 按 UTF-8 解码，非法序列替换，需要精确字节时用帧流：
+
+```json
+{ "status": { "status": "exited", "code": 1 }, "stdout": "out", "stderr": "err" }
+```
+
+- 否则升级为帧流（`Content-Type: application/vnd.sandbox-toolkit.exec-stream`），在流中多路返回 stdout、stderr 与终态。
+
+两种形态的 `status` 相同：
+
+| `status`  | 附加字段       | 场景                       |
+| --------- | -------------- | -------------------------- |
+| `success` | —              | 退出码为 0                 |
+| `exited`  | `code`（整数） | 以非零退出码结束           |
+| `failed`  | `message`      | 无法启动，或未及退出被终止 |
+
+### 帧格式
+
+帧流是长度前缀的帧序列，单向（服务端 → 客户端）：
+
+| 值  | 信道   | payload                    |
+| --- | ------ | -------------------------- |
+| `0` | stdout | 进程标准输出，原始字节     |
+| `1` | stderr | 进程标准错误，原始字节     |
+| `2` | error  | 终态 `status` 的 JSON 编码 |
+
+- 每帧为 1 字节信道标识加 4 字节大端长度，再加 payload；
+- 帧间无分隔符，按长度切分，payload 可含任意字节；
+- 单帧 payload 上限 4 MiB，超出即拒绝；
+- stdout 与 stderr 分属不同信道，不合并；
+- 流以恰好一个 error 帧结束，缺少该帧表示流被截断。
+
 ## shell
 
 shell 执行一段脚本，由 shell 解释器负责解析：
