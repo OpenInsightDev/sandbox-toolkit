@@ -1,7 +1,7 @@
 //! The workspace root bounds a resolved path, so a symlink or a `..` cannot
 //! escape: the candidate is canonicalized before it is compared against the root.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use thiserror::Error;
 
@@ -44,6 +44,73 @@ pub(crate) async fn resolve(
             canonicalize(PathBuf::from(path), path).await
         }
     }
+}
+
+/// Resolve a path to its server-absolute location without following a final
+/// symlink, so the entry itself can be inspected. The parent must exist and stay
+/// inside the boundary; the final component may be missing, which is what makes
+/// this usable for creations and deletions.
+pub(crate) async fn resolve_entry(
+    workspace: Option<&Workspace>,
+    path: &str,
+) -> Result<PathBuf, PathError> {
+    let (root, relative) = match workspace {
+        Some(workspace) => {
+            let relative = Path::new(path);
+            if relative.is_absolute() {
+                return Err(invalid(path, "path must be relative in workspace mode"));
+            }
+
+            (Some(workspace.root().to_path_buf()), relative.to_path_buf())
+        }
+        None => {
+            let absolute = Path::new(path);
+            if !absolute.is_absolute() {
+                return Err(invalid(path, "path must be absolute in direct mode"));
+            }
+
+            (None, absolute.to_path_buf())
+        }
+    };
+
+    // A trailing `.`/`..` or a root has no final component to preserve; fall back
+    // to the following resolution so normalization and boundary checks still run.
+    let Some(name) = relative.file_name() else {
+        return resolve(workspace, path).await;
+    };
+
+    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let parent = match &root {
+        Some(root) => root.join(parent),
+        None => parent.to_path_buf(),
+    };
+    let parent = canonicalize(parent, path).await?;
+
+    if let Some(root) = &root
+        && !parent.starts_with(root)
+    {
+        return Err(invalid(path, "path escapes the workspace"));
+    }
+
+    Ok(parent.join(name))
+}
+
+/// Lexically normalize a path, resolving `.` and `..` without touching the
+/// filesystem, so a symlink target can be checked before it exists.
+pub(crate) fn normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+
+    normalized
 }
 
 async fn canonicalize(path: PathBuf, address: &str) -> Result<PathBuf, PathError> {

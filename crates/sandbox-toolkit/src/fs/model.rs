@@ -95,14 +95,6 @@ pub(crate) struct ContentRequest {
     pub(crate) path: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum ContentEncoding {
-    Utf8,
-    Base64,
-}
-
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub(crate) struct ContentResponse {
@@ -230,7 +222,7 @@ pub(crate) enum WatchEventKind {
 #[ts(export)]
 pub(crate) struct WriteFileRequest {
     pub(crate) path: String,
-    pub(crate) encoding: ContentEncoding,
+    /// UTF-8 text; the bytes are written verbatim.
     pub(crate) content: String,
 }
 

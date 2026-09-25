@@ -9,15 +9,20 @@ use axum::body::Body;
 use axum::extract::{FromRequestParts, Path, Query};
 use axum::http::header;
 use axum::http::request::Parts;
-use axum::http::{HeaderValue, Method};
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{self, MethodRouter};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use tokio_util::io::ReaderStream;
 
-use super::file::{self, ReadError};
-use super::model::ContentRequest;
+use super::file::{self, FileError};
+use super::model::{
+    AccessRequest, ContentRequest, CreateSymlinkRequest, DeleteRequest, LinesRequest,
+    MetadataRequest, PatchMetadataRequest, RealpathRequest, StreamRequest, TruncateRequest,
+    WriteFileRequest,
+};
 use super::path::PathError;
 use crate::workspace::registry::Workspace;
 use crate::{AppError, AppState};
@@ -151,13 +156,13 @@ async fn query_endpoint(
 ) -> Result<Response, AppError> {
     match parse_type::<QueryType>(&query, &Method::QUERY)? {
         QueryType::Content => content(target, body).await,
-        QueryType::Stream => Err(not_implemented("QUERY ?type=stream")),
-        QueryType::Metadata => Err(not_implemented("QUERY ?type=metadata")),
+        QueryType::Stream => stream(target, body).await,
+        QueryType::Metadata => metadata(target, body).await,
         QueryType::List => Err(not_implemented("QUERY ?type=list")),
         QueryType::Glob => Err(not_implemented("QUERY ?type=glob")),
-        QueryType::Realpath => Err(not_implemented("QUERY ?type=realpath")),
-        QueryType::Access => Err(not_implemented("QUERY ?type=access")),
-        QueryType::Lines => Err(not_implemented("QUERY ?type=lines")),
+        QueryType::Realpath => realpath(target, body).await,
+        QueryType::Access => access(target, body).await,
+        QueryType::Lines => lines(target, body).await,
         QueryType::Watch => Err(not_implemented("QUERY ?type=watch")),
     }
 }
@@ -168,12 +173,74 @@ async fn content(target: FsTarget, body: Body) -> Result<Response, AppError> {
     let etag = content.etag.clone();
 
     let mut response = Json(content).into_response();
-    response.headers_mut().insert(
-        header::ETAG,
-        HeaderValue::from_str(&etag).expect("an entity-tag is a valid header value"),
-    );
+    insert_etag(&mut response, &etag);
 
     Ok(response)
+}
+
+async fn stream(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: StreamRequest = read_json(body).await?;
+    let streamed = file::stream(target.workspace.as_ref(), request).await?;
+
+    let mut response = Response::new(Body::from_stream(ReaderStream::new(streamed.file)));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&streamed.content_type).expect("a mime type is a valid header value"),
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&streamed.size.to_string())
+            .expect("a length is a valid header value"),
+    );
+    headers.insert(
+        header::LAST_MODIFIED,
+        HeaderValue::from_str(&httpdate::fmt_http_date(streamed.modified))
+            .expect("an HTTP date is a valid header value"),
+    );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("none"));
+    insert_etag(&mut response, &streamed.etag);
+
+    Ok(response)
+}
+
+async fn metadata(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: MetadataRequest = read_json(body).await?;
+    let metadata = file::metadata(target.workspace.as_ref(), request).await?;
+    let etag = metadata.etag.clone();
+
+    let mut response = Json(metadata).into_response();
+    insert_etag(&mut response, &etag);
+
+    Ok(response)
+}
+
+async fn realpath(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: RealpathRequest = read_json(body).await?;
+    let response = file::realpath(target.workspace.as_ref(), request).await?;
+
+    Ok(Json(response).into_response())
+}
+
+async fn access(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: AccessRequest = read_json(body).await?;
+    let response = file::access(target.workspace.as_ref(), request).await?;
+
+    Ok(Json(response).into_response())
+}
+
+async fn lines(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: LinesRequest = read_json(body).await?;
+    let response = file::lines(target.workspace.as_ref(), request).await?;
+
+    Ok(Json(response).into_response())
+}
+
+fn insert_etag(response: &mut Response, etag: &str) {
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("an entity-tag is a valid header value"),
+    );
 }
 
 /// An upper bound on a control-plane JSON body, so an oversized or endless body
@@ -193,27 +260,54 @@ async fn read_json<T: DeserializeOwned>(body: Body) -> Result<T, AppError> {
 async fn put_endpoint(
     target: FsTarget,
     Query(query): Query<ResourceQuery>,
+    body: Body,
 ) -> Result<Response, AppError> {
     target.require_writable()?;
 
     match parse_type::<PutType>(&query, &Method::PUT)? {
-        PutType::File => Err(not_implemented("PUT ?type=file")),
+        PutType::File => {
+            let request: WriteFileRequest = read_json(body).await?;
+            let outcome = file::write_file(target.workspace.as_ref(), request).await?;
+            let status = if outcome.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+
+            Ok(mutated(status, outcome.metadata))
+        }
+        PutType::Symlink => {
+            let request: CreateSymlinkRequest = read_json(body).await?;
+            let metadata = file::create_symlink(target.workspace.as_ref(), request).await?;
+
+            Ok(mutated(StatusCode::CREATED, metadata))
+        }
         PutType::Sink => Err(not_implemented("PUT ?type=sink")),
         PutType::Directory => Err(not_implemented("PUT ?type=directory")),
-        PutType::Symlink => Err(not_implemented("PUT ?type=symlink")),
     }
 }
 
 async fn patch_endpoint(
     target: FsTarget,
     Query(query): Query<ResourceQuery>,
+    body: Body,
 ) -> Result<Response, AppError> {
     target.require_writable()?;
 
     match parse_type::<PatchType>(&query, &Method::PATCH)? {
-        PatchType::Metadata => Err(not_implemented("PATCH ?type=metadata")),
+        PatchType::Metadata => {
+            let request: PatchMetadataRequest = read_json(body).await?;
+            let metadata = file::patch_metadata(target.workspace.as_ref(), request).await?;
+
+            Ok(mutated(StatusCode::OK, metadata))
+        }
+        PatchType::Truncate => {
+            let request: TruncateRequest = read_json(body).await?;
+            let metadata = file::truncate(target.workspace.as_ref(), request).await?;
+
+            Ok(mutated(StatusCode::OK, metadata))
+        }
         PatchType::Patch => Err(not_implemented("PATCH ?type=patch")),
-        PatchType::Truncate => Err(not_implemented("PATCH ?type=truncate")),
     }
 }
 
@@ -229,10 +323,22 @@ async fn post_endpoint(
     }
 }
 
-async fn delete_endpoint(target: FsTarget) -> Result<Response, AppError> {
+async fn delete_endpoint(target: FsTarget, body: Body) -> Result<Response, AppError> {
     target.require_writable()?;
 
-    Err(not_implemented("DELETE"))
+    let request: DeleteRequest = read_json(body).await?;
+    file::delete(target.workspace.as_ref(), request).await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// A mutation answers with the resulting `ResourceMetadata` and its new ETag.
+fn mutated(status: StatusCode, metadata: super::model::ResourceMetadata) -> Response {
+    let etag = metadata.etag.clone();
+    let mut response = (status, Json(metadata)).into_response();
+    insert_etag(&mut response, &etag);
+
+    response
 }
 
 fn not_implemented(operation: &'static str) -> AppError {
@@ -251,15 +357,22 @@ impl From<PathError> for AppError {
     }
 }
 
-impl From<ReadError> for AppError {
-    fn from(error: ReadError) -> Self {
+impl From<FileError> for AppError {
+    fn from(error: FileError) -> Self {
         let message = error.to_string();
 
         match error {
-            ReadError::NotAFile(path) => Self::NotAFile(path),
-            ReadError::NotUtf8 => Self::InvalidRequest(message),
-            ReadError::Path(error) => error.into(),
-            ReadError::Io(source) => Self::Internal(source.into()),
+            FileError::NotAFile(path) => Self::NotAFile(path),
+            FileError::NotUtf8 | FileError::InvalidRequest(_) => Self::InvalidRequest(message),
+            FileError::BadRequest(_) => Self::BadRequest(message),
+            FileError::AlreadyExists(_) => Self::PreconditionFailed(message),
+            FileError::Path(error) => error.into(),
+            // A missing entry surfaces as an I/O error from the metadata or open
+            // call, which is the API's `not_found`.
+            FileError::Io(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                Self::NotFound(message)
+            }
+            FileError::Io(source) => Self::Internal(source.into()),
         }
     }
 }
@@ -302,9 +415,32 @@ mod tests {
     }
 
     fn content_request(base: &str, body: serde_json::Value) -> Request<Body> {
+        list_request(base, "content", body)
+    }
+
+    fn list_request(base: &str, kind: &str, body: serde_json::Value) -> Request<Body> {
         Request::builder()
             .method("QUERY")
-            .uri(format!("{base}?type=content"))
+            .uri(format!("{base}?type={kind}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn mutation_request(
+        method: &str,
+        base: &str,
+        kind: Option<&str>,
+        body: serde_json::Value,
+    ) -> Request<Body> {
+        let uri = match kind {
+            Some(kind) => format!("{base}?type={kind}"),
+            None => base.to_owned(),
+        };
+
+        Request::builder()
+            .method(method)
+            .uri(uri)
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap()
@@ -441,28 +577,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_type_is_wired_to_its_method() {
+    async fn unimplemented_types_report_not_implemented() {
         let app = app();
 
         for (method, uri) in [
-            ("QUERY", "/fs?type=stream"),
-            ("QUERY", "/fs?type=metadata"),
             ("QUERY", "/fs?type=list"),
             ("QUERY", "/fs?type=glob"),
-            ("QUERY", "/fs?type=realpath"),
-            ("QUERY", "/fs?type=access"),
-            ("QUERY", "/fs?type=lines"),
             ("QUERY", "/fs?type=watch"),
-            ("PUT", "/fs?type=file"),
             ("PUT", "/fs?type=sink"),
             ("PUT", "/fs?type=directory"),
-            ("PUT", "/fs?type=symlink"),
-            ("PATCH", "/fs?type=metadata"),
             ("PATCH", "/fs?type=patch"),
-            ("PATCH", "/fs?type=truncate"),
             ("POST", "/fs?type=copy"),
             ("POST", "/fs?type=move"),
-            ("DELETE", "/fs"),
         ] {
             assert_eq!(
                 call(&app, method, uri).await,
@@ -537,5 +663,242 @@ mod tests {
             call(&app, "QUERY", "/workspaces/missing/fs?type=metadata").await,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn stream_returns_raw_bytes_and_headers() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("note.txt"), "hello").unwrap();
+
+        let response = send(
+            &app(),
+            list_request(
+                "/fs",
+                "stream",
+                serde_json::json!({ "path": dir.path().join("note.txt").display().to_string() }),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-length"].to_str().unwrap(), "5");
+        assert_eq!(
+            response.headers()["accept-ranges"].to_str().unwrap(),
+            "none"
+        );
+        assert!(response.headers().contains_key("etag"));
+        assert!(response.headers().contains_key("last-modified"));
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn metadata_reports_the_resource_with_an_etag() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("note.txt"), "hello").unwrap();
+
+        let response = send(
+            &app(),
+            list_request(
+                "/fs",
+                "metadata",
+                serde_json::json!({ "path": dir.path().join("note.txt").display().to_string() }),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+        let body = json_body(response).await;
+        assert_eq!(body["kind"], "file");
+        assert_eq!(body["name"], "note.txt");
+        assert_eq!(body["size"], 5);
+        assert_eq!(body["etag"], etag);
+    }
+
+    #[tokio::test]
+    async fn realpath_access_and_lines_round_trip() {
+        let dir = TempDir::new();
+        let path = dir.path().join("note.txt");
+        std::fs::write(&path, "a\nb\nc").unwrap();
+
+        let response = send(
+            &app(),
+            list_request(
+                "/fs",
+                "realpath",
+                serde_json::json!({ "path": dir.path().join("./note.txt").display().to_string() }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        assert_eq!(
+            json_body(response).await["path"],
+            canonical.display().to_string()
+        );
+
+        let response = send(
+            &app(),
+            list_request(
+                "/fs",
+                "access",
+                serde_json::json!({ "path": path.display().to_string() }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["readable"], true);
+
+        let response = send(
+            &app(),
+            list_request(
+                "/fs",
+                "lines",
+                serde_json::json!({ "path": path.display().to_string(), "offset": 1, "limit": 1 }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["lines"], serde_json::json!(["b"]));
+        assert_eq!(body["offset"], 1);
+        assert_eq!(body["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn put_file_creates_then_replaces() {
+        let app = app();
+        let dir = TempDir::new();
+        let path = dir.path().join("note.txt").display().to_string();
+
+        let response = send(
+            &app,
+            mutation_request(
+                "PUT",
+                "/fs",
+                Some("file"),
+                serde_json::json!({ "path": path.clone(), "content": "hello" }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(response.headers().contains_key("etag"));
+        assert_eq!(json_body(response).await["size"], 5);
+
+        let response = send(
+            &app,
+            mutation_request(
+                "PUT",
+                "/fs",
+                Some("file"),
+                serde_json::json!({ "path": path, "content": "hi" }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["size"], 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn put_symlink_then_delete_round_trips() {
+        let app = app();
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("note.txt"), "hi").unwrap();
+        let link = dir.path().join("link").display().to_string();
+
+        let response = send(
+            &app,
+            mutation_request(
+                "PUT",
+                "/fs",
+                Some("symlink"),
+                serde_json::json!({ "path": link.clone(), "target": "note.txt" }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = json_body(response).await;
+        assert_eq!(body["kind"], "symlink");
+        assert_eq!(body["target"], "note.txt");
+
+        let response = send(
+            &app,
+            mutation_request("DELETE", "/fs", None, serde_json::json!({ "path": link })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn truncate_and_patch_metadata_apply_to_a_file() {
+        let app = app();
+        let dir = TempDir::new();
+        let path = dir.path().join("note.txt");
+        std::fs::write(&path, "hello").unwrap();
+
+        let response = send(
+            &app,
+            mutation_request(
+                "PATCH",
+                "/fs",
+                Some("truncate"),
+                serde_json::json!({ "path": path.display().to_string(), "length": 2 }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["size"], 2);
+
+        #[cfg(unix)]
+        {
+            let response = send(
+                &app,
+                mutation_request(
+                    "PATCH",
+                    "/fs",
+                    Some("metadata"),
+                    serde_json::json!({ "path": path.display().to_string(), "mode": "0600" }),
+                ),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(json_body(response).await["mode"], "0600");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_reports_missing_without_force_and_succeeds_with_it() {
+        let app = app();
+        let dir = TempDir::new();
+        let missing = dir.path().join("missing").display().to_string();
+
+        let response = send(
+            &app,
+            mutation_request(
+                "DELETE",
+                "/fs",
+                None,
+                serde_json::json!({ "path": missing.clone() }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = send(
+            &app,
+            mutation_request(
+                "DELETE",
+                "/fs",
+                None,
+                serde_json::json!({ "path": missing, "force": true }),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }
