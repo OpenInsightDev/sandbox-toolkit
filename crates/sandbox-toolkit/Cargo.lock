@@ -1287,6 +1287,7 @@ dependencies = [
  "flate2",
  "globset",
  "httpdate",
+ "libc",
  "mime_guess",
  "percent-encoding",
  "regex",

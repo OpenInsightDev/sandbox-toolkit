@@ -2,7 +2,9 @@
 //! probes, and the basic file mutations. Conditional requests and the
 //! multi-resource copy/move are handled elsewhere.
 
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use thiserror::Error;
@@ -42,15 +44,8 @@ pub(crate) async fn read(
     workspace: Option<&Workspace>,
     request: ContentRequest,
 ) -> Result<ContentResponse, FileError> {
-    let resolved = path::resolve(workspace, &request.path).await?;
-    let metadata = tokio::fs::metadata(&resolved).await?;
-    if !metadata.is_file() {
-        return Err(FileError::NotAFile(request.path));
-    }
-
-    let bytes = tokio::fs::read(&resolved).await?;
-    let size = bytes.len() as u64;
-    let content = String::from_utf8(bytes).map_err(|_| FileError::NotUtf8)?;
+    let (content, metadata) = read_text(workspace, &request.path).await?;
+    let size = content.len() as u64;
 
     Ok(ContentResponse {
         path: request.path,
@@ -58,6 +53,33 @@ pub(crate) async fn read(
         size,
         etag: etag(&metadata),
     })
+}
+
+/// Resolves `path`, requires a file, and returns it with its metadata.
+async fn resolve_file(
+    workspace: Option<&Workspace>,
+    path: &str,
+) -> Result<(PathBuf, std::fs::Metadata), FileError> {
+    let resolved = path::resolve(workspace, path).await?;
+    let metadata = tokio::fs::metadata(&resolved).await?;
+    if !metadata.is_file() {
+        return Err(FileError::NotAFile(path.to_owned()));
+    }
+
+    Ok((resolved, metadata))
+}
+
+/// Reads a text file and returns its decoded contents with the metadata observed
+/// before the read.
+async fn read_text(
+    workspace: Option<&Workspace>,
+    path: &str,
+) -> Result<(String, std::fs::Metadata), FileError> {
+    let (resolved, metadata) = resolve_file(workspace, path).await?;
+    let bytes = tokio::fs::read(&resolved).await?;
+    let content = String::from_utf8(bytes).map_err(|_| FileError::NotUtf8)?;
+
+    Ok((content, metadata))
 }
 
 /// An open file ready to be streamed as the raw response body.
@@ -73,11 +95,7 @@ pub(crate) async fn stream(
     workspace: Option<&Workspace>,
     request: StreamRequest,
 ) -> Result<StreamedFile, FileError> {
-    let resolved = path::resolve(workspace, &request.path).await?;
-    let metadata = tokio::fs::metadata(&resolved).await?;
-    if !metadata.is_file() {
-        return Err(FileError::NotAFile(request.path));
-    }
+    let (resolved, metadata) = resolve_file(workspace, &request.path).await?;
 
     let size = metadata.len();
     let etag = etag(&metadata);
@@ -112,18 +130,9 @@ pub(crate) async fn realpath(
 ) -> Result<RealpathResponse, FileError> {
     let resolved = path::resolve(workspace, &request.path).await?;
 
-    let path = match workspace {
-        Some(workspace) => resolved
-            .strip_prefix(workspace.root())
-            .map_err(|_| {
-                FileError::BadRequest(format!("path escapes the workspace: {}", request.path))
-            })?
-            .display()
-            .to_string(),
-        None => resolved.display().to_string(),
-    };
-
-    Ok(RealpathResponse { path })
+    Ok(RealpathResponse {
+        path: resolved.display().to_string(),
+    })
 }
 
 pub(crate) async fn access(
@@ -131,9 +140,8 @@ pub(crate) async fn access(
     request: AccessRequest,
 ) -> Result<AccessResponse, FileError> {
     let resolved = path::resolve(workspace, &request.path).await?;
-    let metadata = tokio::fs::metadata(&resolved).await?;
 
-    let mut access = mode_access(&metadata);
+    let mut access = process_access(&resolved);
     if let Some(workspace) = workspace
         && workspace.require_writable().is_err()
     {
@@ -152,20 +160,13 @@ pub(crate) async fn lines(
         return Err(FileError::BadRequest("`limit` must be positive".to_owned()));
     }
 
-    let resolved = path::resolve(workspace, &request.path).await?;
-    let metadata = tokio::fs::metadata(&resolved).await?;
-    if !metadata.is_file() {
-        return Err(FileError::NotAFile(request.path));
-    }
+    let (content, _) = read_text(workspace, &request.path).await?;
 
-    let bytes = tokio::fs::read(&resolved).await?;
-    let content = String::from_utf8(bytes).map_err(|_| FileError::NotUtf8)?;
-
-    let all: Vec<&str> = content.lines().collect();
-    let total = all.len() as u64;
+    let source: Vec<&str> = content.lines().collect();
+    let total = source.len() as u64;
     let start = request.offset.unwrap_or(0).min(total);
     let end = start.saturating_add(limit).min(total);
-    let lines = all[start as usize..end as usize]
+    let lines = source[start as usize..end as usize]
         .iter()
         .map(|line| (*line).to_owned())
         .collect();
@@ -370,20 +371,15 @@ async fn describe(
         },
     };
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-        described.mode = Some(format!("{:04o}", metadata.permissions().mode() & 0o7777));
-        described.uid = Some(u64::from(metadata.uid()));
-        described.gid = Some(u64::from(metadata.gid()));
-        described.inode = Some(metadata.ino());
-        described.links = Some(metadata.nlink());
-        described.device = Some(metadata.dev());
-        described.device_type = Some(metadata.rdev());
-        described.block_size = Some(metadata.blksize());
-        described.blocks = Some(metadata.blocks());
-    }
+    described.mode = Some(format!("{:04o}", metadata.permissions().mode() & 0o7777));
+    described.uid = Some(u64::from(metadata.uid()));
+    described.gid = Some(u64::from(metadata.gid()));
+    described.inode = Some(metadata.ino());
+    described.links = Some(metadata.nlink());
+    described.device = Some(metadata.dev());
+    described.device_type = Some(metadata.rdev());
+    described.block_size = Some(metadata.blksize());
+    described.blocks = Some(metadata.blocks());
 
     Ok(described)
 }
@@ -392,55 +388,29 @@ fn timestamp(time: SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
 }
 
-#[cfg(unix)]
-fn mode_access(metadata: &std::fs::Metadata) -> AccessResponse {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = metadata.permissions().mode();
+fn process_access(path: &Path) -> AccessResponse {
+    // `path` is canonical: it holds no NUL and no symlink left to follow.
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .expect("a canonical path contains no NUL");
+    let allowed = |mode| unsafe {
+        libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) == 0
+    };
 
     AccessResponse {
-        readable: mode & 0o444 != 0,
-        writable: mode & 0o222 != 0,
-        executable: mode & 0o111 != 0,
+        readable: allowed(libc::R_OK),
+        writable: allowed(libc::W_OK),
+        executable: allowed(libc::X_OK),
     }
 }
 
-#[cfg(not(unix))]
-fn mode_access(metadata: &std::fs::Metadata) -> AccessResponse {
-    AccessResponse {
-        readable: true,
-        writable: !metadata.permissions().readonly(),
-        executable: metadata.is_dir(),
-    }
-}
-
-#[cfg(unix)]
 fn create_link(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
-#[cfg(not(unix))]
-fn create_link(_target: &Path, _link: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "symbolic links require a Unix platform",
-    ))
-}
-
-#[cfg(unix)]
 async fn set_permissions(path: &Path, bits: u32) -> Result<(), FileError> {
-    use std::os::unix::fs::PermissionsExt;
-
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(bits))
         .await
         .map_err(FileError::from)
-}
-
-#[cfg(not(unix))]
-async fn set_permissions(_path: &Path, _bits: u32) -> Result<(), FileError> {
-    Err(FileError::BadRequest(
-        "permission changes require a Unix platform".to_owned(),
-    ))
 }
 
 async fn set_modified(path: &Path, time: SystemTime) -> Result<(), FileError> {
@@ -560,7 +530,6 @@ mod tests {
         assert_eq!(directory.size, 0);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn describes_a_symlink_with_its_verbatim_target() {
         let dir = TempDir::new();
@@ -598,10 +567,39 @@ mod tests {
         assert_eq!(response.path, expected.display().to_string());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn access_reads_and_writes_within_the_permission_bits() {
+    async fn realpath_returns_an_absolute_path_in_workspace_mode() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("note.txt"), "hi").unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        let workspace = registry.workspace("docs").unwrap();
+
+        let response = realpath(
+            Some(&workspace),
+            RealpathRequest {
+                path: "note.txt".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let expected = std::fs::canonicalize(dir.path().join("note.txt")).unwrap();
+        assert_eq!(response.path, expected.display().to_string());
+        assert!(Path::new(&response.path).is_absolute());
+    }
+
+    #[tokio::test]
+    async fn access_reports_the_process_permissions() {
         use std::os::unix::fs::PermissionsExt;
+
+        // Root bypasses the permission bits, so the probe cannot be exercised.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
 
         let dir = TempDir::new();
         let path = dir.path().join("note.txt");
@@ -691,7 +689,6 @@ mod tests {
         assert_eq!(replaced.metadata.size, 2);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn creates_a_symlink_and_reports_conflicts() {
         let dir = TempDir::new();
@@ -722,7 +719,6 @@ mod tests {
         assert!(matches!(error, FileError::AlreadyExists(_)));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn patches_mode_and_modified_time() {
         use std::os::unix::fs::PermissionsExt;

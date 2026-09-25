@@ -214,7 +214,6 @@ mod tests {
         assert!(matches!(error, PathError::InvalidPath { .. }));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn rejects_a_symlink_that_escapes() {
         let dir = TempDir::new();

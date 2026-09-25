@@ -803,7 +803,6 @@ mod tests {
         assert_eq!(json_body(response).await["size"], 2);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn put_symlink_then_delete_round_trips() {
         let app = app();
@@ -854,7 +853,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(json_body(response).await["size"], 2);
 
-        #[cfg(unix)]
         {
             let response = send(
                 &app,
