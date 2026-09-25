@@ -16,7 +16,6 @@ import type { ResourceMetadata } from "./generated/ResourceMetadata.ts";
 import { Client } from "./internal/client.ts";
 import {
   isNotFound,
-  joinPath,
   metadataInfo,
   resourceUrl,
   toPlatformError,
@@ -242,8 +241,10 @@ export const make = Effect.fn("FileSystem.make")(function* (
         ? new URLSearchParams({ type: "list", depth: "infinity" })
         : new URLSearchParams({ type: "list" });
 
+    // Entries carry the addressing-mode path; rebuilding from the name would drop
+    // the directory prefix of a recursive listing.
     return queryJson<DirectoryResponse>("readDirectory", path, params).pipe(
-      Effect.map((directory) => directory.entries.map((entry) => joinPath(path, entry.name))),
+      Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );
   }) satisfies FileSystem["readDirectory"];
 
