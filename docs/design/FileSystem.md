@@ -302,12 +302,6 @@
 - 成功创建返回 `201`，替换返回 `200`，都返回更新后的 `metadata`，并在 `ETag` 头返回新版本；
 - 服务端先解码到临时文件，再在写闸门内提交，见“两种文件写入模式”；目标为目录返回 `400 not_a_file`。
 
-#### `PUT ?type=sink`
-
-以流式上传写入文件内容，是数据面中 `QUERY ?type=stream` 的写入侧对应，按 [tus 1.0.0](https://tus.io/protocols/resumable-upload) 核心协议承载。
-
-该端点先预留，请求与响应 schema、与“大文件上传”子路由的关系留待后续确定。
-
 #### `PUT ?type=directory`
 
 创建目录，对应 WebDAV `MKCOL`。
