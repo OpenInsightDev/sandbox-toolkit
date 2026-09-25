@@ -52,7 +52,7 @@ async fn read_directory_with_depth(
     while let Some(directory) = pending.pop() {
         let mut read_dir = tokio::fs::read_dir(&directory).await?;
         while let Some(entry) = read_dir.next_entry().await? {
-            let (child, child_path) = resource_entry(entry).await?;
+            let (child, child_path) = resource_entry(entry, target).await?;
             // `resource_entry` classifies from `symlink_metadata`, so a symlink is
             // never `Directory` and is only listed, not traversed. Reusing the entry's
             // own path avoids rebuilding it from the display string.
@@ -201,6 +201,7 @@ async fn ensure_within_workspace(
 
 pub(super) async fn resource_entry(
     entry: tokio::fs::DirEntry,
+    address_root: &TargetFile,
 ) -> Result<(ResourceEntry, std::path::PathBuf), DirectoryError> {
     let path = entry.path();
     let metadata = tokio::fs::symlink_metadata(&path).await?;
@@ -219,14 +220,30 @@ pub(super) async fn resource_entry(
 
     let entry = ResourceEntry {
         name: entry.file_name().to_string_lossy().into_owned(),
-        path: path.display().to_string(),
+        path: entry_address(address_root, &path),
         kind,
-        size: metadata.is_file().then_some(metadata.len()),
+        // Only a file has content, matching how `metadata` reports size.
+        size: if metadata.is_file() {
+            metadata.len()
+        } else {
+            0
+        },
         etag: etag(&metadata),
         modified_at: modified_at(&metadata),
     };
 
     Ok((entry, path))
+}
+
+/// Spell an entry's path the way its search root addresses resources: relative
+/// to the workspace, or the remote absolute path.
+fn entry_address(address_root: &TargetFile, path: &std::path::Path) -> String {
+    let base = address_root.path();
+    let relative = path.strip_prefix(&base).unwrap_or(path);
+    std::path::Path::new(&address_root.address())
+        .join(relative)
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl From<MetadataError> for DirectoryError {

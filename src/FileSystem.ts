@@ -255,8 +255,8 @@ export const make = Effect.fn("FileSystem.make")(function* (
       params.append("exclude", exclude);
     }
 
-    // Matched entries carry the server's own paths, which only round-trip in
-    // direct mode; the `name` component is reliable in both modes.
+    // Matched entries carry the addressing-mode path, so they round-trip in
+    // both modes.
     return queryJson<DirectoryResponse>("glob", root, params).pipe(
       Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );

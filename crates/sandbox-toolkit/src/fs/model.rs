@@ -97,7 +97,9 @@ pub(crate) struct ResourceEntry {
     pub(crate) name: String,
     pub(crate) path: String,
     pub(crate) kind: ResourceKind,
-    pub(crate) size: Option<u64>,
+    /// Content size in bytes; a directory or symlink carries no content and
+    /// reports `0`.
+    pub(crate) size: u64,
     pub(crate) etag: String,
     pub(crate) modified_at: String,
 }
@@ -125,8 +127,53 @@ pub(crate) struct ResourceMetadata {
     /// reports `0`.
     pub(crate) size: u64,
     pub(crate) etag: String,
+    /// Permission bits as an octal string, for example `"0644"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) mode: Option<String>,
+    /// Owner user id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) uid: Option<u64>,
+    /// Owner group id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) gid: Option<u64>,
+    /// Inode number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) inode: Option<u64>,
+    /// Hard link count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) links: Option<u64>,
+    /// Device the resource resides on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) device: Option<u64>,
+    /// Device a special file points at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) device_type: Option<u64>,
+    /// Filesystem block size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) block_size: Option<u64>,
+    /// Number of blocks occupied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) blocks: Option<u64>,
     /// Filesystem modification time, RFC 3339.
     pub(crate) modified_at: String,
+    /// Filesystem access time, RFC 3339.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) accessed_at: Option<String>,
+    /// Creation time, RFC 3339; omitted when the platform or filesystem does not
+    /// record it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) birthtime: Option<String>,
     /// Link target, verbatim as stored; only for `kind=symlink`.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

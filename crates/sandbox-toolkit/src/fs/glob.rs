@@ -58,7 +58,7 @@ pub(crate) async fn search(
     'walk: while let Some(directory) = pending.pop() {
         let mut read_dir = tokio::fs::read_dir(&directory).await?;
         while let Some(entry) = read_dir.next_entry().await? {
-            let (resource, path) = resource_entry(entry).await?;
+            let (resource, path) = resource_entry(entry, target).await?;
             let relative = path
                 .strip_prefix(&root)
                 .expect("a walked entry is always below the search root")

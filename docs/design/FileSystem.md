@@ -102,8 +102,21 @@
 | `kind`        | `file` / `directory` / `symlink` | 资源类型                                           |
 | `size`        | integer                          | 字节数，目录为 `0`                                 |
 | `etag`        | string                           | 版本标识                                           |
+| `mode`        | string                           | 权限位，八进制，如 `"0644"`                        |
+| `uid`         | integer                          | 所有者用户 ID                                      |
+| `gid`         | integer                          | 所有者组 ID                                        |
+| `inode`       | integer                          | inode 编号                                         |
+| `links`       | integer                          | 硬链接数                                           |
+| `device`      | integer                          | 资源所在设备的编号                                 |
+| `device_type` | integer                          | 特殊文件指向的设备编号                             |
+| `block_size`  | integer                          | 文件系统块大小                                     |
+| `blocks`      | integer                          | 占用的块数                                         |
 | `modified_at` | string（RFC 3339）               | 修改时间                                           |
+| `accessed_at` | string（RFC 3339）               | 访问时间                                           |
+| `birthtime`   | string（RFC 3339）               | 创建时间                                           |
 | `target`      | string                           | 仅 `kind=symlink` 出现，链接目标                   |
+
+平台无法提供的属性省略，如不支持创建时间的文件系统不返回 `birthtime`。
 
 资源不存在返回 `404`。
 
@@ -121,10 +134,12 @@
 
 输出：
 
-| 字段        | 类型                 | 说明                                        |
-| ----------- | -------------------- | ------------------------------------------- |
-| `entries`   | `ResourceMetadata[]` | 目录条目，字段同 `metadata`，按稳定顺序切分 |
-| `truncated` | boolean              | 还有未返回的条目                            |
+| 字段        | 类型              | 说明                     |
+| ----------- | ----------------- | ------------------------ |
+| `entries`   | `ResourceEntry[]` | 目录条目，按稳定顺序切分 |
+| `truncated` | boolean           | 还有未返回的条目         |
+
+`ResourceEntry` 只含 `name`、`path`、`kind`、`size`、`etag`、`modified_at`，字段含义同 `metadata`。
 
 - 返回顺序稳定，`offset` 按该顺序切分；
 - 递归查询还受服务端总条目数或响应大小上限约束，达到即截断并置 `truncated`；

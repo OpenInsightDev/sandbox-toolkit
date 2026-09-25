@@ -107,9 +107,21 @@ export const toPlatformError =
     }
   };
 
+/** A server timestamp as a `Date`, absent when the platform withheld it. */
+const optionalDate = (value: string | undefined): Option.Option<Date> =>
+  value === undefined ? Option.none() : Option.some(new Date(value));
+
+/** Permission bits as a number parsed from the octal string, `0` when withheld. */
+const permissionBits = (mode: string | undefined): number =>
+  mode === undefined ? 0 : Number.parseInt(mode, 8);
+
+/** Block size as `ByteSize`, absent when the platform withheld it. */
+const optionalByteSize = (value: number | undefined): Option.Option<ByteSize.ByteSize> =>
+  value === undefined ? Option.none() : Option.some(ByteSize.bytes(value));
+
 /**
- * The server reports only kind, size and modification time; the remaining
- * `File.Info` fields stay empty rather than fabricated.
+ * Map the server's metadata onto `File.Info`. Fields the platform withheld stay
+ * empty rather than fabricated.
  */
 export const metadataInfo = (metadata: ResourceMetadata): File.Info => ({
   type:
@@ -119,18 +131,18 @@ export const metadataInfo = (metadata: ResourceMetadata): File.Info => ({
         ? "Directory"
         : "SymbolicLink",
   mtime: Option.some(new Date(metadata.modified_at)),
-  atime: Option.none(),
-  birthtime: Option.none(),
-  dev: 0,
-  ino: Option.none(),
-  mode: 0,
-  nlink: Option.none(),
-  uid: Option.none(),
-  gid: Option.none(),
-  rdev: Option.none(),
+  atime: optionalDate(metadata.accessed_at),
+  birthtime: optionalDate(metadata.birthtime),
+  dev: metadata.device ?? 0,
+  ino: Option.fromNullishOr(metadata.inode),
+  mode: permissionBits(metadata.mode),
+  nlink: Option.fromNullishOr(metadata.links),
+  uid: Option.fromNullishOr(metadata.uid),
+  gid: Option.fromNullishOr(metadata.gid),
+  rdev: Option.fromNullishOr(metadata.device_type),
   size: ByteSize.bytes(metadata.size),
-  blksize: Option.none(),
-  blocks: Option.none(),
+  blksize: optionalByteSize(metadata.block_size),
+  blocks: Option.fromNullishOr(metadata.blocks),
 });
 
 /** The resource reports as absent only when the server said `not_found`. */
