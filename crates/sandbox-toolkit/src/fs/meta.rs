@@ -2,9 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
+use super::TargetFile;
 use super::model::{ResourceKind, ResourceMetadata};
 use super::path::{self, PathError};
-use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
 pub(crate) enum MetadataError {
@@ -271,14 +271,13 @@ mod tests {
             .await
             .unwrap();
 
-        let workspace = registry
-            .target_file("docs", PathBuf::from("note.txt"))
-            .unwrap();
+        let workspace =
+            TargetFile::workspace(&registry, "docs", PathBuf::from("note.txt")).unwrap();
         let metadata = read_metadata(&workspace).await.unwrap();
         assert_eq!(metadata.path, "note.txt");
         assert_eq!(metadata.name, "note.txt");
 
-        let root = registry.target_file("docs", PathBuf::new()).unwrap();
+        let root = TargetFile::workspace(&registry, "docs", PathBuf::new()).unwrap();
         let root = read_metadata(&root).await.unwrap();
         assert_eq!(root.path, "");
         assert_eq!(root.name, canonical_root_name(&dir));
@@ -344,7 +343,7 @@ mod tests {
             .unwrap();
 
         for path in ["escape", "dangling-escape"] {
-            let target = registry.target_file("docs", PathBuf::from(path)).unwrap();
+            let target = TargetFile::workspace(&registry, "docs", PathBuf::from(path)).unwrap();
             assert!(
                 matches!(
                     read_metadata(&target).await,
@@ -354,9 +353,7 @@ mod tests {
             );
         }
 
-        let inside = registry
-            .target_file("docs", PathBuf::from("note.txt"))
-            .unwrap();
+        let inside = TargetFile::workspace(&registry, "docs", PathBuf::from("note.txt")).unwrap();
         assert_eq!(read_metadata(&inside).await.unwrap().name, "note.txt");
     }
 

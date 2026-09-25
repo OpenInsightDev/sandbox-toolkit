@@ -1,5 +1,4 @@
-//! Registration is the only place a remote absolute path is accepted;
-//! [`WorkspaceRegistry::resolve`] is how the rest of the crate learns it.
+//! Registration is the only place a remote absolute path is accepted.
 
 use std::{
     collections::HashMap,
@@ -56,7 +55,7 @@ impl Workspace {
         &self.id
     }
 
-    fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
@@ -68,7 +67,7 @@ impl Workspace {
         WorkspaceHandle::new(self.id.clone(), self.properties)
     }
 
-    fn require_writable(&self) -> Result<(), WorkspaceError> {
+    pub(crate) fn require_writable(&self) -> Result<(), WorkspaceError> {
         match self.access() {
             WorkspaceAccess::ReadWrite => Ok(()),
             WorkspaceAccess::ReadOnly => Err(WorkspaceError::ReadOnly {
@@ -78,55 +77,6 @@ impl Workspace {
     }
 }
 
-/// A path already validated as normalized: percent-decoded once, with no `.`,
-/// `..`, NUL or ambiguous encoding. Resolution helpers may therefore join it
-/// without normalizing again; only the workspace boundary still needs checking
-/// before filesystem access.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TargetFile {
-    Workspace {
-        workspace: Workspace,
-        relative_path: PathBuf,
-    },
-    Absolute(PathBuf),
-}
-
-impl TargetFile {
-    pub(crate) fn path(&self) -> PathBuf {
-        match self {
-            Self::Workspace {
-                workspace,
-                relative_path,
-            } => workspace.root().join(relative_path),
-            Self::Absolute(path) => path.clone(),
-        }
-    }
-
-    pub(crate) fn address(&self) -> String {
-        match self {
-            Self::Workspace { relative_path, .. } => relative_path.display().to_string(),
-            Self::Absolute(path) => path.display().to_string(),
-        }
-    }
-
-    pub(crate) fn workspace_root(&self) -> Option<&Path> {
-        match self {
-            Self::Workspace { workspace, .. } => Some(workspace.root()),
-            Self::Absolute(_) => None,
-        }
-    }
-
-    /// Direct mode has no workspace properties to narrow its behavior, so it is
-    /// never read-only.
-    pub(crate) fn require_writable(&self) -> Result<(), WorkspaceError> {
-        match self {
-            Self::Workspace { workspace, .. } => workspace.require_writable(),
-            Self::Absolute(_) => Ok(()),
-        }
-    }
-}
-
-/// Handlers never hold a workspace root, only the id they resolve it with.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceRegistry {
     workspaces: RwLock<HashMap<String, Workspace>>,
@@ -193,17 +143,6 @@ impl WorkspaceRegistry {
             .get(id)
             .map(|workspace| workspace.root().to_owned())
             .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
-    }
-
-    pub(crate) fn target_file(
-        &self,
-        id: &str,
-        relative_path: PathBuf,
-    ) -> Result<TargetFile, WorkspaceError> {
-        Ok(TargetFile::Workspace {
-            workspace: self.workspace(id)?,
-            relative_path,
-        })
     }
 
     /// Hands a process the root as a variable, so a command never has to hardcode
@@ -380,42 +319,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn target_files_keep_their_addressing_mode() {
-        let dir = TempDir::new();
-        let registry = WorkspaceRegistry::default();
-        registry
-            .register("docs", &dir.root(), WorkspaceProperties::default())
-            .await
-            .unwrap();
-
-        let workspace = registry.workspace("docs").unwrap();
-        let relative_path = PathBuf::from("notes/todo.txt");
-        let target = TargetFile::Workspace {
-            workspace: workspace.clone(),
-            relative_path: relative_path.clone(),
-        };
-        assert_eq!(
-            target,
-            TargetFile::Workspace {
-                workspace,
-                relative_path,
-            }
-        );
-
-        let absolute_path = dir.path().join("notes/todo.txt");
-        assert_eq!(
-            TargetFile::Absolute(absolute_path.clone()),
-            TargetFile::Absolute(absolute_path)
-        );
-        assert_eq!(
-            registry.workspace("missing"),
-            Err(WorkspaceError::NotFound {
-                id: "missing".to_owned()
-            })
-        );
-    }
-
-    #[tokio::test]
     async fn get_reports_registered_and_unknown_ids() {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
@@ -427,6 +330,12 @@ mod tests {
         assert_eq!(registry.get("docs").unwrap().id(), "docs");
         assert_eq!(
             registry.get("missing"),
+            Err(WorkspaceError::NotFound {
+                id: "missing".to_owned()
+            })
+        );
+        assert_eq!(
+            registry.workspace("missing"),
             Err(WorkspaceError::NotFound {
                 id: "missing".to_owned()
             })
@@ -641,47 +550,6 @@ mod tests {
         assert_eq!(
             registry.workspace("docs").unwrap().access(),
             WorkspaceAccess::ReadWrite
-        );
-    }
-
-    #[tokio::test]
-    async fn mutations_require_a_writable_workspace() {
-        let dir = TempDir::new();
-        let registry = WorkspaceRegistry::default();
-        registry
-            .register("docs", &dir.root(), WorkspaceProperties::default())
-            .await
-            .unwrap();
-        registry
-            .register(
-                "sealed",
-                &dir.root(),
-                WorkspaceProperties {
-                    access: WorkspaceAccess::ReadOnly,
-                },
-            )
-            .await
-            .unwrap();
-
-        let writable = registry
-            .target_file("docs", PathBuf::from("note.txt"))
-            .unwrap();
-        assert_eq!(writable.require_writable(), Ok(()));
-
-        let sealed = registry
-            .target_file("sealed", PathBuf::from("note.txt"))
-            .unwrap();
-        assert_eq!(
-            sealed.require_writable(),
-            Err(WorkspaceError::ReadOnly {
-                id: "sealed".to_owned(),
-            })
-        );
-
-        // Direct mode carries no workspace properties.
-        assert_eq!(
-            TargetFile::Absolute(dir.path().to_owned()).require_writable(),
-            Ok(())
         );
     }
 

@@ -1,9 +1,9 @@
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use thiserror::Error;
 
+use super::TargetFile;
 use super::dir::{DirectoryError, SERVER_LIMIT, checked_target, resource_entry};
 use super::model::{DirectoryResponse, ResourceEntry, ResourceKind};
-use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
 pub(crate) enum GlobError {

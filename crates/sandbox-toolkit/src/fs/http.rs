@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, convert::Infallible};
 
+use super::TargetFile;
 use super::dir::{
     DirectoryError, ListRequest, create_directory, create_directory_recursive, read_directory,
     read_directory_recursive,
@@ -15,7 +16,6 @@ use super::glob::{self, GlobError, GlobRequest};
 use super::meta::{MetadataError, read_metadata};
 use super::model::{ResourceMetadata, ResourceOperation};
 use super::path::{self, PathError};
-use crate::workspace::registry::TargetFile;
 use crate::{AppError, AppState};
 use axum::Json;
 use axum::Router;
@@ -93,7 +93,7 @@ impl FromRequestParts<AppState> for ResourceTarget {
                 let path = path::validate_relative(&raw).map_err(map_path_error)?;
                 Self {
                     address: path.display().to_string(),
-                    resource: state.workspaces().target_file(id, path)?,
+                    resource: TargetFile::workspace(state.workspaces(), id, path)?,
                 }
             }
             None => {

@@ -1,9 +1,9 @@
 use thiserror::Error;
 
+use super::TargetFile;
 use super::meta::{MetadataError, etag, modified_at, read_metadata};
 use super::model::{DirectoryResponse, ResourceEntry, ResourceKind, ResourceMetadata};
 use super::path::{self, PathError};
-use crate::workspace::registry::TargetFile;
 
 /// Entries a listing returns when the request names no `limit`, and the ceiling
 /// an explicit `limit` is clamped to.

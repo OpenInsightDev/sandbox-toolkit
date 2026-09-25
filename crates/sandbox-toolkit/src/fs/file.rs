@@ -5,9 +5,9 @@ use mime_guess::Mime;
 use thiserror::Error;
 use tokio_util::io::ReaderStream;
 
+use super::TargetFile;
 use super::meta::etag;
 use super::path::{self, PathError};
-use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
 pub(crate) enum ReadFileError {

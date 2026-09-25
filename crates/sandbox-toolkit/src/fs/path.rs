@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use percent_encoding::percent_decode_str;
 use thiserror::Error;
 
-use crate::workspace::registry::TargetFile;
+use super::TargetFile;
 
 #[derive(Debug, Error)]
 pub(crate) enum PathError {
@@ -293,9 +293,7 @@ mod tests {
             .await
             .unwrap();
 
-        let target = registry
-            .target_file("docs", PathBuf::from("note.txt"))
-            .unwrap();
+        let target = TargetFile::workspace(&registry, "docs", PathBuf::from("note.txt")).unwrap();
         assert_eq!(
             resolve_existing(&target).await.unwrap(),
             tokio::fs::canonicalize(dir.path().join("note.txt"))
@@ -303,9 +301,7 @@ mod tests {
                 .unwrap()
         );
 
-        let missing = registry
-            .target_file("docs", PathBuf::from("missing"))
-            .unwrap();
+        let missing = TargetFile::workspace(&registry, "docs", PathBuf::from("missing")).unwrap();
         assert!(matches!(
             resolve_existing(&missing).await,
             Err(PathError::NotFound(_))
@@ -321,9 +317,7 @@ mod tests {
             .await
             .unwrap();
 
-        let target = registry
-            .target_file("docs", PathBuf::from("a/b/c"))
-            .unwrap();
+        let target = TargetFile::workspace(&registry, "docs", PathBuf::from("a/b/c")).unwrap();
 
         assert_eq!(
             resolve_creating(&target).await.unwrap(),
@@ -343,9 +337,7 @@ mod tests {
             .await
             .unwrap();
 
-        let inside = registry
-            .target_file("docs", PathBuf::from("inside"))
-            .unwrap();
+        let inside = TargetFile::workspace(&registry, "docs", PathBuf::from("inside")).unwrap();
         assert!(
             resolve_link(&inside, Path::new("missing.txt"))
                 .await
@@ -354,9 +346,7 @@ mod tests {
 
         // `..` inside the existing prefix is resolved by the filesystem; `..`
         // past a missing component cannot be, so an escape cannot be ruled out.
-        let outside = registry
-            .target_file("docs", PathBuf::from("outside"))
-            .unwrap();
+        let outside = TargetFile::workspace(&registry, "docs", PathBuf::from("outside")).unwrap();
         assert!(matches!(
             resolve_link(&outside, Path::new("../nope")).await,
             Err(PathError::OutsideWorkspace(_))
