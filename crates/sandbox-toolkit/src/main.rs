@@ -1,6 +1,7 @@
 //! An Axum HTTP server for running sandboxed tooling.
 
 mod binary;
+mod fs;
 mod mcp;
 mod process;
 mod server;
