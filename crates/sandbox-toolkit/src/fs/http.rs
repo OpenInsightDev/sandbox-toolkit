@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::dir::{
-    DirectoryError, create_directory, create_directory_recursive, read_directory,
+    DirectoryError, ListRequest, create_directory, create_directory_recursive, read_directory,
     read_directory_recursive,
 };
 use super::file::{
@@ -211,21 +211,33 @@ fn query_usize(query: &RawQuery, key: &str) -> Result<Option<usize>, AppError> {
     }
 }
 
+/// A `limit` of zero is meaningless, so it is rejected for every windowed
+/// endpoint rather than clamped to an empty page.
+fn query_limit(query: &RawQuery) -> Result<Option<usize>, AppError> {
+    let limit = query_usize(query, "limit")?;
+    if limit == Some(0) {
+        return Err(AppError::BadRequest("limit must be positive".to_owned()));
+    }
+    Ok(limit)
+}
+
+fn list_request(query: &RawQuery) -> Result<ListRequest, AppError> {
+    Ok(ListRequest {
+        offset: query_usize(query, "offset")?.unwrap_or(0),
+        limit: query_limit(query)?,
+    })
+}
+
 fn glob_request(query: &RawQuery) -> Result<GlobRequest, AppError> {
     let pattern = query_value(query, "pattern")
         .filter(|pattern| !pattern.is_empty())
         .ok_or_else(|| AppError::BadRequest("glob requires a `pattern`".to_owned()))?;
 
-    let limit = query_usize(query, "limit")?;
-    if limit == Some(0) {
-        return Err(AppError::BadRequest("limit must be positive".to_owned()));
-    }
-
     Ok(GlobRequest {
         pattern,
         exclude: query_values(query, "exclude"),
         offset: query_usize(query, "offset")?.unwrap_or(0),
-        limit,
+        limit: query_limit(query)?,
     })
 }
 
@@ -483,10 +495,11 @@ async fn query_resource(
             )
             .await?;
 
+            let request = list_request(&query)?;
             let directory = if list_recursive(&query)? {
-                read_directory_recursive(&target.resource).await
+                read_directory_recursive(&target.resource, &request).await
             } else {
-                read_directory(&target.resource).await
+                read_directory(&target.resource, &request).await
             }
             .map_err(map_directory_error)?;
 
@@ -1059,6 +1072,50 @@ mod tests {
         assert_eq!(by_name("link")["kind"], "symlink");
         assert_eq!(by_name("z.txt")["kind"], "file");
         assert_eq!(by_name("z.txt")["size"], 5);
+    }
+
+    #[tokio::test]
+    async fn query_list_paginates() {
+        let dir = TempDir::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            tokio::fs::write(dir.path().join(name), name).await.unwrap();
+        }
+        let app = router().with_state(AppState::new("."));
+        let base = format!("/fs{}?type=list", dir.path().display());
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!("{base}&limit=2"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(body["truncated"], true);
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri(format!("{base}&offset=3"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(body["entries"].as_array().unwrap().is_empty());
+        assert_eq!(body["truncated"], false);
     }
 
     #[tokio::test]

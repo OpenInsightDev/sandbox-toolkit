@@ -4,6 +4,10 @@ use super::meta::{MetadataError, etag, modified_at, read_metadata};
 use super::model::{DirectoryResponse, ResourceEntry, ResourceKind, ResourceMetadata};
 use crate::workspace::registry::TargetFile;
 
+/// Entries a listing returns when the request names no `limit`, and the ceiling
+/// an explicit `limit` is clamped to.
+pub(super) const SERVER_LIMIT: usize = 1000;
+
 #[derive(Debug, Error)]
 pub(crate) enum DirectoryError {
     #[error("resource not found: {0}")]
@@ -20,36 +24,76 @@ pub(crate) enum DirectoryError {
     Io(#[from] std::io::Error),
 }
 
+/// The window of one directory listing.
+pub(crate) struct ListRequest {
+    pub(crate) offset: usize,
+    /// Absent means [`SERVER_LIMIT`].
+    pub(crate) limit: Option<usize>,
+}
+
 pub(crate) async fn read_directory(
     target: &TargetFile,
+    request: &ListRequest,
 ) -> Result<DirectoryResponse, DirectoryError> {
-    read_directory_with_depth(target, false).await
+    let path = checked_target(target).await?;
+    let limit = request.limit.unwrap_or(SERVER_LIMIT).min(SERVER_LIMIT);
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    let mut visited = 0;
+
+    let mut read_dir = tokio::fs::read_dir(&path).await?;
+    while let Some(entry) = read_dir.next_entry().await? {
+        if visited < request.offset {
+            visited += 1;
+            continue;
+        }
+        if entries.len() == limit {
+            // One more entry sits past the window, so the response is short.
+            truncated = true;
+            break;
+        }
+        entries.push(resource_entry(&entry, target).await?);
+    }
+
+    Ok(DirectoryResponse {
+        path: path.display().to_string(),
+        entries,
+        truncated,
+    })
 }
 
 /// Symbolic links are reported as entries but never followed, so a self-referential
 /// link cannot make the walk diverge.
 pub(crate) async fn read_directory_recursive(
     target: &TargetFile,
-) -> Result<DirectoryResponse, DirectoryError> {
-    read_directory_with_depth(target, true).await
-}
-
-async fn read_directory_with_depth(
-    target: &TargetFile,
-    recursive: bool,
+    request: &ListRequest,
 ) -> Result<DirectoryResponse, DirectoryError> {
     let path = checked_target(target).await?;
+    let limit = request.limit.unwrap_or(SERVER_LIMIT).min(SERVER_LIMIT);
     let mut entries = Vec::new();
-    let mut pending = vec![path.clone()];
+    let mut truncated = false;
+    let mut visited = 0;
 
-    while let Some(directory) = pending.pop() {
+    let mut pending = vec![path.clone()];
+    'walk: while let Some(directory) = pending.pop() {
         let mut read_dir = tokio::fs::read_dir(&directory).await?;
         while let Some(entry) = read_dir.next_entry().await? {
-            let (child, child_path) = resource_entry(entry, target).await?;
+            let child_path = entry.path();
             // `resource_entry` classifies from `symlink_metadata`, so a symlink is
-            // never `Directory` and is only listed, not traversed.
-            if recursive && child.kind == ResourceKind::Directory {
+            // never `Directory` and is only listed, not traversed. A directory is
+            // queued before the window check so a skipped subtree is still walked.
+            let child = resource_entry(&entry, target).await?;
+            if child.kind == ResourceKind::Directory {
                 pending.push(child_path);
+            }
+            if visited < request.offset {
+                visited += 1;
+                continue;
+            }
+            if entries.len() == limit {
+                // One more entry sits past the window, so the response is short.
+                truncated = true;
+                break 'walk;
             }
             entries.push(child);
         }
@@ -58,61 +102,58 @@ async fn read_directory_with_depth(
     Ok(DirectoryResponse {
         path: path.display().to_string(),
         entries,
-        // A directory read is never paginated, so nothing is withheld.
-        truncated: false,
+        truncated,
     })
 }
 
 pub(crate) async fn create_directory(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
-    create_directory_with_parents(target, false).await
+    let path = target.path();
+    ensure_within_workspace(target, &path).await?;
+    ensure_absent(&path).await?;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| DirectoryError::ParentNotFound(path.display().to_string()))?;
+    match tokio::fs::metadata(parent).await {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(DirectoryError::ParentNotFound(parent.display().to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DirectoryError::ParentNotFound(parent.display().to_string()));
+        }
+        Err(error) => return Err(error.into()),
+    }
+
+    tokio::fs::create_dir(&path)
+        .await
+        .map_err(|error| create_error(&path, error))?;
+
+    Ok(read_metadata(target).await?)
 }
 
 pub(crate) async fn create_directory_recursive(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
-    create_directory_with_parents(target, true).await
-}
-
-async fn create_directory_with_parents(
-    target: &TargetFile,
-    recursive: bool,
-) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
     ensure_within_workspace(target, &path).await?;
+    ensure_absent(&path).await?;
 
-    // `create_dir_all` would accept an existing directory, so the target is
-    // checked first to keep the conflict semantics in both modes.
-    match tokio::fs::symlink_metadata(&path).await {
-        Ok(_) => return Err(DirectoryError::AlreadyExists(path.display().to_string())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-
-    if recursive {
-        tokio::fs::create_dir_all(&path)
-            .await
-            .map_err(|error| create_error(&path, error))?;
-    } else {
-        let parent = path
-            .parent()
-            .ok_or_else(|| DirectoryError::ParentNotFound(path.display().to_string()))?;
-        match tokio::fs::metadata(parent).await {
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => return Err(DirectoryError::ParentNotFound(parent.display().to_string())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(DirectoryError::ParentNotFound(parent.display().to_string()));
-            }
-            Err(error) => return Err(error.into()),
-        }
-
-        tokio::fs::create_dir(&path)
-            .await
-            .map_err(|error| create_error(&path, error))?;
-    }
+    tokio::fs::create_dir_all(&path)
+        .await
+        .map_err(|error| create_error(&path, error))?;
 
     Ok(read_metadata(target).await?)
+}
+
+/// `create_dir_all` would accept an existing directory, so the target is checked
+/// first to keep the conflict semantics of both creation modes.
+async fn ensure_absent(path: &std::path::Path) -> Result<(), DirectoryError> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(_) => Err(DirectoryError::AlreadyExists(path.display().to_string())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// `AlreadyExists` covers the race with the existence check above, and
@@ -181,9 +222,9 @@ async fn ensure_within_workspace(
 }
 
 pub(super) async fn resource_entry(
-    entry: tokio::fs::DirEntry,
+    entry: &tokio::fs::DirEntry,
     address_root: &TargetFile,
-) -> Result<(ResourceEntry, std::path::PathBuf), DirectoryError> {
+) -> Result<ResourceEntry, DirectoryError> {
     let path = entry.path();
     let metadata = tokio::fs::symlink_metadata(&path).await?;
     let kind = if metadata.is_dir() {
@@ -199,7 +240,7 @@ pub(super) async fn resource_entry(
         )));
     };
 
-    let entry = ResourceEntry {
+    Ok(ResourceEntry {
         name: entry.file_name().to_string_lossy().into_owned(),
         path: entry_address(address_root, &path),
         kind,
@@ -211,9 +252,7 @@ pub(super) async fn resource_entry(
         },
         etag: etag(&metadata),
         modified_at: modified_at(&metadata),
-    };
-
-    Ok((entry, path))
+    })
 }
 
 fn entry_address(address_root: &TargetFile, path: &std::path::Path) -> String {
@@ -240,6 +279,13 @@ mod tests {
     use super::*;
     use crate::workspace::registry::test_support::TempDir;
 
+    fn list() -> ListRequest {
+        ListRequest {
+            offset: 0,
+            limit: None,
+        }
+    }
+
     #[tokio::test]
     async fn reads_direct_children() {
         let dir = TempDir::new();
@@ -249,7 +295,7 @@ mod tests {
         tokio::fs::create_dir(dir.path().join("a")).await.unwrap();
         let target = TargetFile::Absolute(dir.path().to_owned());
 
-        let response = read_directory(&target).await.unwrap();
+        let response = read_directory(&target, &list()).await.unwrap();
         let mut names: Vec<&str> = response
             .entries
             .iter()
@@ -273,7 +319,7 @@ mod tests {
             .unwrap();
         let target = TargetFile::Absolute(dir.path().to_owned());
 
-        let response = read_directory_recursive(&target).await.unwrap();
+        let response = read_directory_recursive(&target, &list()).await.unwrap();
         let mut names: Vec<&str> = response
             .entries
             .iter()
@@ -292,7 +338,7 @@ mod tests {
             .unwrap();
         let target = TargetFile::Absolute(dir.path().to_owned());
 
-        let response = read_directory_recursive(&target).await.unwrap();
+        let response = read_directory_recursive(&target, &list()).await.unwrap();
         let mut names: Vec<&str> = response
             .entries
             .iter()
@@ -306,6 +352,62 @@ mod tests {
             .find(|entry| entry.name == "loop")
             .unwrap();
         assert_eq!(loop_entry.kind, ResourceKind::Symlink);
+    }
+
+    #[tokio::test]
+    async fn windows_direct_children() {
+        let dir = TempDir::new();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            tokio::fs::write(dir.path().join(name), name).await.unwrap();
+        }
+        let target = TargetFile::Absolute(dir.path().to_owned());
+
+        let window = ListRequest {
+            offset: 0,
+            limit: Some(2),
+        };
+        let response = read_directory(&target, &window).await.unwrap();
+        assert_eq!(response.entries.len(), 2);
+        assert!(response.truncated);
+
+        let trimmed = ListRequest {
+            offset: 3,
+            limit: None,
+        };
+        let response = read_directory(&target, &trimmed).await.unwrap();
+        assert!(response.entries.is_empty());
+        assert!(!response.truncated);
+    }
+
+    #[tokio::test]
+    async fn windows_the_recursive_walk() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir_all(dir.path().join("a/b"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("a/b/c.txt"), "c")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("z.txt"), "z")
+            .await
+            .unwrap();
+        let target = TargetFile::Absolute(dir.path().to_owned());
+
+        let window = ListRequest {
+            offset: 0,
+            limit: Some(2),
+        };
+        let response = read_directory_recursive(&target, &window).await.unwrap();
+        assert_eq!(response.entries.len(), 2);
+        assert!(response.truncated);
+
+        let trimmed = ListRequest {
+            offset: 4,
+            limit: None,
+        };
+        let response = read_directory_recursive(&target, &trimmed).await.unwrap();
+        assert!(response.entries.is_empty());
+        assert!(!response.truncated);
     }
 
     #[tokio::test]

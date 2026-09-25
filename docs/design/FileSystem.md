@@ -136,14 +136,15 @@
 
 | 字段        | 类型              | 说明                     |
 | ----------- | ----------------- | ------------------------ |
-| `entries`   | `ResourceEntry[]` | 目录条目，按稳定顺序切分 |
+| `entries`   | `ResourceEntry[]` | 目录条目，按遍历顺序切分 |
 | `truncated` | boolean           | 还有未返回的条目         |
 
 `ResourceEntry` 只含 `name`、`path`、`kind`、`size`、`etag`、`modified_at`，字段含义同 `metadata`。
 
-- 返回顺序稳定，`offset` 按该顺序切分；
+- 条目按目录遍历顺序返回，`offset` 按该顺序切分；
 - 递归查询还受服务端总条目数或响应大小上限约束，达到即截断并置 `truncated`；
-- 目标是文件（包括指向文件的符号链接）时返回 `400 not_a_directory`。
+- 目标是文件（包括指向文件的符号链接）时返回 `400 not_a_directory`；
+- 未来可加入按名称稳定排序的有序集合，参考 [RFC 3648](https://datatracker.ietf.org/doc/html/rfc3648)。
 
 #### `QUERY ?type=lines`
 

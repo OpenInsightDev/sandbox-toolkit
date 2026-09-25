@@ -1,13 +1,9 @@
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use thiserror::Error;
 
-use super::dir::{DirectoryError, checked_target, resource_entry};
+use super::dir::{DirectoryError, SERVER_LIMIT, checked_target, resource_entry};
 use super::model::{DirectoryResponse, ResourceEntry, ResourceKind};
 use crate::workspace::registry::TargetFile;
-
-/// Entries a response carries when the request names no `limit`, and the ceiling
-/// an explicit `limit` is clamped to.
-const SERVER_LIMIT: usize = 1000;
 
 #[derive(Debug, Error)]
 pub(crate) enum GlobError {
@@ -53,7 +49,8 @@ pub(crate) async fn search(
     'walk: while let Some(directory) = pending.pop() {
         let mut read_dir = tokio::fs::read_dir(&directory).await?;
         while let Some(entry) = read_dir.next_entry().await? {
-            let (resource, path) = resource_entry(entry, target).await?;
+            let path = entry.path();
+            let resource = resource_entry(&entry, target).await?;
             let relative = path
                 .strip_prefix(&root)
                 .expect("a walked entry is always below the search root")
