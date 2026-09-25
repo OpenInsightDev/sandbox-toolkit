@@ -93,9 +93,7 @@ skill 内其它文件（`scripts/`、`references/`、`assets/` 等）复用 [Fil
 
 对工作区 API 的附加要求：
 
-- `skill-` 前缀保留，用户不能创建、删除或改名以该前缀开头的工作区；
 - 直接删除这类工作区返回 `403 managed_workspace`；
-- `global` 作为工作区 id 保留给全局 skill 的派生工作区命名空间。
 
 ## 错误协议
 

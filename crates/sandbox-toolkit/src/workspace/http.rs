@@ -59,10 +59,9 @@ async fn delete_workspace(
 impl From<WorkspaceError> for AppError {
     fn from(error: WorkspaceError) -> Self {
         match error {
-            WorkspaceError::InvalidId { id, reason } => {
-                Self::BadRequest(format!("invalid workspace id `{id}`: {reason}"))
+            WorkspaceError::InvalidId { id } => {
+                Self::BadRequest(format!("invalid workspace id `{id}`"))
             }
-            WorkspaceError::ReservedId { id } => Self::WorkspaceIdReserved(id),
             WorkspaceError::InvalidRoot { root, reason } => {
                 Self::BadRequest(format!("invalid workspace root `{root}`: {reason}"))
             }
@@ -209,13 +208,6 @@ mod tests {
         let (status, body) = call(&app, create_request("Bad", &dir.root())).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["code"].as_str(), Some("bad_request"));
-
-        let (status, body) = call(&app, create_request("skill-docs", &dir.root())).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(
-            body["error"]["code"].as_str(),
-            Some("workspace_id_reserved")
-        );
 
         let (status, body) = call(&app, create_request("docs", "relative/path")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);

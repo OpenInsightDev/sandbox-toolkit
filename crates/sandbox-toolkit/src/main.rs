@@ -162,13 +162,6 @@ enum AppError {
     #[error("conflict: {0}")]
     Conflict(String),
 
-    /// The workspace id falls into a namespace the server manages.
-    ///
-    /// A separate variant from [`Self::Conflict`] because the machine-readable
-    /// code, not just the status, tells the caller why the id is unavailable.
-    #[error("workspace id is reserved: {0}")]
-    WorkspaceIdReserved(String),
-
     /// The operation needs a file but the target is a directory.
     #[error("target is not a file: {0}")]
     NotAFile(String),
@@ -264,7 +257,7 @@ impl AppError {
             Self::BadRequest(_) | Self::NotAFile(_) | Self::NotADirectory(_) => {
                 StatusCode::BAD_REQUEST
             }
-            Self::Conflict(_) | Self::WorkspaceIdReserved(_) => StatusCode::CONFLICT,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             Self::PreconditionRequired(_) => StatusCode::PRECONDITION_REQUIRED,
@@ -287,7 +280,6 @@ impl AppError {
             Self::NotAFile(_) => "not_a_file",
             Self::NotADirectory(_) => "not_a_directory",
             Self::Conflict(_) => "conflict",
-            Self::WorkspaceIdReserved(_) => "workspace_id_reserved",
             Self::MethodNotAllowed(_) => "method_not_allowed",
             Self::PreconditionFailed(_) => "precondition_failed",
             Self::PreconditionRequired(_) => "precondition_required",

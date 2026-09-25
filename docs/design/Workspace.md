@@ -37,8 +37,6 @@ DELETE /workspaces/{workspace_id}
 
 注册时由调用方指定唯一 `id`，字符集限定为 `[a-z0-9-]`，不允许首尾 `-` 和连续 `-`；`id` 作为 URL 路径段，并构成其它资源派生工作区 id 的前缀。
 
-`skill-` 前缀保留给 [Skill.md](./Skill.md) 派生的只读工作区，用户不能创建、删除或改名以该前缀开头的工作区；`global` 亦保留，用于全局 skill 的派生工作区命名空间。
-
 ### 注册请求
 
 ```json
@@ -93,7 +91,6 @@ DELETE /workspaces/{workspace_id}
 | `root` 非法（非绝对/不存在/非目录）  | `400` | `bad_request`           |
 | 工作区不存在                         | `404` | `not_found`             |
 | `id` 已存在                          | `409` | `conflict`              |
-| 创建 `skill-` 前缀或 `global` 工作区 | `409` | `workspace_id_reserved` |
 
 ## 权限与生命周期
 

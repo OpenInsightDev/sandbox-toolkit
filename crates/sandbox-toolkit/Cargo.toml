@@ -35,6 +35,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ts-rs = "12.0.1"
 url = "2.5"
 strum = { version = "0.28.0", features = ["derive"] }
+regex = "1.13.1"
 
 [build-dependencies]
 flate2 = "1.1"

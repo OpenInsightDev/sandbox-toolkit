@@ -9,15 +9,13 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+use regex::Regex;
 use thiserror::Error;
 
 use super::model::{Workspace as WorkspaceHandle, WorkspaceAccess, WorkspaceProperties};
-
-/// Prefix reserved for the read-only workspaces the Skill API owns.
-const RESERVED_PREFIX: &str = "skill-";
 
 /// Prefix of the environment variable every workspace exposes to the processes it runs.
 const ENVIRONMENT_PREFIX: &str = "WORKSPACE_";
@@ -26,11 +24,8 @@ const ENVIRONMENT_PREFIX: &str = "WORKSPACE_";
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum WorkspaceError {
     /// The id does not satisfy the shared resource-id rules.
-    #[error("invalid workspace id `{id}`: {reason}")]
-    InvalidId { id: String, reason: &'static str },
-    /// The id falls into the namespace reserved for skill-managed workspaces.
-    #[error("workspace id `{id}` is reserved")]
-    ReservedId { id: String },
+    #[error("invalid workspace id `{id}`")]
+    InvalidId { id: String },
     /// The root is not a usable remote absolute directory.
     #[error("invalid workspace root `{root}`: {reason}")]
     InvalidRoot { root: String, reason: String },
@@ -177,7 +172,9 @@ impl WorkspaceRegistry {
         root: &str,
         properties: WorkspaceProperties,
     ) -> Result<WorkspaceHandle, WorkspaceError> {
-        validate_id(id)?;
+        if !ID_PATTERN.is_match(id) {
+            return Err(WorkspaceError::InvalidId { id: id.to_owned() });
+        }
         let root = canonical_root(root).await?;
 
         let mut workspaces = self.write();
@@ -284,42 +281,13 @@ impl WorkspaceRegistry {
     }
 }
 
-/// Enforce the shared resource-id rules: `[a-z0-9-]`, no leading or trailing
-/// `-`, and no `--`.
+/// The shared resource-id rules: `[a-z0-9]+(-[a-z0-9]+)*`.
 ///
-/// Ids become URL path segments and the prefix of workspace ids, so separators
-/// such as `/` and `.` are excluded by the charset rather than by a denylist.
-fn validate_id(id: &str) -> Result<(), WorkspaceError> {
-    let invalid = |reason| WorkspaceError::InvalidId {
-        id: id.to_owned(),
-        reason,
-    };
-
-    if id.is_empty() {
-        return Err(invalid("must not be empty"));
-    }
-
-    if !id
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        return Err(invalid("must match [a-z0-9-]"));
-    }
-
-    if id.starts_with('-') || id.ends_with('-') {
-        return Err(invalid("must not start or end with `-`"));
-    }
-
-    if id.contains("--") {
-        return Err(invalid("must not contain `--`"));
-    }
-
-    if id.starts_with(RESERVED_PREFIX) {
-        return Err(WorkspaceError::ReservedId { id: id.to_owned() });
-    }
-
-    Ok(())
-}
+/// The charset excludes separators such as `/` and `.`, so an id is usable as a
+/// URL path segment. `\A`/`\z` rather than `^`/`$`, because `$` would accept a
+/// trailing newline.
+static ID_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z").expect("the pattern is valid"));
 
 /// Derive a workspace's environment variable name from its id.
 ///
@@ -524,7 +492,9 @@ mod tests {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
 
-        for id in ["", "Docs", "a_b", "a.b", "a/b", "-a", "a-", "a--b", "a b"] {
+        for id in [
+            "", "Docs", "a_b", "a.b", "a/b", "-a", "a-", "a--b", "a b", "a\n",
+        ] {
             assert!(
                 matches!(
                     registry
@@ -535,21 +505,6 @@ mod tests {
                 "id `{id}` was accepted"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn rejects_the_reserved_skill_prefix() {
-        let dir = TempDir::new();
-        let registry = WorkspaceRegistry::default();
-
-        assert_eq!(
-            registry
-                .register("skill-docs", &dir.root(), WorkspaceProperties::default())
-                .await,
-            Err(WorkspaceError::ReservedId {
-                id: "skill-docs".to_owned()
-            })
-        );
     }
 
     #[tokio::test]
