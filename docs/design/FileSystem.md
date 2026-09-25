@@ -1,6 +1,6 @@
 # FileSystem 设计
 
-借鉴 WebDAV 的资源寻址与条件操作，但不采用其扩展方法（`PROPFIND`、`PROPPATCH`、`MKCOL`、`COPY`、`MOVE`、`LOCK`）。
+借鉴 WebDAV 的资源操作与条件请求，但不采用其扩展方法（`PROPFIND`、`PROPPATCH`、`MKCOL`、`COPY`、`MOVE`、`LOCK`）。
 
 ## HTTP/2
 
@@ -8,27 +8,26 @@
 
 ## 控制面和数据面分离
 
-- 数据面用标准方法承载原始 body：`GET` 下载、`PUT` 写入、`HEAD` 探测，元数据经 `Content-Type`、`Content-Length`、`ETag`、`Last-Modified` 等响应头携带；
+- 端点为固定地址，目标路径由请求 body 的 `path` 字段给出，不出现在 URL 中；
 - 控制面用 JSON 承载目录查询、元数据与资源改动；
 - 控制面读取一律用 `QUERY`（安全、幂等、可带请求体）加 `?type=<type>`；
-- 改动中文件内容用裸 `PUT` 写入，其余改动用 `POST`、`PATCH` 或带 `type` 的 `PUT`；
+- 数据面仅保留 `QUERY ?type=stream`，以裸字节响应流式下载；文件内容读取默认走控制面 `QUERY ?type=content`，二进制用 `base64`；
+- 文件内容写入用 `PUT ?type=file`，`content` 按 `encoding` 解码为原始字节；其余改动用 `POST`、`PATCH` 或带 `type` 的 `PUT`；
 - 每个 `type` 的输入输出 schema 各自独立。
 
 ## HTTP 端点设计
 
-端点资源导向：`{base}` 之后是目标资源路径，操作由方法与 `type` 共同决定。
+端点固定，操作由方法与 `type` 共同决定。
 
 | 方法     | 语义                                          |
 | -------- | --------------------------------------------- |
-| `GET`    | 数据面读取文件内容（原始 body）               |
-| `HEAD`   | 只返回响应头                                  |
 | `QUERY`  | 控制面读取，必须带 `type`                     |
-| `PUT`    | 在目标路径创建或替换资源，`type` 区分资源种类 |
+| `PUT`    | 创建或替换资源，`type` 区分资源种类           |
 | `PATCH`  | 修改已有资源（元数据或内容），必须带 `type`   |
-| `POST`   | 作用于目标资源的动作，必须带 `type`           |
+| `POST`   | 作用于资源的动作，必须带 `type`               |
 | `DELETE` | 删除资源，目录递归删除                        |
 
-- `type` 放在 query；带参数的 `type` 要求 JSON body，且是该 `type` 的 schema 对象，全默认传 `{}`；无参数的 `type` 不接受 body；
+- `type` 放在 query；body 统一为 JSON 对象且至少含 `path`，其余字段为该 `type` 的 schema；
 - 带分页的读取统一用 `offset` + `limit` 组合；
 - 条件仍用标准头 `If-Match`、`If-None-Match`，见“ETag 版本机制”；
 - WebDAV 的 `Depth`、`Destination`、`Overwrite` 等头不再使用，改由该 `type` 的 body schema 承载。
@@ -37,37 +36,63 @@
 
 `{base}` 取 `/workspaces/{id}/fs` 或 `/fs`，见“两种寻址模式”。
 
-| 端点            | 方法     | `type`      | 操作          |
-| --------------- | -------- | ----------- | ------------- |
-| `{base}/{path}` | `GET`    | —           | 直接读取      |
-| `{base}/{path}` | `GET`    | `stream`    | 流式下载      |
-| `{base}/{path}` | `HEAD`   | —           | 探测资源      |
-| `{base}/{path}` | `QUERY`  | `metadata`  | 查询单个资源  |
-| `{base}/{path}` | `QUERY`  | `list`      | 列目录        |
-| `{base}/{path}` | `QUERY`  | `glob`      | 通配匹配      |
-| `{base}/{path}` | `QUERY`  | `realpath`  | 解析真实路径  |
-| `{base}/{path}` | `QUERY`  | `access`    | 探测访问权限  |
-| `{base}/{path}` | `QUERY`  | `lines`     | 按行读取文件  |
-| `{base}/{path}` | `QUERY`  | `watch`     | 监听变更      |
-| `{base}/{path}` | `PUT`    | —           | 写入文件      |
-| `{base}/{path}` | `PUT`    | `directory` | 创建目录      |
-| `{base}/{path}` | `PUT`    | `symlink`   | 创建符号链接  |
-| `{base}/{path}` | `PATCH`  | `metadata`  | 修改元数据    |
-| `{base}/{path}` | `PATCH`  | `patch`     | 应用文本补丁  |
-| `{base}/{path}` | `PATCH`  | `truncate`  | 截断文件      |
-| `{base}/{path}` | `POST`   | `copy`      | 复制          |
-| `{base}/{path}` | `POST`   | `move`      | 移动 / 重命名 |
-| `{base}/{path}` | `DELETE` | —           | 删除          |
+| 方法     | `type`      | 操作          | body（关键字段）                                  |
+| -------- | ----------- | ------------- | ------------------------------------------------- |
+| `QUERY`  | `content`   | 读取文件内容  | `path`、`encoding`                                |
+| `QUERY`  | `stream`    | 流式下载      | `path`                                            |
+| `QUERY`  | `metadata`  | 查询单个资源  | `path`                                            |
+| `QUERY`  | `list`      | 列目录        | `path`、`depth`、`offset`、`limit`                |
+| `QUERY`  | `glob`      | 通配匹配      | `path`、`pattern`、`exclude`、`offset`、`limit`   |
+| `QUERY`  | `realpath`  | 解析真实路径  | `path`                                            |
+| `QUERY`  | `access`    | 探测访问权限  | `path`                                            |
+| `QUERY`  | `lines`     | 按行读取文件  | `path`、`offset`、`limit`                         |
+| `QUERY`  | `watch`     | 监听变更      | `path`、`recursive`                               |
+| `PUT`    | `file`      | 写入文件      | `path`、`encoding`、`content`                     |
+| `PUT`    | `directory` | 创建目录      | `path`、`recursive`                               |
+| `PUT`    | `symlink`   | 创建符号链接  | `path`、`target`                                  |
+| `PATCH`  | `metadata`  | 修改元数据    | `path`、可变字段                                  |
+| `PATCH`  | `patch`     | 应用文本补丁  | `path`、`format`、`patch`                         |
+| `PATCH`  | `truncate`  | 截断文件      | `path`、`length`                                  |
+| `POST`   | `copy`      | 复制          | `path`、`destination`、`overwrite`、目标 `etag`   |
+| `POST`   | `move`      | 移动 / 重命名 | `path`、`destination`、`overwrite`、目标 `etag`   |
+| `DELETE` | —           | 删除          | `path`                                            |
 
-`QUERY`、`PATCH`、`POST` 缺少 `type` 返回 `422 unsupported_type`；`type` 与所用方法不匹配（如 `PUT ?type=metadata`）返回 `405 method_not_allowed`；操作要求的资源类型与目标不符（对目录 `GET`、对文件 `QUERY ?type=list` 或 `QUERY ?type=glob`）返回 `400 not_a_file` / `400 not_a_directory`。
+`type` 缺失或不受支持返回 `422 unsupported_type`；`type` 与所用方法不匹配（如 `PUT ?type=metadata`）返回 `405 method_not_allowed`；操作要求的资源类型与目标不符（对目录 `QUERY ?type=content`、`QUERY ?type=stream`、`QUERY ?type=lines`，对文件 `QUERY ?type=list`、`QUERY ?type=glob`）返回 `400 not_a_file` / `400 not_a_directory`；`path` 缺失或类型不符返回 `422 invalid_request`。
 
 ### 读取类型
 
-#### `GET`
+#### `QUERY ?type=content`
 
-读取目标文件的原始字节。请求使用空请求体；目标为文件，包括解析后指向文件的符号链接。
+读取目标文件内容，以 JSON 承载。
 
-不带 `type` 时直接读取，整份内容作为一次性响应体返回；`type=stream` 时以 HTTP/2 响应流分块发送原始字节。服务端不按文件大小改写响应形态。
+输入（JSON body）：
+
+| 字段       | 类型   | 说明                                         |
+| ---------- | ------ | -------------------------------------------- |
+| `path`     | string | 必填，目标文件路径                           |
+| `encoding` | string | 可选，`utf8` 或 `base64`；不带时由服务端选择 |
+
+输出：
+
+| 字段       | 类型    | 说明                         |
+| ---------- | ------- | ---------------------------- |
+| `path`     | string  | 目标路径                     |
+| `encoding` | string  | 实际使用的编码               |
+| `content`  | string  | 按 `encoding` 编码的文件字节 |
+| `size`     | integer | 原始字节数                   |
+| `etag`     | string  | 当前版本                     |
+
+- `encoding=utf8` 时按 UTF-8 解码，内容不是合法 UTF-8 返回 `422 invalid_request`；`base64` 时返回标准 base64（[RFC 4648 §4](https://datatracker.ietf.org/doc/html/rfc4648#section-4)）；
+- 不带 `encoding` 时服务端选择：能按 UTF-8 解码用 `utf8`，否则用 `base64`；调用方可先用 `QUERY ?type=metadata` 的 `size` 判断是否改用 `QUERY ?type=stream`；
+- 整份内容读入内存，大文件用 `QUERY ?type=stream`；
+- 目标为目录返回 `400 not_a_file`；资源不存在返回 `404`；
+- 成功响应在 `ETag` 头返回当前版本，与 JSON 的 `etag` 相同。
+
+#### `QUERY ?type=stream`
+
+以裸字节响应流式发送目标文件内容。
+
+输入（JSON body）：`path`。
 
 响应头：
 
@@ -79,19 +104,15 @@
 | `Last-Modified`  | 文件系统修改时间                                  |
 | `Accept-Ranges`  | `none`                                            |
 
-- 两种形态返回相同响应头，且在开始发送响应体前完成路径、权限、文件类型、ETag 与大小校验；
-- 直接读取把整份内容读入内存，由调用方依据 `HEAD` 或 `QUERY ?type=metadata` 得到的 `size` 判断是否适用；
-- 流式下载使用固定大小缓冲区读取，客户端断开后关闭文件；I/O 错误终止响应。
-
-请求体非空返回 `400 bad_request`；目标为目录返回 `400 not_a_file`；资源不存在返回 `404`。
-
-`HEAD` 使用相同校验并返回上述响应头，响应体为空。
+- 在开始发送响应体前完成路径、权限、文件类型、ETag 与大小校验；
+- 使用固定大小缓冲区读取，客户端断开后关闭文件；I/O 错误终止响应；
+- 目标为目录返回 `400 not_a_file`；资源不存在返回 `404`。
 
 #### `QUERY ?type=metadata`
 
-返回目标资源自身元数据；目标为工作区根目录时路径为空，即直接请求 `{base}`。
+返回目标资源自身元数据；目标为工作区根目录时 `path` 为空字符串。
 
-输入：无，目标由路径寻址。
+输入（JSON body）：`path`。
 
 输出 `ResourceMetadata`：
 
@@ -128,6 +149,7 @@
 
 | 字段     | 类型       | 说明                                           |
 | -------- | ---------- | ---------------------------------------------- |
+| `path`   | string     | 必填，目标目录路径，空字符串表示工作区根目录   |
 | `depth`  | `infinity` | 不带时只列目标目录的直接子项，带该值时递归子项 |
 | `offset` | integer    | 起始条目序号，不带时从首条开始                 |
 | `limit`  | integer    | 单次返回的条目上限，不带时用服务端上限         |
@@ -155,6 +177,7 @@
 
 | 字段     | 类型    | 说明                                      |
 | -------- | ------- | ----------------------------------------- |
+| `path`   | string  | 必填，目标文件路径                        |
 | `offset` | integer | 起始行序号，从 `0` 开始；不带时从首行开始 |
 | `limit`  | integer | 最多返回的行数；不带时使用服务端上限      |
 
@@ -184,12 +207,13 @@
 
 | 字段      | 类型     | 说明                                   |
 | --------- | -------- | -------------------------------------- |
+| `path`    | string   | 必填，搜索根目录路径                   |
 | `pattern` | string   | 必填，相对搜索根目录的匹配模式         |
 | `exclude` | string[] | 可选，命中即排除的附加模式，可重复出现 |
 | `offset`  | integer  | 起始条目序号，不带时从首条开始         |
 | `limit`   | integer  | 单次返回的条目上限，不带时用服务端上限 |
 
-`pattern` 与 `exclude` 用标准 glob 语法，相对目标目录、整串匹配。
+`pattern` 与 `exclude` 用标准 glob 语法，相对 `path`、整串匹配。
 
 输出与 `QUERY ?type=list` 相同。
 
@@ -202,7 +226,7 @@
 
 把路径解析为最终真实路径，展开符号链接并归一化 `.`、`..`。
 
-输入：无，目标由路径寻址。
+输入（JSON body）：`path`。
 
 输出：
 
@@ -218,7 +242,7 @@
 
 探测服务进程对目标的可访问性。
 
-输入：无，目标由路径寻址。
+输入（JSON body）：`path`。
 
 输出：
 
@@ -239,6 +263,7 @@
 
 | 字段        | 类型    | 说明                                             |
 | ----------- | ------- | ------------------------------------------------ |
+| `path`      | string  | 必填，监听目标路径                               |
 | `recursive` | boolean | 为 `true` 时递归监听子目录；不带时只监听直接子项 |
 
 输出为换行分隔的 JSON（`Content-Type: application/x-ndjson`），每行一个 `WatchEvent`，随变更逐条产生：
@@ -257,36 +282,53 @@
 
 ### 变更类型
 
-#### `PUT`
+#### `PUT ?type=file`
 
-写入文件内容，body 为原始字节，不带 `type`，见“两种文件写入模式”。
+写入文件内容。
+
+```json
+{ "path": "src/a.txt", "encoding": "utf8", "content": "hello\n" }
+```
+
+| 字段       | 类型   | 说明                               |
+| ---------- | ------ | ---------------------------------- |
+| `path`     | string | 必填，目标文件路径                 |
+| `encoding` | string | 必填，`utf8` 或 `base64`           |
+| `content`  | string | 必填，按 `encoding` 编码的文件字节 |
+
+- `content` 按 `encoding` 解码后作为文件字节写入；`encoding` 不受支持或 `content` 缺失返回 `422 invalid_request`；
+- 目标不存在时创建，必须带 `If-None-Match: *`；目标已存在时替换，必须带匹配当前版本的 `If-Match`；
+- 成功创建返回 `201`，替换返回 `200`，都返回更新后的 `metadata`，并在 `ETag` 头返回新版本；
+- 服务端先解码到临时文件，再在写闸门内提交，见“两种文件写入模式”；目标为目录返回 `400 not_a_file`。
 
 #### `PUT ?type=directory`
 
 创建目录，对应 WebDAV `MKCOL`。
 
 ```json
-{ "recursive": true }
+{ "path": "src", "recursive": true }
 ```
 
 - 默认只创建末级目录；`recursive=true` 时递归创建缺失的父目录；
-- 创建必须带 `If-None-Match: *`；目标已存在返回 `412`。
+- 创建必须带 `If-None-Match: *`；目标已存在返回 `412`；
+- 成功返回 `201` 与创建的 `metadata`。
 
 #### `PUT ?type=symlink`
 
-在 URL 路径上创建符号链接，链接目标由 body 给出。
+在 `path` 位置创建符号链接，链接目标由 body 给出。
 
 ```json
-{ "target": "../b.txt" }
+{ "path": "link", "target": "../b.txt" }
 ```
 
 | 字段     | 类型   | 说明                     |
 | -------- | ------ | ------------------------ |
+| `path`   | string | 必填，链接所在路径       |
 | `target` | string | 必填，链接目标，允许悬空 |
 
 - 创建 `kind=symlink` 资源，`target` 原样保存，不要求目标存在；
 - 相对 `target` 相对链接所在目录解析，绝对 `target` 按自身解析，工作区模式下解析结果必须位于工作区根目录内（见“规范化路径”），越界返回 `400 bad_request`；
-- 必须带 `If-None-Match: *`；URL 路径已存在返回 `412`；
+- 必须带 `If-None-Match: *`；`path` 已存在返回 `412`；
 - 成功返回 `201` 与创建的 `metadata`，并在 `ETag` 头返回新版本。
 
 #### `PATCH ?type=metadata`
@@ -294,10 +336,10 @@
 修改已有资源的可变元数据。
 
 ```json
-{ "mode": "0644", "modified_at": "2026-01-01T00:00:00Z" }
+{ "path": "src/a.txt", "mode": "0644", "modified_at": "2026-01-01T00:00:00Z" }
 ```
 
-- body 只接受可变字段，如 `mode`（权限）与 `modified_at`（修改时间）；
+- body 在 `path` 之外只接受可变字段，如 `mode`（权限）与 `modified_at`（修改时间）；
 - 出现不可变字段（如 `kind`、`size`、`etag`）返回 `422 invalid_request`；
 - 必须带 `If-Match`，成功返回更新后的 `metadata`。
 
@@ -307,6 +349,7 @@
 
 ```json
 {
+  "path": "a.txt",
   "format": "unified",
   "patch": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
 }
@@ -314,11 +357,12 @@
 
 | 字段     | 类型   | 说明                           |
 | -------- | ------ | ------------------------------ |
+| `path`   | string | 必填，目标文件路径             |
 | `format` | string | 补丁种类，目前仅支持 `unified` |
 | `patch`  | string | 按该种类编码的补丁文本         |
 
 - 补丁种类由 body 的 `format` 声明，目前只接受 `unified`，即标准 unified diff format；`format` 缺失或不受支持返回 `422 unsupported_type`，`patch` 缺失或类型不符返回 `422 invalid_request`；
-- 补丁中的文件头路径仅作说明，不参与寻址；目标始终由 URL 路径决定，只有 hunk 内容应用到目标文件；
+- 补丁中的文件头路径仅作说明，不参与寻址；目标始终由 `path` 决定，只有 hunk 内容应用到目标文件；
 - 目标必须为文本文件：目录返回 `400 not_a_file`，无法按文本解码的文件返回 `422 invalid_request`；
 - 补丁必须干净地应用到当前内容，上下文不匹配等无法应用的情况返回 `409 patch_conflict`，且不做任何修改；应用是原子的，要么整体成功，要么目标保持原样；
 - 版本条件与其它变更一致：必须带匹配当前版本的 `If-Match`，成功返回更新后的 `metadata`，并在 `ETag` 头返回新版本。
@@ -328,11 +372,12 @@
 把已有文件内容调整到指定长度。
 
 ```json
-{ "length": 1024 }
+{ "path": "a.txt", "length": 1024 }
 ```
 
 | 字段     | 类型    | 说明               |
 | -------- | ------- | ------------------ |
+| `path`   | string  | 必填，目标文件路径 |
 | `length` | integer | 必填，非负目标长度 |
 
 - 短于当前长度则截断，长于当前长度以零字节补齐，等于当前长度不改变内容；
@@ -342,70 +387,74 @@
 #### `POST ?type=copy` 与 `POST ?type=move`
 
 ```json
-{ "destination": "src/b.txt" }
+{ "path": "src/a.txt", "destination": "src/b.txt" }
 ```
 
-- `destination` 与源同属一种寻址模式：工作区相对路径或远程绝对路径；
+- `path` 是源路径，`destination` 与源同属一种寻址模式：工作区相对路径或远程绝对路径；
 - 源必须提供匹配当前版本的 `If-Match`；不带 `overwrite` 时目标必须不存在，否则返回 `412`；`overwrite=true` 时按“ETag 版本机制”提供已有目标的 `destination_etag`；
 - 移动先复制再删除源；`destination` 越界或位于源目录子树内返回 `400`；
 - 成功创建目标返回 `201`，覆盖已有目标返回 `204`，响应带结果的 `ETag`。
 
 #### `DELETE`
 
+```json
+{ "path": "src/a.txt" }
+```
+
 删除文件或目录，目录递归删除；必须提供 `If-Match`，成功返回 `204`。
 
 ## WebDAV 覆盖对照
 
-| WebDAV            | 本设计                                     |
-| ----------------- | ------------------------------------------ |
-| `GET` / `HEAD`    | `GET` / `HEAD`                             |
-| `PUT`             | `PUT`                                      |
-| `MKCOL`           | `PUT ?type=directory`                      |
-| `PROPFIND`        | `QUERY ?type=metadata`、`QUERY ?type=list` |
-| `PROPPATCH`       | `PATCH ?type=metadata`                     |
-| `COPY` / `MOVE`   | `POST ?type=copy` / `POST ?type=move`      |
-| `DELETE`          | `DELETE`                                   |
-| `LOCK` / `UNLOCK` | 不采用，并发控制由 ETag 条件请求承担       |
-| `OPTIONS`         | 仅上传端点使用                             |
+| WebDAV            | 本设计                                                |
+| ----------------- | ----------------------------------------------------- |
+| `GET` / `HEAD`    | `QUERY ?type=content`、`QUERY ?type=stream`、`QUERY ?type=metadata` |
+| `PUT`             | `PUT ?type=file`                                      |
+| `MKCOL`           | `PUT ?type=directory`                                 |
+| `PROPFIND`        | `QUERY ?type=metadata`、`QUERY ?type=list`            |
+| `PROPPATCH`       | `PATCH ?type=metadata`                                |
+| `COPY` / `MOVE`   | `POST ?type=copy` / `POST ?type=move`                 |
+| `DELETE`          | `DELETE`                                              |
+| `LOCK` / `UNLOCK` | 不采用，并发控制由 ETag 条件请求承担                  |
+| `OPTIONS`         | 仅上传端点使用                                        |
 
 ## 两种寻址模式
 
-文件资源支持两种寻址模式，它们共享同一套资源操作、条件请求和错误语义，差异只在寻址方式与边界：
+文件资源支持两种寻址模式，它们共享同一套资源操作、条件请求和错误语义，差异只在端点和 `path` 语义：
 
-| 模式         | 端点                             | 路径参数         | 边界         |
-| ------------ | -------------------------------- | ---------------- | ------------ |
-| 工作区模式   | `/workspaces/{id}/fs/{rel-path}` | 工作区内相对路径 | 工作区根目录 |
-| 绝对路径模式 | `/fs/{abs-path}`                 | 远程绝对路径     | 无           |
+| 模式         | 端点                    | `path` 语义      | 边界         |
+| ------------ | ----------------------- | ---------------- | ------------ |
+| 工作区模式   | `/workspaces/{id}/fs`   | 工作区内相对路径 | 工作区根目录 |
+| 绝对路径模式 | `/fs`                   | 远程绝对路径     | 无           |
 
 ### 工作区模式
 
 访问文件前，先把一个远程绝对路径通过工作区端点注册为工作区，并指定唯一的 `id`（见 [Workspace.md](./Workspace.md)）；该注册是协议中唯一接受远程绝对路径的控制面边界。
 
-后续请求使用工作区 ID + 工作区内相对路径。工作区是路径访问的边界，服务端必须校验工作区存在、具备相应权限，并且目标始终位于工作区根目录内；变更操作还受该工作区属性约束，见 [Workspace.md](./Workspace.md) 的工作区属性。
+后续请求使用工作区 ID，`path` 为工作区内相对路径。工作区是路径访问的边界，服务端必须校验工作区存在、具备相应权限，并且目标始终位于工作区根目录内；变更操作还受该工作区属性约束，见 [Workspace.md](./Workspace.md) 的工作区属性。
 
 ### 绝对路径模式
 
-请求直接以远程绝对路径寻址，用于尚未或不需要注册为工作区的目录。
+请求在 `path` 中直接携带远程绝对路径，用于尚未或不需要注册为工作区的目录。
 
 工作区级别的权限与版本管理仅在工作区模式下提供。
 
 ## 规范化路径
 
-两种模式都只接受规范化路径，路径错误不自动修正，返回稳定错误码，且都只进行一次明确的路径解码。
+两种模式都只接受规范化路径，路径错误不自动修正，返回稳定错误码。`path` 是 JSON 字符串，不做百分号解码，也不涉及 URI 保留字符转义。
 
 工作区相对路径：
 
 - 使用 `/` 作为路径分隔符；
 - 不允许以 `/` 开头；
 - 不允许空路径作为文件操作目标（目录查询除外，空路径表示工作区根目录）；
-- 不允许 `.`、`..`、NUL 字节及歧义编码；
+- 不允许 `.`、`..`、NUL 字节；
 - 读写操作都必须检查路径是否越过工作区边界；
 - 对符号链接等可能越界的对象执行边界校验。
 
 绝对路径：
 
-- 必须是远程绝对路径，规范化后无 `.`、`..`、NUL 字节及歧义编码；
-- URL 中 `/fs/` 之后的部分是绝对路径去掉前导 `/` 的写法，服务端补回前导 `/` 后再解析，例如 `/fs/srv/project/a.txt` 对应 `/srv/project/a.txt`。
+- 必须是远程绝对路径，规范化后无 `.`、`..`、NUL 字节；
+- 例如 `/srv/project/a.txt`。
 
 ## ETag 版本机制
 
@@ -435,21 +484,22 @@ ETag 是服务端生成的不透明**强验证器**。文件、目录和符号�
 | 删除文件或目录           | 必须提供匹配当前版本的 `If-Match`                   |
 | 移动                     | 源必须提供匹配当前版本的 `If-Match`                 |
 | 复制                     | 源必须提供匹配当前版本的 `If-Match`                 |
-| COPY/MOVE 目标           | 不覆盖时目标必须不存在；覆盖时必须提供目标当前 ETag |
+| 复制/移动的目标          | 不覆盖时目标必须不存在；覆盖时必须提供目标当前 ETag |
 
 - `If-Match` 按强比较解析标准 entity-tag 列表；列表中任一值匹配当前 ETag 即满足条件。变更请求使用具体 ETag，`If-Match: *` 保留给需要“资源存在”判断的通用 HTTP 语义。
 - 缺少必要条件返回 `428 Precondition Required`；条件格式非法返回 `400 bad_request`；资源不存在返回 `404`；条件不满足返回 `412 etag_mismatch`。
 - `If-Match` 与 `If-None-Match` 同时出现时返回 `400 invalid_request`。创建请求使用 `If-None-Match: *`，覆盖请求使用 `If-Match`。
 - 服务端在同一个文件 API 写闸门内完成资源解析、条件检查、文件系统提交和版本递增；请求体可先写入临时文件，最终提交时重新检查目标条件。
-- 成功响应在 HTTP `ETag` 头返回新版本；`GET`、`HEAD`、`QUERY ?type=metadata` 和 `QUERY ?type=list` 返回当前资源或列表根目录的 ETag 头。JSON 中的 `etag` 与响应头使用同一值。
+- 成功响应在 HTTP `ETag` 头返回新版本；`QUERY ?type=content`、`QUERY ?type=stream`、`QUERY ?type=metadata` 和 `QUERY ?type=list` 返回当前资源或列表根目录的 ETag 头。JSON 中的 `etag` 与响应头使用同一值。
 - ETag 用于并发控制；`Last-Modified` 表示文件系统修改时间。
 
-### COPY/MOVE 的双资源条件
+### 复制/移动的双资源条件
 
-一个 COPY/MOVE 请求同时涉及源和目标，单个 `If-Match` 头只表示源条件。目标条件放在 JSON body 中：
+一个复制/移动请求同时涉及源和目标，单个 `If-Match` 头只表示源条件。目标条件放在 JSON body 中：
 
 ```json
 {
+  "path": "src/a.txt",
   "destination": "src/b.txt",
   "overwrite": true,
   "destination_etag": "\"opaque-tag\""
@@ -469,7 +519,7 @@ ETag 代表一次提交的乐观锁版本。客户端读取资源并保存 ETag�
 
 ### 小文件直接写入
 
-小文件通过一次 `PUT` 提交，body 为原始字节。服务端先写入临时文件；请求体接收完成后，在写闸门内重新检查目标条件，再以原子替换提交并递增版本。请求失败或取消时清理临时文件。
+小文件通过一次 `PUT ?type=file` 提交。服务端按 `encoding` 解码 `content` 并写入临时文件；请求体接收完成后，在写闸门内重新检查目标条件，再以原子替换提交并递增版本。请求失败或取消时清理临时文件。
 
 ### 大文件上传
 
@@ -489,7 +539,7 @@ ETag 代表一次提交的乐观锁版本。客户端读取资源并保存 ETag�
 
 上传只负责把字节汇聚成完整文件；完整文件通过与小文件写入相同的写闸门提交到目标 FileSystem 路径：
 
-- 目标路径与提交条件随创建请求给出，承载方式见“待定”；
+- 目标 `path` 与提交条件随创建请求给出，承载方式见“待定”；
 - 提交在写闸门内完成条件检查、原子替换与版本递增，成功即目标路径获得新 ETag；
 - `partial` 上传只是暂存分块，不构成 FileSystem 资源；`final` 拼装完成时按 `Upload-Concat` 的顺序合成整份文件并一次性提交；
 - 提交目标的条件语义与其它变更相同（见“条件请求”），并在提交时于写闸门内校验，以覆盖分块上传过程中目标被其它写者改变的情况；
@@ -497,7 +547,7 @@ ETag 代表一次提交的乐观锁版本。客户端读取资源并保存 ETag�
 
 #### 待定
 
-- 目标路径与提交条件在创建请求中的承载方式（`Upload-Metadata` 或按路径寻址的创建 URL）；
+- 目标 `path` 与提交条件在创建请求中的承载方式（`Upload-Metadata`）；
 - 上传会话的状态存放、暂存位置与清理策略（`Upload-Expires` 或 `termination`）；
 - `Tus-Max-Size` 取值与单次 `PATCH` 分块大小约束；
 - 是否启用 `creation-with-upload`、`checksum`。
@@ -520,31 +570,17 @@ ETag 代表一次提交的乐观锁版本。客户端读取资源并保存 ETag�
 
 HTTP 状态码表达通用语义，`error.code` 提供稳定的机器可读分类；`message` 仅供阅读和日志。
 
-| 状态  | `error.code`            | 场景                                  |
-| ----- | ----------------------- | ------------------------------------- |
-| `400` | `bad_request`           | 路径、参数或 `destination` 非法       |
-| `400` | `not_a_file`            | 操作要求文件，目标是目录              |
-| `400` | `not_a_directory`       | 操作要求目录，目标是文件              |
-| `404` | `not_found`             | 资源不存在                            |
-| `405` | `method_not_allowed`    | 方法与 `type` 组合不适用              |
-| `409` | `patch_conflict`        | 补丁无法应用到当前内容                |
-| `412` | `etag_mismatch`         | ETag 条件不满足                       |
-| `428` | `precondition_required` | 缺少操作要求的条件请求头或目标 ETag   |
-| `422` | `invalid_request`       | body 不符合该 `type` 的 schema        |
-| `422` | `unsupported_type`      | `type` 缺失或不支持                   |
+| 状态  | `error.code`            | 场景                                       |
+| ----- | ----------------------- | ------------------------------------------ |
+| `400` | `bad_request`           | `path`、参数或 `destination` 非法          |
+| `400` | `not_a_file`            | 操作要求文件，目标是目录                   |
+| `400` | `not_a_directory`       | 操作要求目录，目标是文件                   |
+| `404` | `not_found`             | 资源不存在                                 |
+| `405` | `method_not_allowed`    | 方法与 `type` 组合不适用                   |
+| `409` | `patch_conflict`        | 补丁无法应用到当前内容                     |
+| `412` | `etag_mismatch`         | ETag 条件不满足                            |
+| `428` | `precondition_required` | 缺少操作要求的条件请求头或目标 ETag        |
+| `422` | `invalid_request`       | body 不符合该 `type` 的 schema，如缺 `path` |
+| `422` | `unsupported_type`      | `type` 缺失或不支持                        |
 
 工作区相关错误码见 [Workspace.md](./Workspace.md)，如只读工作区返回 `403 read_only_workspace`。
-
-## WebDAV 编解码规则
-
-WebDAV 的路径即 HTTP URI，编解码遵循 [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986)，[RFC 4918 §8.3](https://datatracker.ietf.org/doc/html/rfc4918#section-8.3) 补充资源寻址约束。与文件寻址相关的规则：
-
-| 规则           | 出处               | 内容                                                                                                                                         |
-| -------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| 单次解码       | RFC 3986 §2.1、§2.4 | 非安全字节写作 `%XX`；同一字符串不得重复编解码，否则解码产生的 `%` 会被当作新转义（`%252e` 再解码成 `..`）                                      |
-| 保留字符不等价 | RFC 3986 §2.2、§2.3 | `/` 等保留字符的字面量与编码形式不视为等价，解码 `%2F` 会改变路径切分；仅非保留字符的编码形式与字面量等价。资源名可含字面 `/`，以 `%2F` 表示 |
-| 解码后校验     | RFC 3986 §2.4       | 安全检查针对解码后的字节；`%00`（NUL）需特殊处理                                                                                              |
-| `href` 约束    | RFC 4918 §8.3       | `href` 只允许绝对 URI 或绝对路径，不得含 `.`、`..`；集合 URL 以 `/` 结尾                                                                     |
-| 编码一次       | RFC 4918 §8.3.1     | 资源名按 URI 规则编码一次填入 `href`，如存储名 `a test` 写作 `a%20test`；`&`、`<` 等再由 XML 层转义，两层不叠加                             |
-
-`%2F` 的实现处理不统一：Apache 默认拒绝含编码斜杠的 URL，需 `AllowEncodedSlashes` 放行；Cloudflare 等按 RFC 3986 不自动归一为 `/`。本设计的路径规则见“规范化路径”。
