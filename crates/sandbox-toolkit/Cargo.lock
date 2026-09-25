@@ -1288,6 +1288,7 @@ dependencies = [
  "globset",
  "httpdate",
  "mime_guess",
+ "percent-encoding",
  "regex",
  "rmcp",
  "ropey",

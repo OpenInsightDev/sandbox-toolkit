@@ -1,9 +1,9 @@
-use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
 use super::model::{ResourceKind, ResourceMetadata};
+use super::path::{self, PathError};
 use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
@@ -34,7 +34,10 @@ pub(super) async fn read_metadata(target: &TargetFile) -> Result<ResourceMetadat
         None
     };
 
-    confine(target, &path, link_target.as_deref()).await?;
+    match link_target.as_deref() {
+        Some(link_target) => path::resolve_link(target, link_target).await?,
+        None => path::resolve_existing(target).await?,
+    };
     let platform = platform_attributes(&metadata);
 
     Ok(ResourceMetadata {
@@ -123,63 +126,16 @@ fn kind(metadata: &std::fs::Metadata) -> ResourceKind {
     }
 }
 
-/// The trailing symlink is kept as-is, but where it points still decides
-/// containment. A dangling link resolves to nothing, so its target is judged
-/// lexically instead.
-async fn confine(
-    target: &TargetFile,
-    path: &Path,
-    link_target: Option<&Path>,
-) -> Result<(), MetadataError> {
-    let Some(root) = target.workspace_root() else {
-        return Ok(());
-    };
-    let root = tokio::fs::canonicalize(root).await?;
-
-    let resolved = match tokio::fs::canonicalize(path).await {
-        Ok(resolved) => resolved,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let link_target =
-                link_target.ok_or_else(|| MetadataError::NotFound(path.display().to_string()))?;
-            dangling_target(path, link_target).await?
-        }
-        Err(error) => return Err(error.into()),
-    };
-
-    if resolved.starts_with(&root) {
-        Ok(())
-    } else {
-        Err(MetadataError::OutsideWorkspace(path.display().to_string()))
-    }
-}
-
-async fn dangling_target(path: &Path, link_target: &Path) -> Result<PathBuf, MetadataError> {
-    let Some(parent) = path.parent() else {
-        return Ok(link_target.to_owned());
-    };
-    let joined = if link_target.is_absolute() {
-        link_target.to_owned()
-    } else {
-        tokio::fs::canonicalize(parent).await?.join(link_target)
-    };
-
-    Ok(lexical_normalize(&joined))
-}
-
-/// Resolve `.` and `..` without touching the filesystem, so a path that does
-/// not exist can still be compared against the workspace root.
-fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            component => normalized.push(component.as_os_str()),
+impl From<PathError> for MetadataError {
+    fn from(error: PathError) -> Self {
+        match error {
+            PathError::NotFound(path) => Self::NotFound(path),
+            PathError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
+            PathError::Io(error) => Self::Io(error),
+            // Validation runs at extraction, so an operation never sees one.
+            other => Self::Io(std::io::Error::other(other.to_string())),
         }
     }
-    normalized
 }
 
 pub(super) fn etag(metadata: &std::fs::Metadata) -> String {
@@ -413,14 +369,5 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, MetadataError::NotFound(_)));
-    }
-
-    #[test]
-    fn normalizes_paths_lexically() {
-        assert_eq!(
-            lexical_normalize(Path::new("/srv/project/../a/./b.txt")),
-            PathBuf::from("/srv/a/b.txt")
-        );
-        assert_eq!(lexical_normalize(Path::new("/../x")), PathBuf::from("/x"));
     }
 }

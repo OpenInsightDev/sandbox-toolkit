@@ -6,6 +6,7 @@ use thiserror::Error;
 use tokio_util::io::ReaderStream;
 
 use super::meta::etag;
+use super::path::{self, PathError};
 use crate::workspace::registry::TargetFile;
 
 #[derive(Debug, Error)]
@@ -86,28 +87,28 @@ async fn stat_file(path: &Path) -> Result<FileHeaders, ReadFileError> {
 }
 
 async fn checked_target_file(target_file: &TargetFile) -> Result<PathBuf, ReadFileError> {
-    let path = target_file.path();
-    let canonical = tokio::fs::canonicalize(&path).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            ReadFileError::NotFound(path.display().to_string())
-        } else {
-            ReadFileError::Io(error)
-        }
-    })?;
-
-    if canonical.is_dir() {
-        return Err(ReadFileError::NotAFile(path.display().to_string()));
-    }
-    if let Some(root) = target_file.workspace_root() {
-        let root = tokio::fs::canonicalize(root).await?;
-        if !canonical.starts_with(root) {
-            return Err(ReadFileError::InvalidFile(
-                "path escapes workspace".to_owned(),
-            ));
-        }
+    let path = path::resolve_existing(target_file).await?;
+    if path.is_dir() {
+        return Err(ReadFileError::NotAFile(
+            target_file.path().display().to_string(),
+        ));
     }
 
-    Ok(canonical)
+    Ok(path)
+}
+
+impl From<PathError> for ReadFileError {
+    fn from(error: PathError) -> Self {
+        match error {
+            PathError::NotFound(path) => Self::NotFound(path),
+            PathError::OutsideWorkspace(path) => {
+                Self::InvalidFile(format!("path escapes workspace: {path}"))
+            }
+            PathError::Io(error) => Self::Io(error),
+            // Validation runs at extraction, so an operation never sees one.
+            other => Self::InvalidFile(other.to_string()),
+        }
+    }
 }
 
 #[cfg(test)]

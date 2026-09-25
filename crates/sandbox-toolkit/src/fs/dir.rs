@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use super::meta::{MetadataError, etag, modified_at, read_metadata};
 use super::model::{DirectoryResponse, ResourceEntry, ResourceKind, ResourceMetadata};
+use super::path::{self, PathError};
 use crate::workspace::registry::TargetFile;
 
 /// Entries a listing returns when the request names no `limit`, and the ceiling
@@ -110,7 +111,7 @@ pub(crate) async fn create_directory(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
-    ensure_within_workspace(target, &path).await?;
+    path::resolve_creating(target).await?;
     ensure_absent(&path).await?;
 
     let parent = path
@@ -136,7 +137,7 @@ pub(crate) async fn create_directory_recursive(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
-    ensure_within_workspace(target, &path).await?;
+    path::resolve_creating(target).await?;
     ensure_absent(&path).await?;
 
     tokio::fs::create_dir_all(&path)
@@ -175,50 +176,12 @@ pub(super) async fn checked_target(
     target: &TargetFile,
 ) -> Result<std::path::PathBuf, DirectoryError> {
     let path = target.path();
-    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            DirectoryError::NotFound(path.display().to_string())
-        } else {
-            DirectoryError::Io(error)
-        }
-    })?;
+    let resolved = path::resolve_existing(target).await?;
+    let metadata = tokio::fs::metadata(&resolved).await?;
     if !metadata.is_dir() {
         return Err(DirectoryError::NotDirectory(path.display().to_string()));
     }
-    ensure_within_workspace(target, &path).await?;
     Ok(path)
-}
-
-async fn ensure_within_workspace(
-    target: &TargetFile,
-    path: &std::path::Path,
-) -> Result<(), DirectoryError> {
-    let Some(root) = target.workspace_root() else {
-        return Ok(());
-    };
-    let root = tokio::fs::canonicalize(root).await?;
-
-    // Resolve the deepest existing ancestor, so a target whose parents are still
-    // missing can be checked. The components past that ancestor are literal names
-    // from a normalized path, so nothing below it can escape.
-    let mut current = path;
-    let candidate = loop {
-        match tokio::fs::canonicalize(current).await {
-            Ok(resolved) => break resolved,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                current = current
-                    .parent()
-                    .ok_or_else(|| DirectoryError::OutsideWorkspace(path.display().to_string()))?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    };
-
-    if candidate.starts_with(&root) {
-        Ok(())
-    } else {
-        Err(DirectoryError::OutsideWorkspace(path.display().to_string()))
-    }
 }
 
 pub(super) async fn resource_entry(
@@ -270,6 +233,18 @@ impl From<MetadataError> for DirectoryError {
             MetadataError::NotFound(path) => Self::NotFound(path),
             MetadataError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
             MetadataError::Io(error) => Self::Io(error),
+        }
+    }
+}
+
+impl From<PathError> for DirectoryError {
+    fn from(error: PathError) -> Self {
+        match error {
+            PathError::NotFound(path) => Self::NotFound(path),
+            PathError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
+            PathError::Io(error) => Self::Io(error),
+            // Validation runs at extraction, so an operation never sees one.
+            other => Self::Io(std::io::Error::other(other.to_string())),
         }
     }
 }

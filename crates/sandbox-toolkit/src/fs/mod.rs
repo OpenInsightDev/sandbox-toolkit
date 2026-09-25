@@ -6,5 +6,6 @@ mod dir;
 mod file;
 mod glob;
 mod meta;
+mod path;
 
 pub(crate) use self::http::router;

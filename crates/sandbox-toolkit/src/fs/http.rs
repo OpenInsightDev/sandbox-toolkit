@@ -2,11 +2,7 @@
 //! return axum's plain text error body instead of the envelope; the extractors
 //! defined here reject with [`AppError`].
 
-use std::{
-    collections::HashMap,
-    convert::Infallible,
-    path::{Component, Path, PathBuf},
-};
+use std::{collections::HashMap, convert::Infallible};
 
 use super::dir::{
     DirectoryError, ListRequest, create_directory, create_directory_recursive, read_directory,
@@ -18,6 +14,7 @@ use super::file::{
 use super::glob::{self, GlobError, GlobRequest};
 use super::meta::{MetadataError, read_metadata};
 use super::model::{ResourceMetadata, ResourceOperation};
+use super::path::{self, PathError};
 use crate::workspace::registry::TargetFile;
 use crate::{AppError, AppState};
 use axum::Json;
@@ -57,14 +54,14 @@ fn resource_routes() -> MethodRouter<AppState> {
 
 struct ResourceTarget {
     resource: TargetFile,
-    /// Empty addresses the workspace root.
+    /// Empty addresses the workspace root; `/` addresses the filesystem root.
     address: String,
 }
 
 impl ResourceTarget {
     /// The root itself is only addressable by the directory queries.
     fn require_resource_path(&self) -> Result<(), AppError> {
-        if self.address.is_empty() {
+        if self.address.is_empty() || self.address == "/" {
             return Err(AppError::BadRequest(
                 "resource path must not be empty".to_owned(),
             ));
@@ -84,21 +81,53 @@ impl FromRequestParts<AppState> for ResourceTarget {
             AxumPath::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AppError::BadRequest("invalid resource path".to_owned()))?;
-        let raw = captures.get("path").map(String::as_str).unwrap_or("");
-        let path = validate_path(raw)?;
+        let workspace_id = captures.get("workspace_id").cloned();
 
-        Ok(if let Some(workspace_id) = captures.get("workspace_id") {
-            Self {
-                resource: state.workspaces().target_file(workspace_id, path)?,
-                address: raw.to_owned(),
+        let original = OriginalUri::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::BadRequest("invalid resource path".to_owned()))?;
+        let raw = raw_address(&original, workspace_id.is_some())?;
+
+        Ok(match &workspace_id {
+            Some(id) => {
+                let path = path::validate_relative(&raw).map_err(map_path_error)?;
+                Self {
+                    address: path.display().to_string(),
+                    resource: state.workspaces().target_file(id, path)?,
+                }
             }
-        } else {
-            Self {
-                resource: TargetFile::Absolute(PathBuf::from("/").join(path)),
-                address: format!("/{raw}"),
+            None => {
+                let path = path::validate_absolute(&raw).map_err(map_path_error)?;
+                Self {
+                    address: path.display().to_string(),
+                    resource: TargetFile::Absolute(path),
+                }
             }
         })
     }
+}
+
+/// The raw, still percent-encoded address after the route's `/fs` prefix.
+///
+/// The `Path` capture has already percent-decoded the address, so the original
+/// encoding is read here to reject an escape that would smuggle a separator.
+/// The prefix is located structurally, not from the decoded workspace id, so an
+/// id's own encoding cannot shift the address.
+fn raw_address(original: &OriginalUri, workspace: bool) -> Result<String, AppError> {
+    let path = original.0.path();
+    let invalid = || AppError::BadRequest("invalid resource path".to_owned());
+
+    let suffix = match workspace {
+        true => path
+            .strip_prefix("/workspaces/")
+            .and_then(|rest| rest.split_once('/').map(|(_, rest)| rest))
+            .and_then(|rest| rest.strip_prefix("fs"))
+            .ok_or_else(invalid)?,
+        false => path.strip_prefix("/fs").ok_or_else(invalid)?,
+    };
+
+    // `/fs` and `/fs/` both address the root; the separator belongs to the route.
+    Ok(suffix.strip_prefix('/').unwrap_or(suffix).to_owned())
 }
 
 /// Parsing only decides whether the name is known at all, so an unknown name is
@@ -279,25 +308,11 @@ async fn create_directory_request(body: Body) -> Result<CreateDirectoryRequest, 
     serde_json::from_slice(&bytes).map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
-fn validate_path(value: &str) -> Result<PathBuf, AppError> {
-    if value.as_bytes().contains(&0) {
-        return Err(AppError::BadRequest("path must not contain NUL".to_owned()));
+fn map_path_error(error: PathError) -> AppError {
+    match error {
+        PathError::Io(error) => AppError::Internal(error.into()),
+        other => AppError::BadRequest(other.to_string()),
     }
-    let path = Path::new(value);
-    if value.starts_with('/') {
-        return Err(AppError::BadRequest(
-            "workspace path must be relative".to_owned(),
-        ));
-    }
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::CurDir | Component::ParentDir | Component::RootDir
-        )
-    }) {
-        return Err(AppError::BadRequest("path must be normalized".to_owned()));
-    }
-    Ok(path.to_owned())
 }
 
 fn map_read_error(error: ReadFileError) -> AppError {
@@ -1588,6 +1603,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rejects_ambiguous_and_unnormalized_addresses() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let app = router().with_state(AppState::new("."));
+        let base = format!("/fs{}", dir.path().display());
+
+        for uri in [
+            // An encoded separator must not be read as a separator.
+            format!("{base}%2Fnote.txt"),
+            format!("{base}//note.txt"),
+            format!("{base}/./note.txt"),
+        ] {
+            let response = call(
+                &app,
+                Request::builder().uri(&uri).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        }
     }
 
     #[tokio::test]

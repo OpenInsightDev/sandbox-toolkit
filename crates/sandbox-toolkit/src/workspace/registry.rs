@@ -78,7 +78,10 @@ impl Workspace {
     }
 }
 
-/// The relative path still needs boundary checks before filesystem access.
+/// A path already validated as normalized: percent-decoded once, with no `.`,
+/// `..`, NUL or ambiguous encoding. Resolution helpers may therefore join it
+/// without normalizing again; only the workspace boundary still needs checking
+/// before filesystem access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TargetFile {
     Workspace {
