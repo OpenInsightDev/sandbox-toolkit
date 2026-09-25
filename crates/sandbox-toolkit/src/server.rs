@@ -13,12 +13,11 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::{AppError, AppState, Cli, fs, mcp, process, skill, workspace};
+use crate::{AppError, AppState, Cli, mcp, process, skill, workspace};
 
 fn api_router() -> Router<AppState> {
     Router::new()
         .merge(workspace::router())
-        .merge(fs::router())
         .merge(process::router())
         .merge(mcp::router())
         .merge(skill::router())
@@ -49,7 +48,7 @@ pub(crate) struct ToolkitServer;
 
 impl ToolkitServer {
     fn tool_router() -> ToolRouter<Self> {
-        Self::workspace_tools() + Self::resource_tools() + Self::process_tools() + Self::mcp_tools()
+        Self::workspace_tools() + Self::process_tools() + Self::mcp_tools()
     }
 }
 
