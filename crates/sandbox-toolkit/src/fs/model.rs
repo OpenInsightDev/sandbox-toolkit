@@ -1,6 +1,6 @@
 #![expect(
     dead_code,
-    reason = "read and built by the filesystem handlers, which are stubs"
+    reason = "read and built by the filesystem handlers, most of which are stubs"
 )]
 
 use schemars::JsonSchema;
@@ -93,8 +93,6 @@ pub(crate) struct DirectoryResponse {
 #[ts(export)]
 pub(crate) struct ContentRequest {
     pub(crate) path: String,
-    /// Absent lets the server choose.
-    pub(crate) encoding: Option<ContentEncoding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -109,7 +107,6 @@ pub(crate) enum ContentEncoding {
 #[ts(export)]
 pub(crate) struct ContentResponse {
     pub(crate) path: String,
-    pub(crate) encoding: ContentEncoding,
     pub(crate) content: String,
     pub(crate) size: u64,
     pub(crate) etag: String,

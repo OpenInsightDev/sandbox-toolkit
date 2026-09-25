@@ -11,7 +11,7 @@
 - 端点为固定地址，目标路径由请求 body 的 `path` 字段给出，不出现在 URL 中；
 - 控制面用 JSON 承载目录查询、元数据与资源改动；
 - 控制面读取一律用 `QUERY`（安全、幂等、可带请求体）加 `?type=<type>`；
-- 数据面用裸字节承载文件内容：`QUERY ?type=stream` 流式下载，`PUT ?type=sink` 流式上传；文件内容读取默认走控制面 `QUERY ?type=content`，二进制用 `base64`；
+- 数据面用裸字节承载文件内容：`QUERY ?type=stream` 流式下载，`PUT ?type=sink` 流式上传；控制面 `QUERY ?type=content` 只读取文本文件，二进制走 `QUERY ?type=stream`；
 - 文件内容写入用 `PUT ?type=file`，`content` 按 `encoding` 解码为原始字节；其余改动用 `POST`、`PATCH` 或带 `type` 的 `PUT`；
 - 每个 `type` 的输入输出 schema 各自独立。
 
@@ -38,7 +38,7 @@
 
 | 方法     | `type`      | 操作          | body（关键字段）                                  |
 | -------- | ----------- | ------------- | ------------------------------------------------- |
-| `QUERY`  | `content`   | 读取文件内容  | `path`、`encoding`                                |
+| `QUERY`  | `content`   | 读取文本文件  | `path`                                            |
 | `QUERY`  | `stream`    | 流式下载      | `path`                                            |
 | `QUERY`  | `metadata`  | 查询单个资源  | `path`                                            |
 | `QUERY`  | `list`      | 列目录        | `path`、`depth`、`offset`、`limit`                |
@@ -64,27 +64,24 @@
 
 #### `QUERY ?type=content`
 
-读取目标文件内容，以 JSON 承载。
+读取目标文本文件内容，以 JSON 承载。
 
 输入（JSON body）：
 
-| 字段       | 类型   | 说明                                         |
-| ---------- | ------ | -------------------------------------------- |
-| `path`     | string | 必填，目标文件路径                           |
-| `encoding` | string | 可选，`utf8` 或 `base64`；不带时由服务端选择 |
+| 字段   | 类型   | 说明               |
+| ------ | ------ | ------------------ |
+| `path` | string | 必填，目标文件路径 |
 
 输出：
 
-| 字段       | 类型    | 说明                         |
-| ---------- | ------- | ---------------------------- |
-| `path`     | string  | 目标路径                     |
-| `encoding` | string  | 实际使用的编码               |
-| `content`  | string  | 按 `encoding` 编码的文件字节 |
-| `size`     | integer | 原始字节数                   |
-| `etag`     | string  | 当前版本                     |
+| 字段      | 类型    | 说明                       |
+| --------- | ------- | -------------------------- |
+| `path`    | string  | 目标路径                   |
+| `content` | string  | UTF-8 解码后的文件内容     |
+| `size`    | integer | 原始字节数                 |
+| `etag`    | string  | 当前版本                   |
 
-- `encoding=utf8` 时按 UTF-8 解码，内容不是合法 UTF-8 返回 `422 invalid_request`；`base64` 时返回标准 base64（[RFC 4648 §4](https://datatracker.ietf.org/doc/html/rfc4648#section-4)）；
-- 不带 `encoding` 时服务端选择：能按 UTF-8 解码用 `utf8`，否则用 `base64`；调用方可先用 `QUERY ?type=metadata` 的 `size` 判断是否改用 `QUERY ?type=stream`；
+- 只读取文本文件：内容不是合法 UTF-8 返回 `422 invalid_request`，二进制文件改用 `QUERY ?type=stream`；
 - 整份内容读入内存，大文件用 `QUERY ?type=stream`；
 - 目标为目录返回 `400 not_a_file`；资源不存在返回 `404`；
 - 成功响应在 `ETag` 头返回当前版本，与 JSON 的 `etag` 相同。
