@@ -3,7 +3,6 @@ use thiserror::Error;
 use super::TargetFile;
 use super::meta::{MetadataError, etag, modified_at, read_metadata};
 use super::model::{DirectoryResponse, ResourceEntry, ResourceKind, ResourceMetadata};
-use super::path::{self, PathError};
 
 /// Entries a listing returns when the request names no `limit`, and the ceiling
 /// an explicit `limit` is clamped to.
@@ -19,8 +18,6 @@ pub(crate) enum DirectoryError {
     AlreadyExists(String),
     #[error("parent directory does not exist: {0}")]
     ParentNotFound(String),
-    #[error("path escapes workspace: {0}")]
-    OutsideWorkspace(String),
     #[error("failed to access directory: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -111,7 +108,6 @@ pub(crate) async fn create_directory(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
-    path::resolve_creating(target).await?;
     ensure_absent(&path).await?;
 
     let parent = path
@@ -137,7 +133,6 @@ pub(crate) async fn create_directory_recursive(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
-    path::resolve_creating(target).await?;
     ensure_absent(&path).await?;
 
     tokio::fs::create_dir_all(&path)
@@ -176,8 +171,13 @@ pub(super) async fn checked_target(
     target: &TargetFile,
 ) -> Result<std::path::PathBuf, DirectoryError> {
     let path = target.path();
-    let resolved = path::resolve_existing(target).await?;
-    let metadata = tokio::fs::metadata(&resolved).await?;
+    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            DirectoryError::NotFound(path.display().to_string())
+        } else {
+            DirectoryError::Io(error)
+        }
+    })?;
     if !metadata.is_dir() {
         return Err(DirectoryError::NotDirectory(path.display().to_string()));
     }
@@ -231,20 +231,7 @@ impl From<MetadataError> for DirectoryError {
     fn from(error: MetadataError) -> Self {
         match error {
             MetadataError::NotFound(path) => Self::NotFound(path),
-            MetadataError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
             MetadataError::Io(error) => Self::Io(error),
-        }
-    }
-}
-
-impl From<PathError> for DirectoryError {
-    fn from(error: PathError) -> Self {
-        match error {
-            PathError::NotFound(path) => Self::NotFound(path),
-            PathError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
-            PathError::Io(error) => Self::Io(error),
-            // Validation runs at extraction, so an operation never sees one.
-            other => Self::Io(std::io::Error::other(other.to_string())),
         }
     }
 }

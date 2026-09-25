@@ -1,7 +1,3 @@
-//! Rejections from axum's own extractors, such as [`Path`] or [`Json`], still
-//! return axum's plain text error body instead of the envelope; the extractors
-//! defined here reject with [`AppError`].
-
 use std::{collections::HashMap, convert::Infallible};
 
 use super::TargetFile;
@@ -15,7 +11,7 @@ use super::file::{
 use super::glob::{self, GlobError, GlobRequest};
 use super::meta::{MetadataError, read_metadata};
 use super::model::{ResourceMetadata, ResourceOperation};
-use super::path::{self, PathError};
+use super::path;
 use crate::{AppError, AppState};
 use axum::Json;
 use axum::Router;
@@ -90,14 +86,14 @@ impl FromRequestParts<AppState> for ResourceTarget {
 
         Ok(match &workspace_id {
             Some(id) => {
-                let path = path::validate_relative(&raw).map_err(map_path_error)?;
+                let path = path::decode_relative(&raw);
                 Self {
                     address: path.display().to_string(),
                     resource: TargetFile::workspace(state.workspaces(), id, path)?,
                 }
             }
             None => {
-                let path = path::validate_absolute(&raw).map_err(map_path_error)?;
+                let path = path::decode_absolute(&raw);
                 Self {
                     address: path.display().to_string(),
                     resource: TargetFile::Absolute(path),
@@ -308,18 +304,10 @@ async fn create_directory_request(body: Body) -> Result<CreateDirectoryRequest, 
     serde_json::from_slice(&bytes).map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
-fn map_path_error(error: PathError) -> AppError {
-    match error {
-        PathError::Io(error) => AppError::Internal(error.into()),
-        other => AppError::BadRequest(other.to_string()),
-    }
-}
-
 fn map_read_error(error: ReadFileError) -> AppError {
     match error {
         ReadFileError::NotFound(path) => AppError::NotFound(path),
         ReadFileError::NotAFile(path) => AppError::NotAFile(path),
-        ReadFileError::InvalidFile(message) => AppError::BadRequest(message),
         ReadFileError::Io(error) => AppError::Internal(error.into()),
     }
 }
@@ -327,9 +315,6 @@ fn map_read_error(error: ReadFileError) -> AppError {
 fn map_metadata_error(error: MetadataError) -> AppError {
     match error {
         MetadataError::NotFound(path) => AppError::NotFound(path),
-        MetadataError::OutsideWorkspace(path) => {
-            AppError::BadRequest(format!("path escapes workspace: {path}"))
-        }
         MetadataError::Io(error) => AppError::Internal(error.into()),
     }
 }
@@ -338,9 +323,6 @@ fn map_glob_error(error: GlobError) -> AppError {
     match error {
         GlobError::NotFound(path) => AppError::NotFound(path),
         GlobError::NotDirectory(path) => AppError::NotADirectory(path),
-        GlobError::OutsideWorkspace(path) => {
-            AppError::BadRequest(format!("path escapes workspace: {path}"))
-        }
         GlobError::InvalidPattern(message) => AppError::BadRequest(message),
         GlobError::Io(error) => AppError::Internal(error.into()),
     }
@@ -354,9 +336,6 @@ fn map_directory_error(error: DirectoryError) -> AppError {
         // conflicts, which is what `DirectoryError` exists to keep apart.
         DirectoryError::AlreadyExists(_) | DirectoryError::ParentNotFound(_) => {
             AppError::Conflict(error.to_string())
-        }
-        DirectoryError::OutsideWorkspace(path) => {
-            AppError::BadRequest(format!("path escapes workspace: {path}"))
         }
         DirectoryError::Io(error) => AppError::Internal(error.into()),
     }
@@ -912,43 +891,6 @@ mod tests {
             assert_eq!(body["kind"], "symlink");
             assert_eq!(body["size"], 0);
             assert_eq!(body["target"], target);
-        }
-    }
-
-    #[tokio::test]
-    async fn query_metadata_confines_workspace_paths() {
-        let dir = TempDir::new();
-        tokio::fs::symlink("..", dir.path().join("escape"))
-            .await
-            .unwrap();
-        tokio::fs::symlink("../nope", dir.path().join("dangling-escape"))
-            .await
-            .unwrap();
-        let state = AppState::new(".");
-        state
-            .workspaces()
-            .register("docs", &dir.root(), WorkspaceProperties::default())
-            .await
-            .unwrap();
-        let app = router().with_state(state);
-
-        for path in ["escape", "dangling-escape"] {
-            let response = call(
-                &app,
-                Request::builder()
-                    .method("QUERY")
-                    .uri(format!("/workspaces/docs/fs/{path}?type=metadata"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await;
-
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["error"]["code"].as_str(), Some("bad_request"));
         }
     }
 
@@ -1581,52 +1523,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"hello");
-    }
-
-    #[tokio::test]
-    async fn rejects_workspace_paths_that_escape_the_root() {
-        let dir = TempDir::new();
-        let state = AppState::new(".");
-        state
-            .workspaces()
-            .register("docs", &dir.root(), WorkspaceProperties::default())
-            .await
-            .unwrap();
-        let app = router().with_state(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/workspaces/docs/fs/../outside.txt")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn rejects_ambiguous_and_unnormalized_addresses() {
-        let dir = TempDir::new();
-        tokio::fs::write(dir.path().join("note.txt"), "hello")
-            .await
-            .unwrap();
-        let app = router().with_state(AppState::new("."));
-        let base = format!("/fs{}", dir.path().display());
-
-        for uri in [
-            // An encoded separator must not be read as a separator.
-            format!("{base}%2Fnote.txt"),
-            format!("{base}//note.txt"),
-            format!("{base}/./note.txt"),
-        ] {
-            let response = call(
-                &app,
-                Request::builder().uri(&uri).body(Body::empty()).unwrap(),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
-        }
     }
 
     #[tokio::test]

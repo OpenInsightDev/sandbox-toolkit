@@ -4,14 +4,11 @@ use thiserror::Error;
 
 use super::TargetFile;
 use super::model::{ResourceKind, ResourceMetadata};
-use super::path::{self, PathError};
 
 #[derive(Debug, Error)]
 pub(crate) enum MetadataError {
     #[error("resource not found: {0}")]
     NotFound(String),
-    #[error("path escapes workspace: {0}")]
-    OutsideWorkspace(String),
     #[error("failed to read resource metadata: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -34,10 +31,6 @@ pub(super) async fn read_metadata(target: &TargetFile) -> Result<ResourceMetadat
         None
     };
 
-    match link_target.as_deref() {
-        Some(link_target) => path::resolve_link(target, link_target).await?,
-        None => path::resolve_existing(target).await?,
-    };
     let platform = platform_attributes(&metadata);
 
     Ok(ResourceMetadata {
@@ -123,18 +116,6 @@ fn kind(metadata: &std::fs::Metadata) -> ResourceKind {
         ResourceKind::Directory
     } else {
         ResourceKind::File
-    }
-}
-
-impl From<PathError> for MetadataError {
-    fn from(error: PathError) -> Self {
-        match error {
-            PathError::NotFound(path) => Self::NotFound(path),
-            PathError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
-            PathError::Io(error) => Self::Io(error),
-            // Validation runs at extraction, so an operation never sees one.
-            other => Self::Io(std::io::Error::other(other.to_string())),
-        }
     }
 }
 
@@ -322,39 +303,6 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
         assert_eq!(reported.timestamp(), modified);
-    }
-
-    #[tokio::test]
-    async fn confines_workspace_targets() {
-        let dir = TempDir::new();
-        tokio::fs::write(dir.path().join("note.txt"), "hello")
-            .await
-            .unwrap();
-        tokio::fs::symlink("..", dir.path().join("escape"))
-            .await
-            .unwrap();
-        tokio::fs::symlink("../nope", dir.path().join("dangling-escape"))
-            .await
-            .unwrap();
-        let registry = WorkspaceRegistry::default();
-        registry
-            .register("docs", &dir.root(), WorkspaceProperties::default())
-            .await
-            .unwrap();
-
-        for path in ["escape", "dangling-escape"] {
-            let target = TargetFile::workspace(&registry, "docs", PathBuf::from(path)).unwrap();
-            assert!(
-                matches!(
-                    read_metadata(&target).await,
-                    Err(MetadataError::OutsideWorkspace(_))
-                ),
-                "`{path}` was not rejected"
-            );
-        }
-
-        let inside = TargetFile::workspace(&registry, "docs", PathBuf::from("note.txt")).unwrap();
-        assert_eq!(read_metadata(&inside).await.unwrap().name, "note.txt");
     }
 
     #[tokio::test]

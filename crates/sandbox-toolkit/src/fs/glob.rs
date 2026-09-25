@@ -11,8 +11,6 @@ pub(crate) enum GlobError {
     NotFound(String),
     #[error("target is not a directory: {0}")]
     NotDirectory(String),
-    #[error("path escapes workspace: {0}")]
-    OutsideWorkspace(String),
     #[error("invalid glob pattern: {0}")]
     InvalidPattern(String),
     #[error("failed to walk the directory: {0}")]
@@ -125,8 +123,7 @@ impl From<DirectoryError> for GlobError {
         match error {
             DirectoryError::NotFound(path) => Self::NotFound(path),
             DirectoryError::NotDirectory(path) => Self::NotDirectory(path),
-            DirectoryError::OutsideWorkspace(path) => Self::OutsideWorkspace(path),
-            // Neither can arise while walking an existing, confined root.
+            // Neither can arise while walking an existing root.
             DirectoryError::AlreadyExists(_) | DirectoryError::ParentNotFound(_) => {
                 Self::Io(std::io::Error::other(error.to_string()))
             }

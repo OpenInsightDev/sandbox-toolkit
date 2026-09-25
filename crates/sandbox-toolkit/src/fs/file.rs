@@ -7,7 +7,6 @@ use tokio_util::io::ReaderStream;
 
 use super::TargetFile;
 use super::meta::etag;
-use super::path::{self, PathError};
 
 #[derive(Debug, Error)]
 pub(crate) enum ReadFileError {
@@ -15,8 +14,6 @@ pub(crate) enum ReadFileError {
     NotFound(String),
     #[error("target is not a file: {0}")]
     NotAFile(String),
-    #[error("invalid file: {0}")]
-    InvalidFile(String),
     #[error("failed to read file: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -87,28 +84,19 @@ async fn stat_file(path: &Path) -> Result<FileHeaders, ReadFileError> {
 }
 
 async fn checked_target_file(target_file: &TargetFile) -> Result<PathBuf, ReadFileError> {
-    let path = path::resolve_existing(target_file).await?;
-    if path.is_dir() {
-        return Err(ReadFileError::NotAFile(
-            target_file.path().display().to_string(),
-        ));
+    let path = target_file.path();
+    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ReadFileError::NotFound(path.display().to_string())
+        } else {
+            ReadFileError::Io(error)
+        }
+    })?;
+    if metadata.is_dir() {
+        return Err(ReadFileError::NotAFile(path.display().to_string()));
     }
 
     Ok(path)
-}
-
-impl From<PathError> for ReadFileError {
-    fn from(error: PathError) -> Self {
-        match error {
-            PathError::NotFound(path) => Self::NotFound(path),
-            PathError::OutsideWorkspace(path) => {
-                Self::InvalidFile(format!("path escapes workspace: {path}"))
-            }
-            PathError::Io(error) => Self::Io(error),
-            // Validation runs at extraction, so an operation never sees one.
-            other => Self::InvalidFile(other.to_string()),
-        }
-    }
 }
 
 #[cfg(test)]
