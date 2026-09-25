@@ -20,7 +20,7 @@ const repoRoot = resolve(import.meta.dirname, "..");
 
 const manifest = "crates/sandbox-toolkit/Cargo.toml";
 
-const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbx");
+const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbxkit");
 
 const hasCargo = ((): boolean => {
   try {
@@ -247,8 +247,8 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
 
         return yield* process.string({
           command: "sh",
-          args: ["-c", 'printf %s "$SBX_E2E_MARK"'],
-          options: { env: { SBX_E2E_MARK: "marked" } },
+          args: ["-c", 'printf %s "$SBXKIT_E2E_MARK"'],
+          options: { env: { SBXKIT_E2E_MARK: "marked" } },
         });
       }),
     );

@@ -3,9 +3,9 @@ name = "sandbox-toolkit"
 version = "0.0.1"
 edition = "2024"
 
-# The project is `sandbox-toolkit`; only the installed command is `sbx`.
+# The project is `sandbox-toolkit`; only the installed command is `sbxkit`.
 [[bin]]
-name = "sbx"
+name = "sbxkit"
 path = "src/main.rs"
 
 [dependencies]
