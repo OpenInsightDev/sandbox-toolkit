@@ -29,7 +29,7 @@ async fn create_workspace(
 ) -> Result<(StatusCode, Json<Workspace>), AppError> {
     let workspace = state
         .workspaces()
-        .register(&request.id, &request.root)
+        .register(&request.id, &request.root, request.properties)
         .await?;
 
     Ok((StatusCode::CREATED, Json(workspace)))
@@ -70,6 +70,7 @@ impl From<WorkspaceError> for AppError {
                 Self::Conflict(format!("workspace `{id}` already exists"))
             }
             WorkspaceError::NotFound { id } => Self::NotFound(format!("workspace `{id}`")),
+            WorkspaceError::ReadOnly { id } => Self::ReadOnlyWorkspace(id),
         }
     }
 }
@@ -86,6 +87,9 @@ mod tests {
     use super::*;
 
     /// Drive one request through the router and decode its JSON body.
+    ///
+    /// An extractor rejection carries a plain text body rather than the JSON
+    /// envelope, so a body that does not parse decodes to [`Value::Null`].
     async fn call(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
         let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
@@ -94,11 +98,7 @@ mod tests {
             .await
             .unwrap();
 
-        let body = if bytes.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes).unwrap()
-        };
+        let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 
         (status, body)
     }
@@ -108,6 +108,14 @@ mod tests {
             "POST",
             "/workspaces",
             &serde_json::json!({ "id": id, "root": root }),
+        )
+    }
+
+    fn create_request_with_properties(id: &str, root: &str, properties: Value) -> Request<Body> {
+        json_request(
+            "POST",
+            "/workspaces",
+            &serde_json::json!({ "id": id, "root": root, "properties": properties }),
         )
     }
 
@@ -155,7 +163,10 @@ mod tests {
 
         let (status, body) = call(&app, create_request("docs", &dir.root())).await;
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(body, serde_json::json!({ "id": "docs" }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "id": "docs", "properties": { "access": "read-write" } })
+        );
 
         // The router shares the registry with the rest of the process, which is
         // how other modules resolve a workspace id to its root.
@@ -168,12 +179,19 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body,
-            serde_json::json!({ "workspaces": [{ "id": "docs" }] })
+            serde_json::json!({
+                "workspaces": [
+                    { "id": "docs", "properties": { "access": "read-write" } }
+                ]
+            })
         );
 
         let (status, body) = call(&app, get_workspace_request("docs")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({ "id": "docs" }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "id": "docs", "properties": { "access": "read-write" } })
+        );
 
         let (status, _) = call(&app, delete_workspace_request("docs")).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -208,6 +226,46 @@ mod tests {
         let (status, body) = call(&app, create_request("docs", &dir.root())).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"]["code"].as_str(), Some("conflict"));
+    }
+
+    #[tokio::test]
+    async fn create_echoes_the_requested_access_mode() {
+        let app = router().with_state(AppState::new("."));
+        let dir = TempDir::new();
+
+        let (status, body) = call(
+            &app,
+            create_request_with_properties(
+                "sealed",
+                &dir.root(),
+                serde_json::json!({ "access": "read-only" }),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            body,
+            serde_json::json!({ "id": "sealed", "properties": { "access": "read-only" } })
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_an_unknown_access_mode() {
+        let app = router().with_state(AppState::new("."));
+        let dir = TempDir::new();
+
+        let (status, _) = call(
+            &app,
+            create_request_with_properties(
+                "docs",
+                &dir.root(),
+                serde_json::json!({ "access": "readonly" }),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

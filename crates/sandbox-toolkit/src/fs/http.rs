@@ -26,7 +26,7 @@ use super::file::{
 };
 use super::glob::{self, GlobError, GlobRequest};
 use super::meta::{MetadataError, read_metadata};
-use super::model::{ResourceMetadata, ResourceOperation, ResourcePath};
+use super::model::{ResourceMetadata, ResourceOperation};
 use crate::workspace::registry::TargetFile;
 use crate::{AppError, AppState};
 use axum::Json;
@@ -564,12 +564,12 @@ async fn query_resource(
 }
 
 async fn post_resource(
-    State(_state): State<AppState>,
-    AxumPath(_resource): AxumPath<ResourcePath>,
+    target: ResourceTarget,
     _conditions: ConditionalHeaders,
     OriginalUri(_original_uri): OriginalUri,
     Json(_operation): Json<ResourceOperation>,
 ) -> Result<Response, AppError> {
+    target.resource.require_writable()?;
     Err(AppError::NotImplemented("POST resource"))
 }
 
@@ -581,6 +581,8 @@ async fn put_resource(
     OriginalUri(_original_uri): OriginalUri,
     body: Body,
 ) -> Result<Response, AppError> {
+    target.resource.require_writable()?;
+
     match request_type(&query)? {
         Some(ResourceType::Directory) => {
             target.require_resource_path()?;
@@ -601,11 +603,11 @@ async fn put_resource(
 }
 
 async fn delete_resource(
-    State(_state): State<AppState>,
-    AxumPath(_resource): AxumPath<ResourcePath>,
+    target: ResourceTarget,
     _conditions: ConditionalHeaders,
     OriginalUri(_original_uri): OriginalUri,
 ) -> Result<Response, AppError> {
+    target.resource.require_writable()?;
     Err(AppError::NotImplemented("DELETE resource"))
 }
 
@@ -629,6 +631,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::AppState;
+    use crate::workspace::model::{WorkspaceAccess, WorkspaceProperties};
     use crate::workspace::registry::test_support::TempDir;
 
     use super::router;
@@ -840,7 +843,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);
@@ -951,7 +954,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);
@@ -1204,7 +1207,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);
@@ -1287,7 +1290,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);
@@ -1542,7 +1545,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);
@@ -1569,7 +1572,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);
@@ -1583,5 +1586,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rejects_mutations_against_a_read_only_workspace() {
+        let dir = TempDir::new();
+        tokio::fs::write(dir.path().join("note.txt"), "hello")
+            .await
+            .unwrap();
+        let state = AppState::new(".");
+        state
+            .workspaces()
+            .register(
+                "docs",
+                &dir.root(),
+                WorkspaceProperties {
+                    access: WorkspaceAccess::ReadOnly,
+                },
+            )
+            .await
+            .unwrap();
+        let app = router().with_state(state);
+
+        // Reads, directory queries and metadata are unaffected.
+        let response = call(
+            &app,
+            Request::builder()
+                .method("QUERY")
+                .uri("/workspaces/docs/fs?type=list")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Creating a directory is rejected.
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri("/workspaces/docs/fs/child?type=directory")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "read_only_workspace");
+        assert!(!dir.path().join("child").exists());
+
+        // Deleting is rejected too, before the operation's own implementation.
+        let response = call(
+            &app,
+            Request::builder()
+                .method("DELETE")
+                .uri("/workspaces/docs/fs/note.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(dir.path().join("note.txt").exists());
     }
 }

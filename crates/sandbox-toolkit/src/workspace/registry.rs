@@ -14,7 +14,7 @@ use std::{
 
 use thiserror::Error;
 
-use super::model::Workspace as WorkspaceHandle;
+use super::model::{Workspace as WorkspaceHandle, WorkspaceAccess, WorkspaceProperties};
 
 /// Prefix reserved for the read-only workspaces the Skill API owns.
 const RESERVED_PREFIX: &str = "skill-";
@@ -40,6 +40,9 @@ pub(crate) enum WorkspaceError {
     /// No workspace is registered under the id.
     #[error("workspace `{id}` does not exist")]
     NotFound { id: String },
+    /// A mutation targeted a workspace whose `access` property is `read-only`.
+    #[error("workspace `{id}` is read-only")]
+    ReadOnly { id: String },
 }
 
 /// The environment variable a workspace exposes to the processes it runs.
@@ -60,13 +63,15 @@ pub(crate) struct WorkspaceEnvironment {
 pub(crate) struct Workspace {
     id: String,
     root: PathBuf,
+    properties: WorkspaceProperties,
 }
 
 impl Workspace {
-    fn new(id: impl Into<String>, root: PathBuf) -> Self {
+    fn new(id: impl Into<String>, root: PathBuf, properties: WorkspaceProperties) -> Self {
         Self {
             id: id.into(),
             root,
+            properties,
         }
     }
 
@@ -78,8 +83,22 @@ impl Workspace {
         &self.root
     }
 
+    fn access(&self) -> WorkspaceAccess {
+        self.properties.access
+    }
+
     fn handle(&self) -> WorkspaceHandle {
-        WorkspaceHandle::new(self.id.clone())
+        WorkspaceHandle::new(self.id.clone(), self.properties)
+    }
+
+    /// Reject a mutation when the workspace is read-only.
+    fn require_writable(&self) -> Result<(), WorkspaceError> {
+        match self.access() {
+            WorkspaceAccess::ReadWrite => Ok(()),
+            WorkspaceAccess::ReadOnly => Err(WorkspaceError::ReadOnly {
+                id: self.id.clone(),
+            }),
+        }
     }
 }
 
@@ -121,6 +140,17 @@ impl TargetFile {
             Self::Absolute(_) => None,
         }
     }
+
+    /// Reject a mutation when the target's workspace is read-only.
+    ///
+    /// Direct mode has no workspace properties to narrow its behavior, so it is
+    /// never read-only.
+    pub(crate) fn require_writable(&self) -> Result<(), WorkspaceError> {
+        match self {
+            Self::Workspace { workspace, .. } => workspace.require_writable(),
+            Self::Absolute(_) => Ok(()),
+        }
+    }
 }
 
 /// Every workspace registered with the process, keyed by id.
@@ -134,15 +164,18 @@ pub(crate) struct WorkspaceRegistry {
 }
 
 impl WorkspaceRegistry {
-    /// Register `root` under `id` and return the workspace handle.
+    /// Register `root` under `id` with `properties` and return the workspace
+    /// handle.
     ///
     /// The root must already exist as a directory: a workspace that resolves to
     /// a missing path would confine nothing, so it is rejected at this boundary
-    /// rather than surfacing as a later operation failure.
+    /// rather than surfacing as a later operation failure. The properties are
+    /// fixed here and cannot be changed afterwards.
     pub(crate) async fn register(
         &self,
         id: &str,
         root: &str,
+        properties: WorkspaceProperties,
     ) -> Result<WorkspaceHandle, WorkspaceError> {
         validate_id(id)?;
         let root = canonical_root(root).await?;
@@ -152,7 +185,7 @@ impl WorkspaceRegistry {
             return Err(WorkspaceError::AlreadyExists { id: id.to_owned() });
         }
 
-        let workspace = Workspace::new(id, root);
+        let workspace = Workspace::new(id, root, properties);
         let handle = workspace.handle();
         workspaces.insert(id.to_owned(), workspace);
 
@@ -396,7 +429,10 @@ mod tests {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
 
-        let workspace = registry.register("docs", &dir.root()).await.unwrap();
+        let workspace = registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         assert_eq!(workspace.id(), "docs");
         let stored = registry.read().get("docs").unwrap().clone();
@@ -409,7 +445,10 @@ mod tests {
     async fn target_files_keep_their_addressing_mode() {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
-        registry.register("docs", &dir.root()).await.unwrap();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         let workspace = registry.workspace("docs").unwrap();
         let relative_path = PathBuf::from("notes/todo.txt");
@@ -442,7 +481,10 @@ mod tests {
     async fn get_reports_registered_and_unknown_ids() {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
-        registry.register("docs", &dir.root()).await.unwrap();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         assert_eq!(registry.get("docs").unwrap().id(), "docs");
         assert_eq!(
@@ -458,9 +500,15 @@ mod tests {
         let first = TempDir::new();
         let second = TempDir::new();
         let registry = WorkspaceRegistry::default();
-        registry.register("docs", &first.root()).await.unwrap();
+        registry
+            .register("docs", &first.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
-        let error = registry.register("docs", &second.root()).await.unwrap_err();
+        let error = registry
+            .register("docs", &second.root(), WorkspaceProperties::default())
+            .await
+            .unwrap_err();
 
         assert_eq!(
             error,
@@ -479,7 +527,9 @@ mod tests {
         for id in ["", "Docs", "a_b", "a.b", "a/b", "-a", "a-", "a--b", "a b"] {
             assert!(
                 matches!(
-                    registry.register(id, &dir.root()).await,
+                    registry
+                        .register(id, &dir.root(), WorkspaceProperties::default())
+                        .await,
                     Err(WorkspaceError::InvalidId { .. })
                 ),
                 "id `{id}` was accepted"
@@ -493,7 +543,9 @@ mod tests {
         let registry = WorkspaceRegistry::default();
 
         assert_eq!(
-            registry.register("skill-docs", &dir.root()).await,
+            registry
+                .register("skill-docs", &dir.root(), WorkspaceProperties::default())
+                .await,
             Err(WorkspaceError::ReservedId {
                 id: "skill-docs".to_owned()
             })
@@ -514,7 +566,9 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    registry.register("docs", root).await,
+                    registry
+                        .register("docs", root, WorkspaceProperties::default())
+                        .await,
                     Err(WorkspaceError::InvalidRoot { .. })
                 ),
                 "root `{root}` was accepted"
@@ -526,9 +580,18 @@ mod tests {
     async fn lists_workspaces_in_id_order() {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
-        registry.register("zeta", &dir.root()).await.unwrap();
-        registry.register("alpha", &dir.root()).await.unwrap();
-        registry.register("mu", &dir.root()).await.unwrap();
+        registry
+            .register("zeta", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        registry
+            .register("alpha", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        registry
+            .register("mu", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         let ids: Vec<String> = registry
             .list()
@@ -543,7 +606,10 @@ mod tests {
     async fn remove_unregisters_a_workspace_once() {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
-        registry.register("docs", &dir.root()).await.unwrap();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         registry.remove("docs").unwrap();
 
@@ -565,7 +631,10 @@ mod tests {
     async fn exposes_the_workspace_root_as_an_environment_variable() {
         let dir = TempDir::new();
         let registry = WorkspaceRegistry::default();
-        registry.register("my-project", &dir.root()).await.unwrap();
+        registry
+            .register("my-project", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         let environment = registry.environment("my-project").unwrap();
 
@@ -582,6 +651,89 @@ mod tests {
             Err(WorkspaceError::NotFound {
                 id: "missing".to_owned()
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn stores_the_requested_access_mode() {
+        let dir = TempDir::new();
+        let registry = WorkspaceRegistry::default();
+
+        registry
+            .register(
+                "sealed",
+                &dir.root(),
+                WorkspaceProperties {
+                    access: WorkspaceAccess::ReadOnly,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.workspace("sealed").unwrap().access(),
+            WorkspaceAccess::ReadOnly
+        );
+        assert_eq!(
+            serde_json::to_value(registry.workspace("sealed").unwrap().handle()).unwrap(),
+            serde_json::json!({ "id": "sealed", "properties": { "access": "read-only" } })
+        );
+    }
+
+    #[tokio::test]
+    async fn defaults_the_access_mode_to_read_write() {
+        let dir = TempDir::new();
+        let registry = WorkspaceRegistry::default();
+
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.workspace("docs").unwrap().access(),
+            WorkspaceAccess::ReadWrite
+        );
+    }
+
+    #[tokio::test]
+    async fn mutations_require_a_writable_workspace() {
+        let dir = TempDir::new();
+        let registry = WorkspaceRegistry::default();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        registry
+            .register(
+                "sealed",
+                &dir.root(),
+                WorkspaceProperties {
+                    access: WorkspaceAccess::ReadOnly,
+                },
+            )
+            .await
+            .unwrap();
+
+        let writable = registry
+            .target_file("docs", PathBuf::from("note.txt"))
+            .unwrap();
+        assert_eq!(writable.require_writable(), Ok(()));
+
+        let sealed = registry
+            .target_file("sealed", PathBuf::from("note.txt"))
+            .unwrap();
+        assert_eq!(
+            sealed.require_writable(),
+            Err(WorkspaceError::ReadOnly {
+                id: "sealed".to_owned(),
+            })
+        );
+
+        // Direct mode carries no workspace properties.
+        assert_eq!(
+            TargetFile::Absolute(dir.path().to_owned()).require_writable(),
+            Ok(())
         );
     }
 

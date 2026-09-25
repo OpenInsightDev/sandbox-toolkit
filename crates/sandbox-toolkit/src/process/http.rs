@@ -243,6 +243,7 @@ mod tests {
     use super::*;
     use crate::process::exec::FrameStream;
     use crate::process::model::Status;
+    use crate::workspace::model::WorkspaceProperties;
     use crate::workspace::registry::test_support::{TempDir, canonical};
 
     /// The router with a fresh state, ready to drive through `oneshot`.
@@ -357,7 +358,7 @@ mod tests {
         let state = AppState::new(".");
         state
             .workspaces()
-            .register("docs", &dir.root())
+            .register("docs", &dir.root(), WorkspaceProperties::default())
             .await
             .unwrap();
         let app = router().with_state(state);

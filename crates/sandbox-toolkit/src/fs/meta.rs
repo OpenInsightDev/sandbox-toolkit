@@ -223,6 +223,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::workspace::model::WorkspaceProperties;
     use crate::workspace::registry::{WorkspaceRegistry, test_support::TempDir};
 
     fn absolute(path: PathBuf) -> TargetFile {
@@ -318,7 +319,10 @@ mod tests {
             .await
             .unwrap();
         let registry = WorkspaceRegistry::default();
-        registry.register("docs", &dir.root()).await.unwrap();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         let workspace = registry
             .target_file("docs", PathBuf::from("note.txt"))
@@ -387,7 +391,10 @@ mod tests {
             .await
             .unwrap();
         let registry = WorkspaceRegistry::default();
-        registry.register("docs", &dir.root()).await.unwrap();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
 
         for path in ["escape", "dangling-escape"] {
             let target = registry.target_file("docs", PathBuf::from(path)).unwrap();
