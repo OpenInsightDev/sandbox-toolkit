@@ -58,7 +58,7 @@ GET /workspaces/{workspace_id}/skills/{skill_id}
       "compatibility": "Requires kubectl",
       "metadata": { "author": "acme" },
       "uri": "/skills/deploy",
-      "workspace_id": "skill-global-deploy"
+      "workspace_id": "skill-deploy"
     }
   ]
 }
@@ -86,8 +86,8 @@ GET /workspaces/{workspace_id}/skills/{skill_id}
 
 skill 内其它文件（`scripts/`、`references/`、`assets/` 等）复用 [FileSystem.md](./FileSystem.md) 的工作区机制：每个发现的 skill 自动对应一个只读工作区。
 
-- 工作区 id 为 `skill-global-{skill_id}`（全局）或 `skill-{workspace_id}-{skill_id}`（工作区），根目录为发现到的 skill 目录；
-- 访问方式为 `/workspaces/skill-global-{skill_id}/fs/{relative-path}` 或 `/workspaces/skill-{workspace_id}-{skill_id}/fs/{relative-path}`，复用 fs 的路径规范化、边界校验、目录查询与 ETag；
+- 工作区 id 命名规范：一律以 `skill-` 为前缀；全局 skill 前缀后直接拼 `skill_id`，工作区 skill 拼 `{workspace_id}-{skill_id}`，即全局为 `skill-{skill_id}`、工作区为 `skill-{workspace_id}-{skill_id}`；根目录为发现到的 skill 目录；
+- 访问方式为 `/workspaces/skill-{skill_id}/fs/{relative-path}`（全局）或 `/workspaces/skill-{workspace_id}-{skill_id}/fs/{relative-path}`（工作区），复用 fs 的路径规范化、边界校验、目录查询与 ETag；
 - 只读由 [Workspace.md](./Workspace.md) 的工作区属性承载：固定 `access=read-only`，变更操作返回 `403 read_only_workspace`；
 - 生命周期随发现：工作区随 `skills` 目录变化自动增减。
 
