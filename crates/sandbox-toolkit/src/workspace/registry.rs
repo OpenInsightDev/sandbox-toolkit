@@ -10,7 +10,7 @@ use std::{
 use regex::Regex;
 use thiserror::Error;
 
-use super::model::{Workspace as WorkspaceHandle, WorkspaceAccess, WorkspaceProperties};
+use super::model::{WorkspaceAccess, WorkspaceHandle, WorkspaceProperties};
 
 const ENVIRONMENT_PREFIX: &str = "WORKSPACE_";
 

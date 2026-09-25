@@ -2,7 +2,7 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
 
-use super::model::{CreateWorkspaceRequest, Workspace, WorkspaceId, WorkspaceList};
+use super::model::{CreateWorkspaceRequest, WorkspaceHandle, WorkspaceId, WorkspaceList};
 use crate::server::{ToolkitServer, not_implemented};
 
 #[tool_router(router = workspace_tools, vis = "pub(crate)")]
@@ -12,7 +12,7 @@ impl ToolkitServer {
     async fn create_workspace(
         &self,
         Parameters(_request): Parameters<CreateWorkspaceRequest>,
-    ) -> Result<Json<Workspace>, ErrorData> {
+    ) -> Result<Json<WorkspaceHandle>, ErrorData> {
         Err(not_implemented("create_workspace"))
     }
 
@@ -27,7 +27,7 @@ impl ToolkitServer {
     async fn get_workspace(
         &self,
         Parameters(_id): Parameters<WorkspaceId>,
-    ) -> Result<Json<Workspace>, ErrorData> {
+    ) -> Result<Json<WorkspaceHandle>, ErrorData> {
         Err(not_implemented("get_workspace"))
     }
 

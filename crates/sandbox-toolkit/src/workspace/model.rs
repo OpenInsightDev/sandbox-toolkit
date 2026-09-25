@@ -38,20 +38,21 @@ pub(crate) struct WorkspaceId {
     pub(crate) workspace_id: String,
 }
 
-/// The root is deliberately absent: once registered under an id it is reachable
-/// only through [`WorkspaceRegistry::resolve`], keeping the remote absolute path
-/// inside the process. Properties are echoed back resolved, so a client reads the
+/// A handle exposes a workspace as clients see it: the `id` and the effective
+/// properties, with the root deliberately absent. The root is reachable only
+/// through [`WorkspaceRegistry::resolve`], keeping the remote absolute path inside
+/// the process, and the properties are echoed back resolved so a client reads the
 /// effective constraints rather than the ones it requested.
 ///
 /// [`WorkspaceRegistry::resolve`]: super::registry::WorkspaceRegistry::resolve
 #[derive(Debug, Serialize, JsonSchema, PartialEq, Eq, TS)]
 #[ts(export)]
-pub(crate) struct Workspace {
+pub(crate) struct WorkspaceHandle {
     id: String,
     properties: WorkspaceProperties,
 }
 
-impl Workspace {
+impl WorkspaceHandle {
     pub(crate) fn new(id: impl Into<String>, properties: WorkspaceProperties) -> Self {
         Self {
             id: id.into(),
@@ -74,11 +75,11 @@ impl Workspace {
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub(crate) struct WorkspaceList {
-    workspaces: Vec<Workspace>,
+    workspaces: Vec<WorkspaceHandle>,
 }
 
 impl WorkspaceList {
-    pub(crate) fn new(workspaces: Vec<Workspace>) -> Self {
+    pub(crate) fn new(workspaces: Vec<WorkspaceHandle>) -> Self {
         Self { workspaces }
     }
 }

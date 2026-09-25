@@ -6,7 +6,7 @@ use axum::http::request::Parts;
 use axum::routing;
 use axum::{Json, Router};
 
-use super::model::{CreateWorkspaceRequest, Workspace, WorkspaceId, WorkspaceList};
+use super::model::{CreateWorkspaceRequest, WorkspaceHandle, WorkspaceId, WorkspaceList};
 use super::registry::{WorkspaceError, validate_id};
 use crate::{AppError, AppState};
 
@@ -50,7 +50,7 @@ impl FromRequestParts<AppState> for WorkspaceId {
 async fn create_workspace(
     State(state): State<AppState>,
     Json(request): Json<CreateWorkspaceRequest>,
-) -> Result<(StatusCode, Json<Workspace>), AppError> {
+) -> Result<(StatusCode, Json<WorkspaceHandle>), AppError> {
     let workspace = state
         .workspaces()
         .register(&request.id, &request.root, request.properties)
@@ -66,7 +66,7 @@ async fn list_workspaces(State(state): State<AppState>) -> Result<Json<Workspace
 async fn get_workspace(
     State(state): State<AppState>,
     id: WorkspaceId,
-) -> Result<Json<Workspace>, AppError> {
+) -> Result<Json<WorkspaceHandle>, AppError> {
     Ok(Json(state.workspaces().get(&id.workspace_id)?))
 }
 
