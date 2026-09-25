@@ -192,18 +192,20 @@ export const make = Effect.fn("FileSystem.make")(function* (
     path: string,
     params: URLSearchParams,
   ): Effect.Effect<A, FileSystemError> =>
-    Effect.flatMap(url(method, path), (target) =>
-      Effect.mapError(
-        client.json<A>(HttpClientRequest.query(`${target}?${params}`)),
-        toPlatformError(method, path),
+    url(method, path).pipe(
+      Effect.flatMap((target) =>
+        client
+          .json<A>(HttpClientRequest.query(`${target}?${params}`))
+          .pipe(Effect.mapError(toPlatformError(method, path))),
       ),
     );
 
   const readFile = ((path: string) =>
-    Effect.flatMap(url("readFile", path), (target) =>
-      Effect.mapError(
-        client.bytes(HttpClientRequest.get(target)),
-        toPlatformError("readFile", path),
+    url("readFile", path).pipe(
+      Effect.flatMap((target) =>
+        client
+          .bytes(HttpClientRequest.get(target))
+          .pipe(Effect.mapError(toPlatformError("readFile", path))),
       ),
     )) satisfies FileSystem["readFile"];
 
@@ -213,37 +215,37 @@ export const make = Effect.fn("FileSystem.make")(function* (
     }
 
     return Stream.unwrap(
-      Effect.map(url("stream", path), (target) =>
-        Stream.mapError(
-          client.stream(HttpClientRequest.get(`${target}?type=stream`)),
-          toPlatformError("stream", path),
+      url("stream", path).pipe(
+        Effect.map((target) =>
+          client
+            .stream(HttpClientRequest.get(`${target}?type=stream`))
+            .pipe(Stream.mapError(toPlatformError("stream", path))),
         ),
       ),
     );
   }) satisfies FileSystem["stream"];
 
   const stat = ((path: string) =>
-    Effect.map(
-      queryJson<ResourceMetadata>("stat", path, new URLSearchParams({ type: "metadata" })),
-      metadataInfo,
+    queryJson<ResourceMetadata>("stat", path, new URLSearchParams({ type: "metadata" })).pipe(
+      Effect.map(metadataInfo),
     )) satisfies FileSystem["stat"];
 
   const exists = ((path: string) =>
-    Effect.catchIf(Effect.as(stat(path), true), isNotFound, () =>
-      Effect.succeed(false),
+    stat(path).pipe(
+      Effect.as(true),
+      Effect.catchIf(isNotFound, () => Effect.succeed(false)),
     )) satisfies FileSystem["exists"];
 
-  const readDirectory = ((path: string, readOptions) =>
-    Effect.map(
-      queryJson<DirectoryResponse>(
-        "readDirectory",
-        path,
-        readOptions?.recursive === true
-          ? new URLSearchParams({ type: "list", depth: "infinity" })
-          : new URLSearchParams({ type: "list" }),
-      ),
-      (directory) => directory.entries.map((entry) => joinPath(path, entry.name)),
-    )) satisfies FileSystem["readDirectory"];
+  const readDirectory = ((path: string, readOptions) => {
+    const params =
+      readOptions?.recursive === true
+        ? new URLSearchParams({ type: "list", depth: "infinity" })
+        : new URLSearchParams({ type: "list" });
+
+    return queryJson<DirectoryResponse>("readDirectory", path, params).pipe(
+      Effect.map((directory) => directory.entries.map((entry) => joinPath(path, entry.name))),
+    );
+  }) satisfies FileSystem["readDirectory"];
 
   const glob = ((pattern: string, globOptions) => {
     const root = globOptions?.root ?? "";
@@ -255,31 +257,34 @@ export const make = Effect.fn("FileSystem.make")(function* (
 
     // Matched entries carry the server's own paths, which only round-trip in
     // direct mode; the `name` component is reliable in both modes.
-    return Effect.map(queryJson<DirectoryResponse>("glob", root, params), (directory) =>
-      directory.entries.map((entry) => entry.path),
+    return queryJson<DirectoryResponse>("glob", root, params).pipe(
+      Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );
   }) satisfies FileSystem["glob"];
 
   const makeDirectory = ((path: string, makeOptions) =>
-    Effect.flatMap(url("makeDirectory", path), (target) => {
-      const request = HttpClientRequest.put(`${target}?type=directory`).pipe(
-        HttpClientRequest.setHeader("if-none-match", "*"),
-        (self) =>
-          makeOptions?.recursive === true
-            ? HttpClientRequest.bodyJsonUnsafe(self, { recursive: true })
-            : self,
-      );
+    url("makeDirectory", path).pipe(
+      Effect.flatMap((target) => {
+        const request = HttpClientRequest.put(`${target}?type=directory`).pipe(
+          HttpClientRequest.setHeader("if-none-match", "*"),
+          (self) =>
+            makeOptions?.recursive === true
+              ? HttpClientRequest.bodyJsonUnsafe(self, { recursive: true })
+              : self,
+        );
 
-      return Effect.mapError(client.void(request), toPlatformError("makeDirectory", path));
-    })) satisfies FileSystem["makeDirectory"];
+        return client.void(request).pipe(Effect.mapError(toPlatformError("makeDirectory", path)));
+      }),
+    )) satisfies FileSystem["makeDirectory"];
 
   const readFileString = ((path: string, encoding?: string) =>
-    Effect.map(readFile(path), (bytes) =>
-      new TextDecoder(encoding ?? "utf-8").decode(bytes),
+    readFile(path).pipe(
+      Effect.map((bytes) => new TextDecoder(encoding ?? "utf-8").decode(bytes)),
     )) satisfies FileSystem["readFileString"];
 
   const readLines = ((path: string) =>
-    Stream.decodeText(stream(path, {})).pipe(
+    stream(path, {}).pipe(
+      Stream.decodeText,
       Stream.mapAccum(() => "", takeLines, { onHalt: endLines }),
     )) satisfies FileSystem["readLines"];
 
