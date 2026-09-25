@@ -175,8 +175,14 @@ impl WorkspaceRegistry {
         if !ID_PATTERN.is_match(id) {
             return Err(WorkspaceError::InvalidId { id: id.to_owned() });
         }
+        if self.read().contains_key(id) {
+            return Err(WorkspaceError::AlreadyExists { id: id.to_owned() });
+        }
+
         let root = canonical_root(root).await?;
 
+        // Re-check under the write lock: the read above cannot close the gap
+        // opened by releasing it for the await.
         let mut workspaces = self.write();
         if workspaces.contains_key(id) {
             return Err(WorkspaceError::AlreadyExists { id: id.to_owned() });
@@ -485,6 +491,29 @@ mod tests {
             }
         );
         assert_eq!(registry.resolve("docs").unwrap(), canonical(first.path()));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_duplicate_id_even_when_the_root_is_invalid() {
+        let dir = TempDir::new();
+        let registry = WorkspaceRegistry::default();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+
+        let error = registry
+            .register("docs", "relative/path", WorkspaceProperties::default())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            WorkspaceError::AlreadyExists {
+                id: "docs".to_owned()
+            }
+        );
+        assert_eq!(registry.resolve("docs").unwrap(), canonical(dir.path()));
     }
 
     #[tokio::test]
