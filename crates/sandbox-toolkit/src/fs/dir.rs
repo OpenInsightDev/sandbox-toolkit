@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::TargetFile;
 use super::meta::{MetadataError, etag, modified_at, read_metadata};
-use super::model::{DirectoryResponse, ResourceEntry, ResourceKind, ResourceMetadata};
+use super::model::{DirectoryResponse, ListRequest, ResourceEntry, ResourceKind, ResourceMetadata};
 
 /// Entries a listing returns when the request names no `limit`, and the ceiling
 /// an explicit `limit` is clamped to.
@@ -20,13 +20,6 @@ pub(crate) enum DirectoryError {
     ParentNotFound(String),
     #[error("failed to access directory: {0}")]
     Io(#[from] std::io::Error),
-}
-
-/// The window of one directory listing.
-pub(crate) struct ListRequest {
-    pub(crate) offset: usize,
-    /// Absent means [`SERVER_LIMIT`].
-    pub(crate) limit: Option<usize>,
 }
 
 pub(crate) async fn read_directory(
@@ -245,6 +238,7 @@ mod tests {
         ListRequest {
             offset: 0,
             limit: None,
+            depth: None,
         }
     }
 
@@ -327,6 +321,7 @@ mod tests {
         let window = ListRequest {
             offset: 0,
             limit: Some(2),
+            depth: None,
         };
         let response = read_directory(&target, &window).await.unwrap();
         assert_eq!(response.entries.len(), 2);
@@ -335,6 +330,7 @@ mod tests {
         let trimmed = ListRequest {
             offset: 3,
             limit: None,
+            depth: None,
         };
         let response = read_directory(&target, &trimmed).await.unwrap();
         assert!(response.entries.is_empty());
@@ -358,6 +354,7 @@ mod tests {
         let window = ListRequest {
             offset: 0,
             limit: Some(2),
+            depth: None,
         };
         let response = read_directory_recursive(&target, &window).await.unwrap();
         assert_eq!(response.entries.len(), 2);
@@ -366,6 +363,7 @@ mod tests {
         let trimmed = ListRequest {
             offset: 4,
             limit: None,
+            depth: None,
         };
         let response = read_directory_recursive(&target, &trimmed).await.unwrap();
         assert!(response.entries.is_empty());

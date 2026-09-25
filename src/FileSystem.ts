@@ -12,6 +12,8 @@ import type { OpenFlag, File, WatchOptions, WatchEvent } from "effect/FileSystem
 import { HttpClientRequest } from "effect/unstable/http";
 
 import type { DirectoryResponse } from "./generated/DirectoryResponse.ts";
+import type { GlobRequest } from "./generated/GlobRequest.ts";
+import type { ListRequest } from "./generated/ListRequest.ts";
 import type { ResourceMetadata } from "./generated/ResourceMetadata.ts";
 import { Client } from "./internal/client.ts";
 import {
@@ -24,6 +26,9 @@ import {
 import { endLines, takeLines } from "./internal/process.ts";
 
 export type FileSystemError = PlatformError.PlatformError;
+
+/** The JSON bodies of the `QUERY` types that carry one. */
+type QueryBody = GlobRequest | ListRequest;
 
 export interface FileSystem {
   readonly access: (
@@ -186,17 +191,21 @@ export const make = Effect.fn("FileSystem.make")(function* (
 
   const url = (method: string, path: string) => resourceUrl(options.workspace, method, path);
 
+  // Only `type` travels in the query; every other parameter is the request body.
   const queryJson = <A>(
     method: string,
     path: string,
-    params: URLSearchParams,
+    type: string,
+    body?: QueryBody,
   ): Effect.Effect<A, FileSystemError> =>
     url(method, path).pipe(
-      Effect.flatMap((target) =>
-        client
-          .json<A>(HttpClientRequest.query(`${target}?${params}`))
-          .pipe(Effect.mapError(toPlatformError(method, path))),
-      ),
+      Effect.flatMap((target) => {
+        const request = HttpClientRequest.query(`${target}?type=${type}`).pipe((self) =>
+          body === undefined ? self : HttpClientRequest.bodyJsonUnsafe(self, body),
+        );
+
+        return client.json<A>(request).pipe(Effect.mapError(toPlatformError(method, path)));
+      }),
     );
 
   const readFile = ((path: string) =>
@@ -225,7 +234,7 @@ export const make = Effect.fn("FileSystem.make")(function* (
   }) satisfies FileSystem["stream"];
 
   const stat = ((path: string) =>
-    queryJson<ResourceMetadata>("stat", path, new URLSearchParams({ type: "metadata" })).pipe(
+    queryJson<ResourceMetadata>("stat", path, "metadata").pipe(
       Effect.map(metadataInfo),
     )) satisfies FileSystem["stat"];
 
@@ -236,29 +245,32 @@ export const make = Effect.fn("FileSystem.make")(function* (
     )) satisfies FileSystem["exists"];
 
   const readDirectory = ((path: string, readOptions) => {
-    const params =
-      readOptions?.recursive === true
-        ? new URLSearchParams({ type: "list", depth: "infinity" })
-        : new URLSearchParams({ type: "list" });
+    const request: ListRequest = {
+      offset: 0,
+      limit: null,
+      depth: readOptions?.recursive === true ? "infinity" : null,
+    };
 
     // Entries carry the addressing-mode path; rebuilding from the name would drop
     // the directory prefix of a recursive listing.
-    return queryJson<DirectoryResponse>("readDirectory", path, params).pipe(
+    return queryJson<DirectoryResponse>("readDirectory", path, "list", request).pipe(
       Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );
   }) satisfies FileSystem["readDirectory"];
 
   const glob = ((pattern: string, globOptions) => {
     const root = globOptions?.root ?? "";
-    const params = new URLSearchParams({ type: "glob", pattern });
 
-    for (const exclude of globOptions?.exclude ?? []) {
-      params.append("exclude", exclude);
-    }
+    const request: GlobRequest = {
+      pattern,
+      exclude: [...(globOptions?.exclude ?? [])],
+      offset: 0,
+      limit: null,
+    };
 
     // Matched entries carry the addressing-mode path, so they round-trip in
     // both modes.
-    return queryJson<DirectoryResponse>("glob", root, params).pipe(
+    return queryJson<DirectoryResponse>("glob", root, "glob", request).pipe(
       Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );
   }) satisfies FileSystem["glob"];

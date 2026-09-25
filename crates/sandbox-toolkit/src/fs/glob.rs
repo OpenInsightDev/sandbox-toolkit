@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use super::TargetFile;
 use super::dir::{DirectoryError, SERVER_LIMIT, checked_target, resource_entry};
-use super::model::{DirectoryResponse, ResourceEntry, ResourceKind};
+use super::model::{DirectoryResponse, GlobRequest, ResourceEntry, ResourceKind};
 
 #[derive(Debug, Error)]
 pub(crate) enum GlobError {
@@ -15,16 +15,6 @@ pub(crate) enum GlobError {
     InvalidPattern(String),
     #[error("failed to walk the directory: {0}")]
     Io(#[from] std::io::Error),
-}
-
-/// The patterns and window of one glob search.
-pub(crate) struct GlobRequest {
-    pub(crate) pattern: String,
-    /// A match removes the hit and prunes the directory's subtree.
-    pub(crate) exclude: Vec<String>,
-    pub(crate) offset: usize,
-    /// Absent means [`SERVER_LIMIT`].
-    pub(crate) limit: Option<usize>,
 }
 
 /// Directories are visited whether or not they match, so a match below a

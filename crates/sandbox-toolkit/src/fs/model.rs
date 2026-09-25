@@ -59,6 +59,39 @@ pub(crate) struct RelocateResourceRequest {
     operation: ResourceOperation,
 }
 
+/// The window and recursion of one directory listing.
+#[derive(Debug, Default, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub(crate) struct ListRequest {
+    #[serde(default)]
+    pub(crate) offset: usize,
+    /// Absent means the server's default page size.
+    pub(crate) limit: Option<usize>,
+    /// `infinity` walks the whole subtree; absent lists direct children.
+    pub(crate) depth: Option<Depth>,
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Depth {
+    Infinity,
+}
+
+/// The patterns and window of one glob search.
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub(crate) struct GlobRequest {
+    pub(crate) pattern: String,
+    /// A match removes the hit and prunes the directory's subtree.
+    #[serde(default)]
+    pub(crate) exclude: Vec<String>,
+    #[serde(default)]
+    pub(crate) offset: usize,
+    /// Absent means the server's default page size.
+    pub(crate) limit: Option<usize>,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]

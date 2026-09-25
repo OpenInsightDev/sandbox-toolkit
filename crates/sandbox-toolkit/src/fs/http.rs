@@ -2,15 +2,15 @@ use std::{collections::HashMap, convert::Infallible};
 
 use super::TargetFile;
 use super::dir::{
-    DirectoryError, ListRequest, create_directory, create_directory_recursive, read_directory,
+    DirectoryError, create_directory, create_directory_recursive, read_directory,
     read_directory_recursive,
 };
 use super::file::{
     DownloadMode, FileContent, FileHeaders, ReadFileError, prepare_download, probe_file,
 };
-use super::glob::{self, GlobError, GlobRequest};
+use super::glob::{self, GlobError};
 use super::meta::{MetadataError, read_metadata};
-use super::model::{ResourceMetadata, ResourceOperation};
+use super::model::{Depth, GlobRequest, ListRequest, ResourceMetadata, ResourceOperation};
 use super::path;
 use crate::{AppError, AppState};
 use axum::Json;
@@ -201,14 +201,6 @@ fn query_operation(query: &RawQuery) -> Result<QueryOperation, AppError> {
     }
 }
 
-fn list_recursive(query: &RawQuery) -> Result<bool, AppError> {
-    match query_value(query, "depth").as_deref() {
-        None => Ok(false),
-        Some("infinity") => Ok(true),
-        Some(value) => Err(AppError::BadRequest(format!("unsupported depth: {value}"))),
-    }
-}
-
 fn query_value(query: &RawQuery, key: &str) -> Option<String> {
     let raw = query.0.as_deref()?;
     url::form_urlencoded::parse(raw.as_bytes())
@@ -216,54 +208,13 @@ fn query_value(query: &RawQuery, key: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-fn query_values(query: &RawQuery, key: &str) -> Vec<String> {
-    let Some(raw) = query.0.as_deref() else {
-        return Vec::new();
-    };
-    url::form_urlencoded::parse(raw.as_bytes())
-        .filter(|(name, _)| name == key)
-        .map(|(_, value)| value.into_owned())
-        .collect()
-}
-
-fn query_usize(query: &RawQuery, key: &str) -> Result<Option<usize>, AppError> {
-    match query_value(query, key) {
-        None => Ok(None),
-        Some(value) => value
-            .parse()
-            .map(Some)
-            .map_err(|_| AppError::BadRequest(format!("invalid {key}: {value}"))),
-    }
-}
-
 /// A `limit` of zero is meaningless, so it is rejected for every windowed
 /// endpoint rather than clamped to an empty page.
-fn query_limit(query: &RawQuery) -> Result<Option<usize>, AppError> {
-    let limit = query_usize(query, "limit")?;
+fn check_limit(limit: Option<usize>) -> Result<(), AppError> {
     if limit == Some(0) {
         return Err(AppError::BadRequest("limit must be positive".to_owned()));
     }
-    Ok(limit)
-}
-
-fn list_request(query: &RawQuery) -> Result<ListRequest, AppError> {
-    Ok(ListRequest {
-        offset: query_usize(query, "offset")?.unwrap_or(0),
-        limit: query_limit(query)?,
-    })
-}
-
-fn glob_request(query: &RawQuery) -> Result<GlobRequest, AppError> {
-    let pattern = query_value(query, "pattern")
-        .filter(|pattern| !pattern.is_empty())
-        .ok_or_else(|| AppError::BadRequest("glob requires a `pattern`".to_owned()))?;
-
-    Ok(GlobRequest {
-        pattern,
-        exclude: query_values(query, "exclude"),
-        offset: query_usize(query, "offset")?.unwrap_or(0),
-        limit: query_limit(query)?,
-    })
+    Ok(())
 }
 
 /// A read request must carry no body, so any data frame rejects it with the
@@ -292,16 +243,24 @@ struct CreateDirectoryRequest {
 /// rejected instead of buffered.
 const MAX_REQUEST_BODY: usize = 64 * 1024;
 
-async fn create_directory_request(body: Body) -> Result<CreateDirectoryRequest, AppError> {
+/// An absent body is allowed so a request whose fields are all optional can omit
+/// it entirely; the caller supplies the default.
+async fn read_json_body<T: serde::de::DeserializeOwned>(body: Body) -> Result<Option<T>, AppError> {
     let bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY)
         .await
         .map_err(|error| AppError::BadRequest(format!("failed to read request body: {error}")))?;
 
     if bytes.is_empty() {
-        return Ok(CreateDirectoryRequest::default());
+        return Ok(None);
     }
 
-    serde_json::from_slice(&bytes).map_err(|error| AppError::InvalidRequest(error.to_string()))
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+async fn create_directory_request(body: Body) -> Result<CreateDirectoryRequest, AppError> {
+    Ok(read_json_body(body).await?.unwrap_or_default())
 }
 
 fn map_read_error(error: ReadFileError) -> AppError {
@@ -483,14 +442,10 @@ async fn query_resource(
             Ok(json_resource(&metadata, StatusCode::OK))
         }
         QueryOperation::List => {
-            ensure_empty_body(
-                body,
-                AppError::InvalidRequest("list takes no request body".to_owned()),
-            )
-            .await?;
+            let request: ListRequest = read_json_body(body).await?.unwrap_or_default();
+            check_limit(request.limit)?;
 
-            let request = list_request(&query)?;
-            let directory = if list_recursive(&query)? {
+            let directory = if request.depth == Some(Depth::Infinity) {
                 read_directory_recursive(&target.resource, &request).await
             } else {
                 read_directory(&target.resource, &request).await
@@ -500,13 +455,12 @@ async fn query_resource(
             Ok(Json(&directory).into_response())
         }
         QueryOperation::Glob => {
-            ensure_empty_body(
-                body,
-                AppError::InvalidRequest("glob takes no request body".to_owned()),
-            )
-            .await?;
+            let request: GlobRequest = read_json_body(body)
+                .await?
+                .ok_or_else(|| AppError::InvalidRequest("glob requires a `pattern`".to_owned()))?;
+            check_limit(request.limit)?;
 
-            let directory = glob::search(&target.resource, &glob_request(&query)?)
+            let directory = glob::search(&target.resource, &request)
                 .await
                 .map_err(map_glob_error)?;
 
@@ -938,9 +892,9 @@ mod tests {
             assert_eq!(body["error"]["code"].as_str(), code);
         }
 
-        // `glob` belongs to `QUERY`, so it is routed to the handler; a missing
-        // `pattern` is then the handler's own bad request rather than a routing
-        // failure.
+        // `glob` belongs to `QUERY`, so it is routed to the handler; an absent
+        // body leaves `pattern` unset, which the handler reports as an
+        // unprocessable body rather than a routing failure.
         let response = call(
             &app,
             Request::builder()
@@ -950,7 +904,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
@@ -1044,8 +998,8 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri(format!("{base}&limit=2"))
-                .body(Body::empty())
+                .uri(&base)
+                .body(Body::from(r#"{"limit":2}"#))
                 .unwrap(),
         )
         .await;
@@ -1061,8 +1015,8 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri(format!("{base}&offset=3"))
-                .body(Body::empty())
+                .uri(&base)
+                .body(Body::from(r#"{"offset":3}"#))
                 .unwrap(),
         )
         .await;
@@ -1116,8 +1070,8 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri(format!("{base}&depth=infinity"))
-                .body(Body::empty())
+                .uri(&base)
+                .body(Body::from(r#"{"depth":"infinity"}"#))
                 .unwrap(),
         )
         .await;
@@ -1144,17 +1098,17 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri(format!("{base}&depth=2"))
-                .body(Body::empty())
+                .uri(&base)
+                .body(Body::from(r#"{"depth":"2"}"#))
                 .unwrap(),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["error"]["code"].as_str(), Some("bad_request"));
+        assert_eq!(body["error"]["code"].as_str(), Some("invalid_request"));
     }
 
     #[tokio::test]
@@ -1258,8 +1212,8 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri("/workspaces/docs/fs?type=glob&pattern=**/*.txt")
-                .body(Body::empty())
+                .uri("/workspaces/docs/fs?type=glob")
+                .body(Body::from(r#"{"pattern":"**/*.txt"}"#))
                 .unwrap(),
         )
         .await;
@@ -1300,11 +1254,10 @@ mod tests {
             &app,
             Request::builder()
                 .method("QUERY")
-                .uri(format!(
-                    "/fs{}?type=glob&pattern=**/*&exclude=nested&limit=1",
-                    dir.path().display()
+                .uri(format!("/fs{}?type=glob", dir.path().display()))
+                .body(Body::from(
+                    r#"{"pattern":"**/*","exclude":["nested"],"limit":1}"#,
                 ))
-                .body(Body::empty())
                 .unwrap(),
         )
         .await;
@@ -1323,27 +1276,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_glob_rejects_a_file_and_a_missing_pattern() {
+    async fn query_glob_rejects_a_file_a_missing_pattern_and_a_bad_pattern() {
         let dir = TempDir::new();
         tokio::fs::write(dir.path().join("note.txt"), "hello")
             .await
             .unwrap();
         let app = router().with_state(AppState::new("."));
 
-        for (uri, code) in [
+        for (uri, body, status, code) in [
             (
-                format!(
-                    "/fs{}?type=glob&pattern=*",
-                    dir.path().join("note.txt").display()
-                ),
+                format!("/fs{}?type=glob", dir.path().join("note.txt").display()),
+                r#"{"pattern":"*"}"#,
+                StatusCode::BAD_REQUEST,
                 "not_a_directory",
             ),
             (
                 format!("/fs{}?type=glob", dir.path().display()),
-                "bad_request",
+                "",
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request",
             ),
             (
-                format!("/fs{}?type=glob&pattern=[", dir.path().display()),
+                format!("/fs{}?type=glob", dir.path().display()),
+                r#"{"pattern":"["}"#,
+                StatusCode::BAD_REQUEST,
                 "bad_request",
             ),
         ] {
@@ -1352,12 +1308,12 @@ mod tests {
                 Request::builder()
                     .method("QUERY")
                     .uri(&uri)
-                    .body(Body::empty())
+                    .body(Body::from(body))
                     .unwrap(),
             )
             .await;
 
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(response.status(), status, "{uri}");
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();

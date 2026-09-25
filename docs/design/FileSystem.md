@@ -28,10 +28,10 @@
 | `POST`   | 作用于目标资源的动作，必须带 `type`           |
 | `DELETE` | 删除资源，目录递归删除                        |
 
-- `type` 放在 query；简单标量参数（如 `depth`）也在 query；结构化参数放 JSON body；
+- `type` 放在 query；该 `type` 的其余参数一律放 JSON body，body 为空表示全部取默认；
 - 带分页的读取统一用 `offset` + `limit` 组合；
 - 条件仍用标准头 `If-Match`、`If-None-Match`，见“ETag 版本机制”；
-- WebDAV 的 `Depth`、`Destination`、`Overwrite` 等头不再使用，改由 query 或该 `type` 的 body schema 承载。
+- WebDAV 的 `Depth`、`Destination`、`Overwrite` 等头不再使用，改由该 `type` 的 body schema 承载。
 
 ### 端点总表
 
@@ -124,7 +124,7 @@
 
 列出目录成员。
 
-输入（query）：
+输入（JSON body）：
 
 | 字段     | 类型       | 说明                                           |
 | -------- | ---------- | ---------------------------------------------- |
@@ -143,6 +143,7 @@
 
 - 条目按目录遍历顺序返回，`offset` 按该顺序切分；
 - 递归查询还受服务端总条目数或响应大小上限约束，达到即截断并置 `truncated`；
+- `depth` 只接受 `infinity`，其它值返回 `422 invalid_request`；`limit` 为 `0` 返回 `400 bad_request`；
 - 目标是文件（包括指向文件的符号链接）时返回 `400 not_a_directory`；
 - 未来可加入按名称稳定排序的有序集合，参考 [RFC 3648](https://datatracker.ietf.org/doc/html/rfc3648)。
 
@@ -150,7 +151,7 @@
 
 按行读取文本文件的指定范围。
 
-输入（query）：
+输入（JSON body）：
 
 | 字段     | 类型    | 说明                                      |
 | -------- | ------- | ----------------------------------------- |
@@ -172,14 +173,14 @@
 - 文件末尾没有换行符时，末尾内容仍作为一行返回；
 - `truncated` 表示服务端因 `limit` 或响应大小上限未返回全部后续行；没有后续行时为 `false`；
 - 默认按 UTF-8 解码；内容不是合法 UTF-8 时返回 `422 invalid_request`；
-- `offset` 必须为非负整数，`limit` 必须为正整数；参数非法返回 `400 bad_request`；
+- `offset` 必须为非负整数，否则返回 `422 invalid_request`；`limit` 必须为正整数，为 `0` 返回 `400 bad_request`；
 - 目标是目录时返回 `400 not_a_file`。
 
 #### `QUERY ?type=glob`
 
 在目标目录子树内按模式定位资源。
 
-输入（query）：
+输入（JSON body）：
 
 | 字段      | 类型     | 说明                                   |
 | --------- | -------- | -------------------------------------- |
@@ -195,7 +196,7 @@
 - 目标目录本身不作为命中条目；文件、目录与符号链接都可命中，但遍历不跟随目录符号链接；
 - 命中 `exclude` 的目录连同其子树跳过，其它条目剔除；
 - 结果按遍历顺序返回，`offset` 按该顺序切分，达到服务端上限即截断并置 `truncated`；
-- `pattern` 缺失或非法返回 `400 bad_request`；目标是文件返回 `400 not_a_directory`。
+- `pattern` 缺失返回 `422 invalid_request`，非法返回 `400 bad_request`；目标是文件返回 `400 not_a_directory`。
 
 #### `QUERY ?type=realpath`
 
@@ -234,7 +235,7 @@
 
 监听目标资源的变更并持续推送事件，目标可为文件或目录。
 
-输入（query）：
+输入（JSON body）：
 
 | 字段        | 类型    | 说明                                             |
 | ----------- | ------- | ------------------------------------------------ |
@@ -252,7 +253,7 @@
 - 事件只携带路径，消费方按路径重新读取当前状态即可，重复事件按同一路径幂等处理；
 - 目标为符号链接时解析到其真实目标，递归监听不跟随目录符号链接（同 `QUERY ?type=glob`）；
 - 事件按发生顺序推送；单个连接的发送缓冲达到上限时终止该流，消费方重连后重新同步；
-- 目标不存在返回 `404`；`recursive` 非布尔返回 `400 bad_request`。
+- 目标不存在返回 `404`；`recursive` 非布尔返回 `422 invalid_request`。
 
 ### 变更类型
 
@@ -521,7 +522,7 @@ HTTP 状态码表达通用语义，`error.code` 提供稳定的机器可读分�
 
 | 状态  | `error.code`            | 场景                                  |
 | ----- | ----------------------- | ------------------------------------- |
-| `400` | `bad_request`           | 路径、query 参数或 `destination` 非法 |
+| `400` | `bad_request`           | 路径、参数或 `destination` 非法       |
 | `400` | `not_a_file`            | 操作要求文件，目标是目录              |
 | `400` | `not_a_directory`       | 操作要求目录，目标是文件              |
 | `404` | `not_found`             | 资源不存在                            |
