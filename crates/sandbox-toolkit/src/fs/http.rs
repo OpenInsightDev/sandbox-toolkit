@@ -18,6 +18,7 @@ use serde::de::DeserializeOwned;
 
 use super::file::{self, ReadError};
 use super::model::ContentRequest;
+use super::path::PathError;
 use crate::workspace::registry::Workspace;
 use crate::{AppError, AppState};
 
@@ -238,15 +239,26 @@ fn not_implemented(operation: &'static str) -> AppError {
     AppError::NotImplemented(operation)
 }
 
+impl From<PathError> for AppError {
+    fn from(error: PathError) -> Self {
+        let message = error.to_string();
+
+        match error {
+            PathError::NotFound(path) => Self::NotFound(path),
+            PathError::InvalidPath { .. } => Self::BadRequest(message),
+            PathError::Io(source) => Self::Internal(source.into()),
+        }
+    }
+}
+
 impl From<ReadError> for AppError {
     fn from(error: ReadError) -> Self {
         let message = error.to_string();
 
         match error {
-            ReadError::NotFound(path) => Self::NotFound(path),
             ReadError::NotAFile(path) => Self::NotAFile(path),
             ReadError::NotUtf8 => Self::InvalidRequest(message),
-            ReadError::InvalidPath { .. } => Self::BadRequest(message),
+            ReadError::Path(error) => error.into(),
             ReadError::Io(source) => Self::Internal(source.into()),
         }
     }

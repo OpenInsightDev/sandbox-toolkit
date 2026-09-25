@@ -4,6 +4,8 @@
 
 mod file;
 mod http;
+mod meta;
 pub(crate) mod model;
+mod path;
 
 pub(crate) use self::http::router;
