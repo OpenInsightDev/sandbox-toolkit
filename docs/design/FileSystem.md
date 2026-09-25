@@ -11,13 +11,13 @@
 - 端点为固定地址，目标路径由请求 body 的 `path` 字段给出，不出现在 URL 中；
 - 控制面用 JSON 承载目录查询、元数据与资源改动；
 - 控制面读取一律用 `QUERY`（安全、幂等、可带请求体）加 `?type=<type>`；
-- 数据面仅保留 `QUERY ?type=stream`，以裸字节响应流式下载；文件内容读取默认走控制面 `QUERY ?type=content`，二进制用 `base64`；
+- 数据面用裸字节承载文件内容：`QUERY ?type=stream` 流式下载，`PUT ?type=sink` 流式上传；文件内容读取默认走控制面 `QUERY ?type=content`，二进制用 `base64`；
 - 文件内容写入用 `PUT ?type=file`，`content` 按 `encoding` 解码为原始字节；其余改动用 `POST`、`PATCH` 或带 `type` 的 `PUT`；
 - 每个 `type` 的输入输出 schema 各自独立。
 
 ## HTTP 端点设计
 
-端点固定，操作由方法与 `type` 共同决定。
+端点固定，操作由方法与 `type` 共同决定；所有参数都必须通过 body 来传递与 `type` 对应 schema 的 JSON 对象来传入。
 
 | 方法     | 语义                                          |
 | -------- | --------------------------------------------- |
@@ -25,12 +25,12 @@
 | `PUT`    | 创建或替换资源，`type` 区分资源种类           |
 | `PATCH`  | 修改已有资源（元数据或内容），必须带 `type`   |
 | `POST`   | 作用于资源的动作，必须带 `type`               |
-| `DELETE` | 删除资源，目录递归删除                        |
+| `DELETE` | 删除资源，`recursive` 控制递归、`force` 控制忽略不存在 |
 
 - `type` 放在 query；body 统一为 JSON 对象且至少含 `path`，其余字段为该 `type` 的 schema；
 - 带分页的读取统一用 `offset` + `limit` 组合；
-- 条件仍用标准头 `If-Match`、`If-None-Match`，见“ETag 版本机制”；
-- WebDAV 的 `Depth`、`Destination`、`Overwrite` 等头不再使用，改由该 `type` 的 body schema 承载。
+- 条件用标准头 `If-Match`、`If-None-Match`；复制/移动的目标条件另用扩展头 `Destination-If-Match`、`Destination-If-None-Match`，见“ETag 版本机制”；
+- WebDAV 的 `Depth`、`Destination`、`Overwrite` 等头不再使用；`depth`、`destination` 等改由该 `type` 的 body schema 承载，目标版本条件见“复制/移动的双资源条件”。
 
 ### 端点总表
 
@@ -48,14 +48,15 @@
 | `QUERY`  | `lines`     | 按行读取文件  | `path`、`offset`、`limit`                         |
 | `QUERY`  | `watch`     | 监听变更      | `path`、`recursive`                               |
 | `PUT`    | `file`      | 写入文件      | `path`、`encoding`、`content`                     |
+| `PUT`    | `sink`      | 流式上传文件  | 待定                                              |
 | `PUT`    | `directory` | 创建目录      | `path`、`recursive`                               |
 | `PUT`    | `symlink`   | 创建符号链接  | `path`、`target`                                  |
 | `PATCH`  | `metadata`  | 修改元数据    | `path`、可变字段                                  |
 | `PATCH`  | `patch`     | 应用文本补丁  | `path`、`format`、`patch`                         |
 | `PATCH`  | `truncate`  | 截断文件      | `path`、`length`                                  |
-| `POST`   | `copy`      | 复制          | `path`、`destination`、`overwrite`、目标 `etag`   |
-| `POST`   | `move`      | 移动 / 重命名 | `path`、`destination`、`overwrite`、目标 `etag`   |
-| `DELETE` | —           | 删除          | `path`                                            |
+| `POST`   | `copy`      | 复制          | `path`、`destination`                             |
+| `POST`   | `move`      | 移动 / 重命名 | `path`、`destination`                             |
+| `DELETE` | —           | 删除          | `path`、`recursive`、`force`                      |
 
 `type` 缺失或不受支持返回 `422 unsupported_type`；`type` 与所用方法不匹配（如 `PUT ?type=metadata`）返回 `405 method_not_allowed`；操作要求的资源类型与目标不符（对目录 `QUERY ?type=content`、`QUERY ?type=stream`、`QUERY ?type=lines`，对文件 `QUERY ?type=list`、`QUERY ?type=glob`）返回 `400 not_a_file` / `400 not_a_directory`；`path` 缺失或类型不符返回 `422 invalid_request`。
 
@@ -235,7 +236,7 @@
 | `path` | string | 解析后的真实路径，寻址模式与 `metadata` 的 `path` 一致 |
 
 - 逐级展开路径中的全部符号链接，返回规范化后的真实路径；工作区模式返回工作区相对路径，绝对路径模式返回远程绝对路径；
-- 边界校验见“规范化路径”，解析结果越界返回 `400 bad_request`；
+- 边界校验见“工作区模式”，解析结果越界返回 `400 bad_request`；
 - 目标不存在（含中间路径不存在或悬空链接）返回 `404`。
 
 #### `QUERY ?type=access`
@@ -301,6 +302,12 @@
 - 成功创建返回 `201`，替换返回 `200`，都返回更新后的 `metadata`，并在 `ETag` 头返回新版本；
 - 服务端先解码到临时文件，再在写闸门内提交，见“两种文件写入模式”；目标为目录返回 `400 not_a_file`。
 
+#### `PUT ?type=sink`
+
+以流式上传写入文件内容，是数据面中 `QUERY ?type=stream` 的写入侧对应，按 [tus 1.0.0](https://tus.io/protocols/resumable-upload) 核心协议承载。
+
+该端点先预留，请求与响应 schema、与“大文件上传”子路由的关系留待后续确定。
+
 #### `PUT ?type=directory`
 
 创建目录，对应 WebDAV `MKCOL`。
@@ -327,7 +334,7 @@
 | `target` | string | 必填，链接目标，允许悬空 |
 
 - 创建 `kind=symlink` 资源，`target` 原样保存，不要求目标存在；
-- 相对 `target` 相对链接所在目录解析，绝对 `target` 按自身解析，工作区模式下解析结果必须位于工作区根目录内（见“规范化路径”），越界返回 `400 bad_request`；
+- 相对 `target` 相对链接所在目录解析，绝对 `target` 按自身解析，工作区模式下解析结果必须位于工作区根目录内（见“工作区模式”），越界返回 `400 bad_request`；
 - 必须带 `If-None-Match: *`；`path` 已存在返回 `412`；
 - 成功返回 `201` 与创建的 `metadata`，并在 `ETag` 头返回新版本。
 
@@ -384,24 +391,40 @@
 - 目标必须为文件：目录返回 `400 not_a_file`；
 - 必须带匹配当前版本的 `If-Match`，成功返回 `200` 与更新后的 `metadata`，并在 `ETag` 头返回新版本。
 
-#### `POST ?type=copy` 与 `POST ?type=move`
+#### `POST ?type=copy`
+
+把资源复制到 `destination`，源保持不变。
 
 ```json
 { "path": "src/a.txt", "destination": "src/b.txt" }
 ```
 
-- `path` 是源路径，`destination` 与源同属一种寻址模式：工作区相对路径或远程绝对路径；
-- 源必须提供匹配当前版本的 `If-Match`；不带 `overwrite` 时目标必须不存在，否则返回 `412`；`overwrite=true` 时按“ETag 版本机制”提供已有目标的 `destination_etag`；
-- 移动先复制再删除源；`destination` 越界或位于源目录子树内返回 `400`；
+- `path` 为源路径，`destination` 为目标路径，二者同属一种寻址模式：工作区相对路径或远程绝对路径；
+- 源必须提供匹配当前版本的 `If-Match`；目标条件用扩展头承载，见“复制/移动的双资源条件”；
+- `destination` 越界或位于源目录子树内返回 `400`；
 - 成功创建目标返回 `201`，覆盖已有目标返回 `204`，响应带结果的 `ETag`。
+
+#### `POST ?type=move`
+
+移动资源到 `destination`，成功后源路径不再存在（先复制到目标再删除源）；其余同 `POST ?type=copy`。
 
 #### `DELETE`
 
 ```json
-{ "path": "src/a.txt" }
+{ "path": "src", "recursive": true, "force": false }
 ```
 
-删除文件或目录，目录递归删除；必须提供 `If-Match`，成功返回 `204`。
+| 字段        | 类型    | 说明                                                 |
+| ----------- | ------- | ---------------------------------------------------- |
+| `path`      | string  | 必填，目标路径                                       |
+| `recursive` | boolean | 为 `true` 时递归删除目录及其整个子树；缺省为 `false` |
+| `force`     | boolean | 为 `true` 时目标不存在按成功处理；缺省为 `false`     |
+
+- 目标为文件或符号链接时直接删除，不跟随符号链接的目标，`recursive` 不适用；
+- 目标为目录且 `recursive` 不为 `true` 返回 `400 not_a_file`；为 `true` 时删除目录及其整个子树；
+- 必须提供匹配当前版本的 `If-Match`；`force=true` 且目标不存在时无当前版本可比，省略 `If-Match` 直接返回 `204`；
+- 目标不存在且 `force` 不为 `true` 返回 `404`；`recursive`、`force` 非布尔返回 `422 invalid_request`；
+- 成功返回 `204`，无响应体。
 
 ## WebDAV 覆盖对照
 
@@ -412,7 +435,8 @@
 | `MKCOL`           | `PUT ?type=directory`                                 |
 | `PROPFIND`        | `QUERY ?type=metadata`、`QUERY ?type=list`            |
 | `PROPPATCH`       | `PATCH ?type=metadata`                                |
-| `COPY` / `MOVE`   | `POST ?type=copy` / `POST ?type=move`                 |
+| `COPY`            | `POST ?type=copy`                                     |
+| `MOVE`            | `POST ?type=move`                                     |
 | `DELETE`          | `DELETE`                                              |
 | `LOCK` / `UNLOCK` | 不采用，并发控制由 ETag 条件请求承担                  |
 | `OPTIONS`         | 仅上传端点使用                                        |
@@ -430,31 +454,15 @@
 
 访问文件前，先把一个远程绝对路径通过工作区端点注册为工作区，并指定唯一的 `id`（见 [Workspace.md](./Workspace.md)）；该注册是协议中唯一接受远程绝对路径的控制面边界。
 
-后续请求使用工作区 ID，`path` 为工作区内相对路径。工作区是路径访问的边界，服务端必须校验工作区存在、具备相应权限，并且目标始终位于工作区根目录内；变更操作还受该工作区属性约束，见 [Workspace.md](./Workspace.md) 的工作区属性。
+后续请求在 URL 中指定工作区 ID；`path` 参数则必须为工作区内相对路径。
+传入的相对路径先经过 canonicalization，再校验规范化结果位于工作区根目录内，越界返回 `400 bad_request`；对符号链接等可能越界的对象同样执行边界校验。
+工作区是路径访问的边界，服务端还必须校验工作区存在、具备相应权限；变更操作还受该工作区属性约束，见 [Workspace.md](./Workspace.md) 的工作区属性。
 
 ### 绝对路径模式
 
-请求在 `path` 中直接携带远程绝对路径，用于尚未或不需要注册为工作区的目录。
+请求在 `path` 字段中直接携带远程绝对路径，用于尚未或不需要注册为工作区的目录。传入的绝对路径同样先经过 canonicalization。
 
 工作区级别的权限与版本管理仅在工作区模式下提供。
-
-## 规范化路径
-
-两种模式都只接受规范化路径，路径错误不自动修正，返回稳定错误码。`path` 是 JSON 字符串，不做百分号解码，也不涉及 URI 保留字符转义。
-
-工作区相对路径：
-
-- 使用 `/` 作为路径分隔符；
-- 不允许以 `/` 开头；
-- 不允许空路径作为文件操作目标（目录查询除外，空路径表示工作区根目录）；
-- 不允许 `.`、`..`、NUL 字节；
-- 读写操作都必须检查路径是否越过工作区边界；
-- 对符号链接等可能越界的对象执行边界校验。
-
-绝对路径：
-
-- 必须是远程绝对路径，规范化后无 `.`、`..`、NUL 字节；
-- 例如 `/srv/project/a.txt`。
 
 ## ETag 版本机制
 
@@ -481,10 +489,10 @@ ETag 是服务端生成的不透明**强验证器**。文件、目录和符号�
 | 修改元数据               | 必须提供匹配当前版本的 `If-Match`                   |
 | 应用补丁                 | 必须提供匹配当前版本的 `If-Match`                   |
 | 截断文件                 | 必须提供匹配当前版本的 `If-Match`                   |
-| 删除文件或目录           | 必须提供匹配当前版本的 `If-Match`                   |
+| 删除文件或目录           | 必须提供匹配当前版本的 `If-Match`，`force=true` 且目标不存在时除外 |
 | 移动                     | 源必须提供匹配当前版本的 `If-Match`                 |
 | 复制                     | 源必须提供匹配当前版本的 `If-Match`                 |
-| 复制/移动的目标          | 不覆盖时目标必须不存在；覆盖时必须提供目标当前 ETag |
+| 复制/移动的目标          | 目标条件由扩展头承载，见“复制/移动的双资源条件”     |
 
 - `If-Match` 按强比较解析标准 entity-tag 列表；列表中任一值匹配当前 ETag 即满足条件。变更请求使用具体 ETag，`If-Match: *` 保留给需要“资源存在”判断的通用 HTTP 语义。
 - 缺少必要条件返回 `428 Precondition Required`；条件格式非法返回 `400 bad_request`；资源不存在返回 `404`；条件不满足返回 `412 etag_mismatch`。
@@ -495,19 +503,21 @@ ETag 是服务端生成的不透明**强验证器**。文件、目录和符号�
 
 ### 复制/移动的双资源条件
 
-一个复制/移动请求同时涉及源和目标，单个 `If-Match` 头只表示源条件。目标条件放在 JSON body 中：
+一个复制/移动请求同时涉及源和目标，单个 `If-Match` 头只表示源条件。目标条件用扩展头表达：
 
-```json
-{
-  "path": "src/a.txt",
-  "destination": "src/b.txt",
-  "overwrite": true,
-  "destination_etag": "\"opaque-tag\""
-}
+| 头部                        | 语义                                               |
+| --------------------------- | -------------------------------------------------- |
+| `Destination-If-None-Match` | 只接受 `*`，目标必须不存在，已存在返回 `412`       |
+| `Destination-If-Match`      | 目标已存在时须精确匹配其当前 ETag，不存在时条件成立 |
+
+```http
+POST /workspaces/{id}/fs?type=copy
+If-Match: "source-tag"
+Destination-If-Match: "destination-tag"
 ```
 
-- `overwrite` 缺省或为 `false` 时，目标必须不存在；`destination_etag` 必须省略，目标已存在返回 `412`。
-- `overwrite=true` 时，目标不存在可以创建，目标已存在则 `destination_etag` 必须精确匹配其当前 ETag；缺少或不匹配均返回 `428` / `412`。
+- 两个目标条件头必选其一：都不带返回 `428 precondition_required`，同时出现返回 `400 invalid_request`；
+- `Destination-If-Match` 匹配失败返回 `412 etag_mismatch`；
 - 目标检查、源检查和实际复制/移动在同一写闸门内进行。成功响应的 `ETag` 是目标的新 ETag；移动成功后源路径进入不存在状态。
 - 复制或移动目录时，目标子树中的路径分配新 ETag；源子树的旧路径版本失效，相关祖先目录版本递增。
 
@@ -543,7 +553,7 @@ ETag 代表一次提交的乐观锁版本。客户端读取资源并保存 ETag�
 - 提交在写闸门内完成条件检查、原子替换与版本递增，成功即目标路径获得新 ETag；
 - `partial` 上传只是暂存分块，不构成 FileSystem 资源；`final` 拼装完成时按 `Upload-Concat` 的顺序合成整份文件并一次性提交；
 - 提交目标的条件语义与其它变更相同（见“条件请求”），并在提交时于写闸门内校验，以覆盖分块上传过程中目标被其它写者改变的情况；
-- 目标路径、工作区属性约束沿用既有规则（见“规范化路径”、[Workspace.md](./Workspace.md) 的工作区属性）。
+- 目标路径、工作区属性约束沿用既有规则（见“工作区模式”、[Workspace.md](./Workspace.md) 的工作区属性）。
 
 #### 待定
 
@@ -579,7 +589,7 @@ HTTP 状态码表达通用语义，`error.code` 提供稳定的机器可读分�
 | `405` | `method_not_allowed`    | 方法与 `type` 组合不适用                   |
 | `409` | `patch_conflict`        | 补丁无法应用到当前内容                     |
 | `412` | `etag_mismatch`         | ETag 条件不满足                            |
-| `428` | `precondition_required` | 缺少操作要求的条件请求头或目标 ETag        |
+| `428` | `precondition_required` | 缺少操作要求的条件请求头                   |
 | `422` | `invalid_request`       | body 不符合该 `type` 的 schema，如缺 `path` |
 | `422` | `unsupported_type`      | `type` 缺失或不支持                        |
 
