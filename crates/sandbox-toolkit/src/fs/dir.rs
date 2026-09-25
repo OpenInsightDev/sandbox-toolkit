@@ -1,5 +1,3 @@
-//! Directory operations shared by the HTTP and MCP resource surfaces.
-
 use thiserror::Error;
 
 use super::meta::{MetadataError, etag, modified_at, read_metadata};
@@ -22,16 +20,12 @@ pub(crate) enum DirectoryError {
     Io(#[from] std::io::Error),
 }
 
-/// Read a directory and its direct children, equivalent to WebDAV `PROPFIND` with `Depth: 1`.
 pub(crate) async fn read_directory(
     target: &TargetFile,
 ) -> Result<DirectoryResponse, DirectoryError> {
     read_directory_with_depth(target, false).await
 }
 
-/// Read a directory and every descendant, equivalent to WebDAV `PROPFIND` with
-/// `Depth: infinity`.
-///
 /// Symbolic links are reported as entries but never followed, so a self-referential
 /// link cannot make the walk diverge.
 pub(crate) async fn read_directory_recursive(
@@ -40,7 +34,6 @@ pub(crate) async fn read_directory_recursive(
     read_directory_with_depth(target, true).await
 }
 
-/// Walk `target`, descending into subdirectories when `recursive`.
 async fn read_directory_with_depth(
     target: &TargetFile,
     recursive: bool,
@@ -54,8 +47,7 @@ async fn read_directory_with_depth(
         while let Some(entry) = read_dir.next_entry().await? {
             let (child, child_path) = resource_entry(entry, target).await?;
             // `resource_entry` classifies from `symlink_metadata`, so a symlink is
-            // never `Directory` and is only listed, not traversed. Reusing the entry's
-            // own path avoids rebuilding it from the display string.
+            // never `Directory` and is only listed, not traversed.
             if recursive && child.kind == ResourceKind::Directory {
                 pending.push(child_path);
             }
@@ -71,27 +63,18 @@ async fn read_directory_with_depth(
     })
 }
 
-/// Create one directory, equivalent to WebDAV `MKCOL`.
-///
-/// The operation deliberately does not create missing parents and never replaces an
-/// existing resource; callers can map those errors to `409 Conflict`.
 pub(crate) async fn create_directory(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
     create_directory_with_parents(target, false).await
 }
 
-/// Create `target` and every missing parent directory.
-///
-/// Unlike [`create_directory`], the parents are created on demand; an existing
-/// target is still a conflict rather than a quiet success.
 pub(crate) async fn create_directory_recursive(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
     create_directory_with_parents(target, true).await
 }
 
-/// Create `target`, descending into missing parents when `recursive`.
 async fn create_directory_with_parents(
     target: &TargetFile,
     recursive: bool,
@@ -132,11 +115,9 @@ async fn create_directory_with_parents(
     Ok(read_metadata(target).await?)
 }
 
-/// Map a `create_dir*` failure onto the directory error vocabulary.
-///
 /// `AlreadyExists` covers the race with the existence check above, and
-/// `NotADirectory` a component that exists as a file, which is the same `MKCOL`
-/// conflict as a missing parent.
+/// `NotADirectory` a component that exists as a file, the same conflict as a
+/// missing parent.
 fn create_error(path: &std::path::Path, error: std::io::Error) -> DirectoryError {
     match error.kind() {
         std::io::ErrorKind::AlreadyExists => {
@@ -235,8 +216,6 @@ pub(super) async fn resource_entry(
     Ok((entry, path))
 }
 
-/// Spell an entry's path the way its search root addresses resources: relative
-/// to the workspace, or the remote absolute path.
 fn entry_address(address_root: &TargetFile, path: &std::path::Path) -> String {
     let base = address_root.path();
     let relative = path.strip_prefix(&base).unwrap_or(path);

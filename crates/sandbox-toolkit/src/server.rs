@@ -1,5 +1,3 @@
-//! Server bootstrap, TCP listener and the MCP surface.
-
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -17,7 +15,6 @@ use tracing::info;
 
 use crate::{AppError, AppState, Cli, fs, mcp, process, skill, workspace};
 
-/// Build the API router.
 fn api_router() -> Router<AppState> {
     Router::new()
         .merge(workspace::router())
@@ -29,17 +26,15 @@ fn api_router() -> Router<AppState> {
         // server-to-client stream and `DELETE` to end a session, so it owns every
         // method on the path.
         .route("/mcp", any_service(mcp_service()))
-        // Every error response carries the JSON envelope described in
-        // `docs/design/FileSystem.md`, including requests that match no route.
+        // Going through a fallback keeps the JSON error envelope for unmatched
+        // routes; axum's own 404 would carry an empty body.
         .fallback(not_found)
 }
 
-/// Fallback for requests that match no route.
 async fn not_found(uri: Uri) -> AppError {
     AppError::NotFound(uri.path().to_owned())
 }
 
-/// A session-scoped Streamable HTTP service over [`ToolkitServer`].
 fn mcp_service() -> StreamableHttpService<ToolkitServer, LocalSessionManager> {
     StreamableHttpService::new(
         || Ok(ToolkitServer),
@@ -48,14 +43,11 @@ fn mcp_service() -> StreamableHttpService<ToolkitServer, LocalSessionManager> {
     )
 }
 
-/// The tool surface of the toolkit.
-///
 /// Cheap to clone because the transport builds one per session.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ToolkitServer;
 
 impl ToolkitServer {
-    /// Every tool the toolkit exposes, gathered from the module that owns it.
     fn tool_router() -> ToolRouter<Self> {
         Self::workspace_tools() + Self::resource_tools() + Self::process_tools() + Self::mcp_tools()
     }
@@ -64,12 +56,10 @@ impl ToolkitServer {
 #[tool_handler(name = "sandbox-toolkit")]
 impl ServerHandler for ToolkitServer {}
 
-/// Error for a tool whose backing operation is not wired up yet.
 pub(crate) fn not_implemented(tool: &'static str) -> ErrorData {
     ErrorData::internal_error(format!("not implemented: {tool}"), None)
 }
 
-/// Run the HTTP server until it is shut down.
 pub(crate) async fn run(cli: Cli) -> Result<()> {
     let state = AppState::new(cli.root.clone());
     let addr = cli.socket_addr();

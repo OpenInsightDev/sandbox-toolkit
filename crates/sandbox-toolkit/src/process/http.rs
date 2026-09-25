@@ -1,17 +1,7 @@
-//! The exec, shell and pty HTTP endpoints.
-//!
-//! exec and shell both answer in one of two shapes, chosen by the server the way the MCP Streamable
-//! HTTP transport does: a command that finishes within the request's `timeout` —
-//! [`DIRECT_RESPONSE_TIMEOUT`] when it names none — returns a single [`ExecResult`],
-//! while one that runs longer returns the multiplexed frame stream of [`exec`], keeping
-//! stdout, stderr and the terminal status apart. The probe buffers at most
-//! [`DIRECT_RESPONSE_LIMIT`] bytes, so a command that produces output faster than it exits
-//! cannot force unbounded memory.
-//!
-//! pty is addressed in two steps, because its session outlives one request: `POST .../pty`
-//! creates a session and answers with the WebSocket endpoint of [`PtySession`], which
-//! `GET .../pty/{session_id}` then attaches to. The connection speaks the frames of
-//! [`super::pty`], not the exec stream.
+//! exec and shell answer with a single [`ExecResult`] when the command finishes
+//! within the request's `timeout`, and with the multiplexed frame stream of
+//! [`exec`] when it runs longer. The probe caps what it buffers, so a command that
+//! produces output faster than it exits cannot force unbounded memory.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -35,17 +25,12 @@ use super::model::{ExecRequest, ExecResult, PtyRequest, PtySession, ShellRequest
 use crate::workspace::registry::WorkspaceEnvironment;
 use crate::{AppError, AppState};
 
-/// How long a command may run before its response is upgraded to a stream, when the
-/// request names no `timeout`.
 const DIRECT_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Most output the probe buffers before it gives up on a direct response.
 const DIRECT_RESPONSE_LIMIT: usize = 1024 * 1024;
 
-/// Media type of the upgraded response: the length-prefixed frames of [`exec`].
 const STREAM_CONTENT_TYPE: &str = "application/vnd.sandbox-toolkit.exec-stream";
 
-/// Build the process router.
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/exec", routing::post(exec_endpoint))
@@ -67,9 +52,6 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-/// The workspace a process route runs in, resolved from the path.
-///
-/// `None` is direct mode, where `cwd` is a remote absolute path.
 struct ProcessTarget(Option<WorkspaceEnvironment>);
 
 impl FromRequestParts<AppState> for ProcessTarget {
@@ -110,7 +92,6 @@ async fn shell_endpoint(
     respond(stream, timeout).await
 }
 
-/// Create a pty session and answer with the endpoint that attaches to it.
 async fn create_pty(
     _target: ProcessTarget,
     Json(_request): Json<PtyRequest>,
@@ -118,11 +99,8 @@ async fn create_pty(
     Err(AppError::NotImplemented("POST pty"))
 }
 
-/// Attach to an existing pty session over a WebSocket.
-///
-/// The upgrade carries the session's frames, so the response leaves the HTTP error
-/// envelope: a rejection before the upgrade, such as a request that is not a WebSocket
-/// handshake, is answered by axum with its plain text body.
+/// A rejection before the upgrade, such as a request that is not a WebSocket
+/// handshake, is answered by axum with its plain text body rather than the envelope.
 async fn attach_pty(
     _target: ProcessTarget,
     Path(_captures): Path<HashMap<String, String>>,
@@ -131,11 +109,8 @@ async fn attach_pty(
     Ok(upgrade.on_upgrade(session_socket))
 }
 
-/// Drive one pty session over `socket`, speaking the frames of [`super::pty`].
 async fn session_socket(_socket: WebSocket) {}
 
-/// Map a failed command onto the shared HTTP error envelope.
-///
 /// Every variant is the caller's doing: an empty command, an unusable `cwd`, or an
 /// executable that does not exist.
 impl From<ExecError> for AppError {
@@ -144,19 +119,14 @@ impl From<ExecError> for AppError {
     }
 }
 
-/// The probe deadline of a request: its `timeout` in milliseconds, or
-/// [`DIRECT_RESPONSE_TIMEOUT`] when it names none.
 fn probe_timeout(request_timeout: Option<u64>) -> Duration {
     request_timeout.map_or(DIRECT_RESPONSE_TIMEOUT, Duration::from_millis)
 }
 
-/// Answer `stream` with a direct result or the stream itself, waiting up to `timeout`.
 async fn respond(stream: ReceiverStream<Frame>, timeout: Duration) -> Result<Response, AppError> {
     respond_with(stream, timeout, DIRECT_RESPONSE_LIMIT).await
 }
 
-/// Wait up to `timeout` for the terminal status, buffering at most `limit` bytes.
-///
 /// Reaching either bound switches to the stream and flushes what was buffered, so
 /// no frame is lost across the two response shapes.
 async fn respond_with(
@@ -192,7 +162,6 @@ async fn respond_with(
     }
 }
 
-/// Collapse a finished stream into one result.
 fn direct(frames: &[Frame]) -> Result<Response, AppError> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -215,7 +184,6 @@ fn direct(frames: &[Frame]) -> Result<Response, AppError> {
     Ok(Json(result).into_response())
 }
 
-/// The frames already read, followed by the rest of the command's output.
 fn streaming(head: Vec<Frame>, rest: ReceiverStream<Frame>) -> Response {
     let body = tokio_stream::iter(head)
         .chain(rest)

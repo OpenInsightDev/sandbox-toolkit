@@ -1,5 +1,3 @@
-//! The process MCP tools, over the exec model and operation.
-
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};

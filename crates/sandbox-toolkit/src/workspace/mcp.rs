@@ -1,5 +1,3 @@
-//! The workspace MCP tools, over the control plane's model and registry.
-
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};

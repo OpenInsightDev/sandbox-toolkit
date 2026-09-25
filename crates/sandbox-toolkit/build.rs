@@ -1,5 +1,4 @@
-//! Fetches the prebuilt binaries for the target and gzips them into `OUT_DIR`
-//! for the `binary` module to embed. Downloads are cached outside `target/`.
+//! Downloads are cached outside `target/`, so they survive `cargo clean`.
 
 use std::{
     env, fs,

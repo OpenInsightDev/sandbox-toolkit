@@ -1,10 +1,5 @@
-//! The process-wide registry of workspaces.
-//!
-//! A workspace is the path boundary every path-bearing operation is confined to.
-//! It is registered once, under a caller-chosen id, and then resolved by that id
-//! from the file and MCP surfaces. Registration is the only place a remote
-//! absolute path is accepted; [`WorkspaceRegistry::resolve`] is how the rest of
-//! the crate learns it.
+//! Registration is the only place a remote absolute path is accepted;
+//! [`WorkspaceRegistry::resolve`] is how the rest of the crate learns it.
 
 use std::{
     collections::HashMap,
@@ -17,43 +12,30 @@ use thiserror::Error;
 
 use super::model::{Workspace as WorkspaceHandle, WorkspaceAccess, WorkspaceProperties};
 
-/// Prefix of the environment variable every workspace exposes to the processes it runs.
 const ENVIRONMENT_PREFIX: &str = "WORKSPACE_";
 
-/// Why a workspace operation failed.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum WorkspaceError {
-    /// The id does not satisfy the shared resource-id rules.
     #[error("invalid workspace id `{id}`")]
     InvalidId { id: String },
-    /// The root is not a usable remote absolute directory.
     #[error("invalid workspace root `{root}`: {reason}")]
     InvalidRoot { root: String, reason: String },
-    /// A workspace with the same id is already registered.
     #[error("workspace `{id}` already exists")]
     AlreadyExists { id: String },
-    /// No workspace is registered under the id.
     #[error("workspace `{id}` does not exist")]
     NotFound { id: String },
-    /// A mutation targeted a workspace whose `access` property is `read-only`.
     #[error("workspace `{id}` is read-only")]
     ReadOnly { id: String },
 }
 
-/// The environment variable a workspace exposes to the processes it runs.
-///
-/// The name is derived from the workspace id and the value is the workspace root,
-/// so a command references its root through the variable instead of carrying the
-/// remote absolute path itself.
+/// The value is the workspace root, so a command references its root through the
+/// variable instead of carrying the remote absolute path itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceEnvironment {
-    /// Variable name, derived from the workspace id.
     pub(crate) name: String,
-    /// Variable value: the workspace root.
     pub(crate) value: PathBuf,
 }
 
-/// All information associated with a registered workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Workspace {
     id: String,
@@ -86,7 +68,6 @@ impl Workspace {
         WorkspaceHandle::new(self.id.clone(), self.properties)
     }
 
-    /// Reject a mutation when the workspace is read-only.
     fn require_writable(&self) -> Result<(), WorkspaceError> {
         match self.access() {
             WorkspaceAccess::ReadWrite => Ok(()),
@@ -97,8 +78,6 @@ impl Workspace {
     }
 }
 
-/// A filesystem target in either workspace or direct mode.
-///
 /// The relative path still needs boundary checks before filesystem access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TargetFile {
@@ -120,8 +99,6 @@ impl TargetFile {
         }
     }
 
-    /// The target as its addressing mode spells it: the workspace-relative
-    /// path, or the remote absolute path. Empty addresses the workspace root.
     pub(crate) fn address(&self) -> String {
         match self {
             Self::Workspace { relative_path, .. } => relative_path.display().to_string(),
@@ -136,8 +113,6 @@ impl TargetFile {
         }
     }
 
-    /// Reject a mutation when the target's workspace is read-only.
-    ///
     /// Direct mode has no workspace properties to narrow its behavior, so it is
     /// never read-only.
     pub(crate) fn require_writable(&self) -> Result<(), WorkspaceError> {
@@ -148,24 +123,18 @@ impl TargetFile {
     }
 }
 
-/// Every workspace registered with the process, keyed by id.
-///
-/// The registry is owned by [`crate::AppState`] and reached through
-/// [`crate::AppState::workspaces`]; handlers never hold a workspace root, only
-/// the id they resolve it with.
+/// Handlers never hold a workspace root, only the id they resolve it with.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceRegistry {
     workspaces: RwLock<HashMap<String, Workspace>>,
 }
 
 impl WorkspaceRegistry {
-    /// Register `root` under `id` with `properties` and return the workspace
-    /// handle.
+    /// A taken id is rejected before the root is inspected, so a duplicate is
+    /// always reported as such.
     ///
-    /// The root must already exist as a directory: a workspace that resolves to
-    /// a missing path would confine nothing, so it is rejected at this boundary
-    /// rather than surfacing as a later operation failure. The properties are
-    /// fixed here and cannot be changed afterwards.
+    /// The root must already exist as a directory: a workspace that resolves to a
+    /// missing path would confine nothing. The properties are fixed here.
     pub(crate) async fn register(
         &self,
         id: &str,
@@ -195,7 +164,6 @@ impl WorkspaceRegistry {
         Ok(handle)
     }
 
-    /// Every registered workspace, ordered by id.
     pub(crate) fn list(&self) -> Vec<WorkspaceHandle> {
         let workspaces = self.read();
         let mut ids: Vec<&str> = workspaces.keys().map(String::as_str).collect();
@@ -204,7 +172,6 @@ impl WorkspaceRegistry {
         ids.into_iter().map(|id| workspaces[id].handle()).collect()
     }
 
-    /// The handle of the workspace registered under `id`.
     pub(crate) fn get(&self, id: &str) -> Result<WorkspaceHandle, WorkspaceError> {
         self.read()
             .get(id)
@@ -212,7 +179,6 @@ impl WorkspaceRegistry {
             .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
     }
 
-    /// Retrieve the complete workspace for operations within its boundary.
     pub(crate) fn workspace(&self, id: &str) -> Result<Workspace, WorkspaceError> {
         self.read()
             .get(id)
@@ -220,9 +186,6 @@ impl WorkspaceRegistry {
             .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
     }
 
-    /// Resolve `id` to the workspace root.
-    ///
-    /// This turns a workspace id into the absolute path its operations are confined to.
     #[cfg_attr(not(test), expect(dead_code, reason = "used by process handlers"))]
     pub(crate) fn resolve(&self, id: &str) -> Result<PathBuf, WorkspaceError> {
         self.read()
@@ -242,11 +205,8 @@ impl WorkspaceRegistry {
         })
     }
 
-    /// The environment variable `id` contributes to the processes it runs.
-    ///
-    /// Where [`WorkspaceRegistry::resolve`] hands a module a root to confine
-    /// operations to, this hands a process the same root as a variable, so a
-    /// command never has to hardcode the remote absolute path.
+    /// Hands a process the root as a variable, so a command never has to hardcode
+    /// the remote absolute path.
     pub(crate) fn environment(&self, id: &str) -> Result<WorkspaceEnvironment, WorkspaceError> {
         let workspaces = self.read();
         let workspace = workspaces
@@ -259,7 +219,6 @@ impl WorkspaceRegistry {
         })
     }
 
-    /// Unregister the workspace `id`.
     pub(crate) fn remove(&self, id: &str) -> Result<(), WorkspaceError> {
         let mut workspaces = self.write();
         if workspaces.remove(id).is_some() {
@@ -295,8 +254,6 @@ impl WorkspaceRegistry {
 static ID_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z").expect("the pattern is valid"));
 
-/// Derive a workspace's environment variable name from its id.
-///
 /// Uppercasing and mapping `-` to `_` yields a valid POSIX name; ids exclude `_`,
 /// so the mapping is reversible and two ids never share a name.
 fn environment_variable_name(id: &str) -> String {
@@ -310,9 +267,7 @@ fn environment_variable_name(id: &str) -> String {
     name
 }
 
-/// Canonicalize a remote absolute root after checking it is an existing
-/// directory, so resolution yields a stable path that boundary checks can
-/// compare against.
+/// Canonicalizing yields a stable path the boundary checks can compare against.
 async fn canonical_root(root: &str) -> Result<PathBuf, WorkspaceError> {
     let path = Path::new(root);
 
@@ -352,7 +307,6 @@ pub(crate) mod test_support {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    /// A unique directory removed when the test ends.
     pub(crate) struct TempDir(PathBuf);
 
     impl TempDir {
@@ -373,7 +327,6 @@ pub(crate) mod test_support {
             &self.0
         }
 
-        /// The path as a request payload would carry it.
         pub(crate) fn root(&self) -> String {
             self.0.to_str().expect("temp path is not UTF-8").to_owned()
         }

@@ -1,10 +1,8 @@
-//! The Skill discovery and body endpoints.
-//!
-//! Every route is mounted twice, matching the two mounts a skill is discovered
-//! from: `/skills` over the global `.agents/skills` directory and
-//! `/workspaces/{workspace_id}/skills` over the one inside the workspace root.
-//! The collection route answers metadata, the item route the `SKILL.md` body;
-//! a skill's other files are reached through the read-only workspace it derives.
+//! Every route is mounted twice: `/skills` over the global `.agents/skills`
+//! directory and `/workspaces/{workspace_id}/skills` over the one inside the
+//! workspace root. The collection route answers metadata, the item route the
+//! `SKILL.md` body; other files are reached through the read-only workspace a
+//! skill derives.
 
 use std::collections::HashMap;
 
@@ -19,7 +17,6 @@ use axum::routing::{self, MethodRouter};
 use super::model::SkillList;
 use crate::{AppError, AppState};
 
-/// Build the skill router.
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/skills", collection_routes())
@@ -31,18 +28,14 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-/// The methods of the collection route: metadata is read, never changed.
 fn collection_routes() -> MethodRouter<AppState> {
     routing::get(list_skills).fallback(method_not_allowed)
 }
 
-/// The methods of the item route: the body is read, never changed.
 fn item_routes() -> MethodRouter<AppState> {
     routing::get(get_skill_body).fallback(method_not_allowed)
 }
 
-/// The mount point a skill route is addressed under and the skill it targets.
-///
 /// `workspace_id` is absent on the global mount; `skill_id` is absent on the
 /// collection routes.
 #[derive(Debug)]
@@ -71,18 +64,14 @@ impl FromRequestParts<AppState> for SkillTarget {
     }
 }
 
-/// Query parameters of the collection routes.
 #[derive(Debug, Default, serde::Deserialize)]
 struct SkillListQuery {
-    /// Zero-based index of the first skill to return.
     #[expect(dead_code, reason = "read by the list handler, which is a stub")]
     offset: Option<u64>,
-    /// Maximum number of skills to return.
     #[expect(dead_code, reason = "read by the list handler, which is a stub")]
     limit: Option<u64>,
 }
 
-/// List the skills discovered under the mount point.
 async fn list_skills(
     State(_state): State<AppState>,
     _target: SkillTarget,
@@ -91,7 +80,6 @@ async fn list_skills(
     Err(AppError::NotImplemented("GET skills"))
 }
 
-/// Return the body of a skill's `SKILL.md`, with the frontmatter removed.
 async fn get_skill_body(
     State(_state): State<AppState>,
     _target: SkillTarget,
@@ -99,7 +87,6 @@ async fn get_skill_body(
     Err(AppError::NotImplemented("GET skills/{skill_id}"))
 }
 
-/// Fallback for the methods a skill route does not support.
 async fn method_not_allowed(method: Method) -> AppError {
     AppError::MethodNotAllowed(method)
 }

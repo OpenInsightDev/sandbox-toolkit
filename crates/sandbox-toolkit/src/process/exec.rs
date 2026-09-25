@@ -1,15 +1,11 @@
-//! The exec operation and the frame format of the exec and shell response stream.
-//!
 //! exec starts a single executable with no shell in between: the program is one
 //! executable token and its arguments are one argv entry each, so nothing is
-//! re-parsed. [`CommandSpec`] is the shared core that shell builds on, differing only
-//! in that its program is a shell interpreter started with the script.
+//! re-parsed. [`CommandSpec`] is the shared core that shell builds on.
 //!
 //! Frames are length-prefixed rather than separated, because command output may
 //! contain any byte a separator would use. Every stream ends with exactly one
 //! terminal [`Frame::Status`]; without it the stream was truncated, not successful,
-//! and [`FrameStream`] enforces that. This is not the pty format, which runs over a
-//! WebSocket where each message is already a frame, so pty uses [`super::pty`].
+//! which [`FrameStream`] enforces.
 
 #![cfg_attr(
     not(test),
@@ -49,22 +45,17 @@ pub(crate) const HEADER_LEN: usize = 5;
 /// larger before allocating.
 pub(crate) const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 
-/// A multiplexed channel of the exec stream.
-///
-/// The stream is server to client only: an exec request carries no input and no
-/// terminal, so the only channels are the two output streams and the terminal
-/// status. Stdin and resize belong to a pty session, which has its own format in
-/// [`super::pty`].
+/// The exec stream is server to client only: an exec request carries no input and
+/// no terminal, so the only channels are the two output streams and the terminal
+/// status.
 ///
 /// The discriminants are wire identifiers; reordering them changes the format.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Channel {
-    /// Server to client: output of the remote process.
     Stdout = 0,
-    /// Server to client: diagnostics of the remote process.
     Stderr = 1,
-    /// Server to client: the terminal status, carrying success as well as failure.
+    /// The terminal status, carrying success as well as failure.
     Error = 2,
 }
 
@@ -83,13 +74,12 @@ impl Channel {
     }
 }
 
-/// One message on the exec stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Frame {
     Stdout(Bytes),
     Stderr(Bytes),
-    /// The terminal status frame, on the error channel. Exactly one ends every
-    /// stream, whether the command succeeded or failed.
+    /// On the error channel. Exactly one ends every stream, whether the command
+    /// succeeded or failed.
     Status(Status),
 }
 
@@ -102,7 +92,6 @@ impl Frame {
         }
     }
 
-    /// Size of the payload, for a caller bounding how much it buffers.
     pub(crate) fn payload_len(&self) -> usize {
         match self {
             Self::Stdout(bytes) | Self::Stderr(bytes) => bytes.len(),
@@ -168,9 +157,8 @@ impl Frame {
     }
 }
 
-/// Decodes frames while enforcing the terminal [`Frame::Status`] rule that
-/// [`Frame::decode`] cannot: the status frame is last, and its absence means the
-/// stream was truncated.
+/// Enforces the terminal [`Frame::Status`] rule that [`Frame::decode`] cannot: the
+/// status frame is last, and its absence means the stream was truncated.
 #[derive(Debug, Default)]
 pub(crate) struct FrameStream {
     buffer: BytesMut,
@@ -228,34 +216,26 @@ pub(crate) enum FrameError {
 /// Frames buffered before a slow reader back-pressures the process.
 const FRAME_BUFFER: usize = 32;
 
-/// Interpreter a shell request falls back to when it names none.
 const DEFAULT_SHELL: &str = "sh";
 
-/// Why running a command failed.
 #[derive(Debug, Error)]
 pub(crate) enum ExecError {
-    /// `command` was empty.
     #[error("command must not be empty")]
     EmptyCommand,
-    /// `cwd` was not a usable directory under the addressing mode.
     #[error("invalid cwd `{cwd}`: {reason}")]
     InvalidCwd {
         cwd: String,
-        /// Why the path was rejected; the value is for humans only.
+        /// For humans only.
         reason: String,
     },
-    /// The executable could not be started.
     #[error("failed to run `{command}`: {source}")]
     Spawn {
-        /// The executable that could not be started.
         command: String,
         #[source]
         source: std::io::Error,
     },
 }
 
-/// A command ready to spawn: the executable, its argv, a working directory and the
-/// environment layered over the inherited one.
 pub(crate) struct CommandSpec {
     pub(crate) program: String,
     pub(crate) args: Vec<String>,
@@ -265,12 +245,6 @@ pub(crate) struct CommandSpec {
     pub(crate) env: HashMap<String, OsString>,
 }
 
-/// Run `request`, returning the frames of its response.
-///
-/// The stream carries the process output as [`Frame::Stdout`] and [`Frame::Stderr`]
-/// and always ends with exactly one [`Frame::Status`]. `workspace` is `Some` in
-/// workspace mode, where it confines a relative `cwd` and injects the workspace
-/// variable, and `None` in direct mode.
 pub(crate) async fn exec(
     request: ExecRequest,
     workspace: Option<WorkspaceEnvironment>,
@@ -280,10 +254,6 @@ pub(crate) async fn exec(
         .spawn()
 }
 
-/// Run `request`, returning the frames of its response.
-///
-/// Semantics are those of [`exec`], with the interpreter parsing `script` as its
-/// single argument.
 pub(crate) async fn shell(
     request: ShellRequest,
     workspace: Option<WorkspaceEnvironment>,
@@ -294,7 +264,6 @@ pub(crate) async fn shell(
 }
 
 impl CommandSpec {
-    /// Resolve an exec request into a spawnable command.
     async fn from_exec(
         request: ExecRequest,
         workspace: Option<&WorkspaceEnvironment>,
@@ -313,7 +282,6 @@ impl CommandSpec {
         .await
     }
 
-    /// Resolve a shell request into a spawnable command.
     async fn from_shell(
         request: ShellRequest,
         workspace: Option<&WorkspaceEnvironment>,
@@ -330,8 +298,6 @@ impl CommandSpec {
         .await
     }
 
-    /// Resolve the addressing mode, working directory and environment shared by exec
-    /// and shell.
     async fn resolve(
         program: String,
         args: Vec<String>,
@@ -345,7 +311,7 @@ impl CommandSpec {
         };
 
         // The workspace variable comes first so a request variable of the same name
-        // overrides it, matching Workspace.md.
+        // overrides it.
         let env = workspace
             .iter()
             .map(|workspace| {
@@ -403,7 +369,6 @@ impl CommandSpec {
     }
 }
 
-/// Resolve `cwd` for the addressing mode, checking any workspace boundary.
 async fn resolve_cwd(
     cwd: &str,
     workspace: Option<&WorkspaceEnvironment>,
@@ -469,7 +434,6 @@ fn search_path(inherited: Option<OsString>) -> OsString {
         .unwrap_or(inherited)
 }
 
-/// Forward both output pipes and append the terminal status frame.
 async fn pump(
     mut child: Child,
     stdout: ChildStdout,
@@ -507,7 +471,6 @@ async fn pump(
     let _ = sender.send(Frame::Status(status)).await;
 }
 
-/// Read one pipe to end of file, emitting its bytes as output frames.
 async fn forward<R>(reader: R, stderr: bool, sender: mpsc::Sender<Frame>) -> Result<(), String>
 where
     R: AsyncRead + Unpin,
@@ -531,7 +494,6 @@ where
     Ok(())
 }
 
-/// Classify how the process ended.
 fn exit_status(status: ExitStatus) -> Status {
     match status.code() {
         Some(0) => Status::Success,

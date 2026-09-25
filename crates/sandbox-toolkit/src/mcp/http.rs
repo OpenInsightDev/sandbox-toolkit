@@ -1,9 +1,5 @@
-//! The MCP control plane and the Streamable HTTP endpoints.
-//!
-//! Every route is mounted twice: under a workspace prefix and directly, matching the
-//! two addressing modes of [`crate::workspace`]. A registered entry is served by its
-//! own `/mcp` subpath, which keeps `GET` and `DELETE` from colliding with the
-//! management routes on the same resource.
+//! A registered entry is served by its own `/mcp` subpath so that `GET` and `DELETE`
+//! cannot collide with the management routes on the same resource.
 
 use std::collections::HashMap;
 
@@ -19,7 +15,6 @@ use axum::routing::{self, MethodRouter};
 use super::model::{Mcp, RegisterMcpRequest};
 use crate::{AppError, AppState};
 
-/// Build the MCP router.
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/mcps", routing::get(list_mcps).post(register_mcp))
@@ -39,8 +34,6 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-/// The methods of a registered entry's endpoint.
-///
 /// The transport occupies `POST` for JSON-RPC calls, `GET` for the server-to-client
 /// stream and `DELETE` to end a session; the fallback keeps the JSON envelope for the
 /// methods it does not support.
@@ -81,7 +74,6 @@ impl FromRequestParts<AppState> for McpTarget {
     }
 }
 
-/// Query parameters of the collection routes.
 #[derive(Debug, Default, serde::Deserialize)]
 struct McpListQuery {
     /// `mcp-json` selects the export instead of the resource list.
@@ -125,7 +117,6 @@ async fn mcp_endpoint(_target: McpTarget) -> Result<Response, AppError> {
     Err(AppError::NotImplemented("MCP endpoint"))
 }
 
-/// Fallback for the methods an entry's endpoint does not support.
 async fn method_not_allowed(method: Method) -> AppError {
     AppError::MethodNotAllowed(method)
 }
@@ -139,7 +130,6 @@ mod tests {
 
     use super::*;
 
-    /// The router with a fresh state, ready to drive through `oneshot`.
     fn app() -> Router {
         router().with_state(AppState::new("."))
     }

@@ -1,15 +1,6 @@
-//! The resource API endpoints.
-//!
-//! Resources map directly to URIs under the workspace root, and every resource URI shares
-//! one [`MethodRouter`], so axum supplies `405 Method Not Allowed` with its `Allow`
-//! header. Every operation is then a method plus a `type` query parameter: the
-//! control plane reads through `QUERY`, and the mutations WebDAV spells as
-//! extension methods become `PUT`, `PATCH` and `POST` with their own `type`
-//! values.
-//!
-//! One deviation remains: rejections raised by axum's own extractors, such as
-//! [`Path`] or [`Json`], still return axum's plain text error body instead of the
-//! envelope. The extractors defined in this module reject with [`AppError`].
+//! Rejections from axum's own extractors, such as [`Path`] or [`Json`], still
+//! return axum's plain text error body instead of the envelope; the extractors
+//! defined here reject with [`AppError`].
 
 use std::{
     collections::HashMap,
@@ -41,11 +32,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{self, MethodRouter};
 use tokio_stream::StreamExt;
 
-/// Build the resource router.
-///
-/// Paths include the owning workspace because a resource is always addressed
-/// within one, but the routes stand on their own rather than being nested into
-/// the workspace control plane.
 pub(crate) fn router() -> Router<AppState> {
     // A wildcard capture never matches an empty path, and `/fs` and `/fs/`
     // are distinct routes in axum, so addressing the workspace root needs these
@@ -59,7 +45,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/fs/{*path}", resource_routes())
 }
 
-/// Route table shared by the workspace root and every resource below it.
 fn resource_routes() -> MethodRouter<AppState> {
     routing::get(get_file)
         .head(head_file)
@@ -70,18 +55,14 @@ fn resource_routes() -> MethodRouter<AppState> {
         .fallback(method_not_allowed)
 }
 
-/// The resource an fs URI addresses, with the path as its addressing mode
-/// spells it.
 struct ResourceTarget {
     resource: TargetFile,
-    /// Workspace-relative path, or the remote absolute path with its leading
-    /// slash. Empty addresses the workspace root.
+    /// Empty addresses the workspace root.
     address: String,
 }
 
 impl ResourceTarget {
-    /// A resource operation addresses a resource below the root; the root itself is
-    /// only addressable by the directory queries.
+    /// The root itself is only addressable by the directory queries.
     fn require_resource_path(&self) -> Result<(), AppError> {
         if self.address.is_empty() {
             return Err(AppError::BadRequest(
@@ -120,11 +101,8 @@ impl FromRequestParts<AppState> for ResourceTarget {
     }
 }
 
-/// Every `type` value the resource API accepts.
-///
-/// What a type means depends on the request's method; parsing only decides
-/// whether the name is known at all, so an unknown name is `422
-/// unsupported_type` before any method sees it.
+/// Parsing only decides whether the name is known at all, so an unknown name is
+/// rejected before any method sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumString)]
 #[strum(serialize_all = "snake_case")]
 enum ResourceType {
@@ -143,18 +121,12 @@ enum ResourceType {
     Move,
 }
 
-/// The `type` parameter, parsed into the operation it names.
 fn request_type(query: &RawQuery) -> Result<Option<ResourceType>, AppError> {
     query_value(query, "type")
         .map(|name| name.parse().map_err(|_| AppError::UnsupportedType(name)))
         .transpose()
 }
 
-/// Resolve the response shape of a `GET`.
-///
-/// `stream` streams the raw bytes; without a `type` the whole content is sent as
-/// one body. Any other `type` names a control-plane operation, so the
-/// combination is `405 method_not_allowed`.
 fn download_mode(query: &RawQuery) -> Result<DownloadMode, AppError> {
     match request_type(query)? {
         None => Ok(DownloadMode::Direct),
@@ -163,7 +135,6 @@ fn download_mode(query: &RawQuery) -> Result<DownloadMode, AppError> {
     }
 }
 
-/// Reject a `type` on `HEAD`, whose response shape is fixed.
 fn reject_type(query: &RawQuery) -> Result<(), AppError> {
     match request_type(query)? {
         Some(_) => Err(AppError::MethodNotAllowed(Method::HEAD)),
@@ -171,7 +142,6 @@ fn reject_type(query: &RawQuery) -> Result<(), AppError> {
     }
 }
 
-/// The control-plane read a `QUERY` asks for.
 enum QueryOperation {
     Metadata,
     List,
@@ -197,7 +167,6 @@ impl TryFrom<ResourceType> for QueryOperation {
     }
 }
 
-/// Resolve the `type` of a `QUERY`, which is required.
 fn query_operation(query: &RawQuery) -> Result<QueryOperation, AppError> {
     match request_type(query)? {
         Some(resource_type) => resource_type.try_into(),
@@ -207,10 +176,6 @@ fn query_operation(query: &RawQuery) -> Result<QueryOperation, AppError> {
     }
 }
 
-/// Whether `type=list` should recurse into subdirectories.
-///
-/// A missing `depth` lists direct children; only `infinity` is accepted and walks
-/// the whole subtree, matching WebDAV's `PROPFIND` `Depth` semantics.
 fn list_recursive(query: &RawQuery) -> Result<bool, AppError> {
     match query_value(query, "depth").as_deref() {
         None => Ok(false),
@@ -219,7 +184,6 @@ fn list_recursive(query: &RawQuery) -> Result<bool, AppError> {
     }
 }
 
-/// The first value of a query parameter, percent decoded once.
 fn query_value(query: &RawQuery, key: &str) -> Option<String> {
     let raw = query.0.as_deref()?;
     url::form_urlencoded::parse(raw.as_bytes())
@@ -227,7 +191,6 @@ fn query_value(query: &RawQuery, key: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// Every value of a repeatable query parameter, percent decoded once.
 fn query_values(query: &RawQuery, key: &str) -> Vec<String> {
     let Some(raw) = query.0.as_deref() else {
         return Vec::new();
@@ -238,7 +201,6 @@ fn query_values(query: &RawQuery, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// A query parameter parsed as a non-negative integer.
 fn query_usize(query: &RawQuery, key: &str) -> Result<Option<usize>, AppError> {
     match query_value(query, key) {
         None => Ok(None),
@@ -249,7 +211,6 @@ fn query_usize(query: &RawQuery, key: &str) -> Result<Option<usize>, AppError> {
     }
 }
 
-/// The inputs of a `QUERY ?type=glob`.
 fn glob_request(query: &RawQuery) -> Result<GlobRequest, AppError> {
     let pattern = query_value(query, "pattern")
         .filter(|pattern| !pattern.is_empty())
@@ -284,10 +245,8 @@ async fn ensure_empty_body(body: Body, rejection: AppError) -> Result<(), AppErr
     Ok(())
 }
 
-/// The optional body of `PUT ?type=directory`.
 #[derive(Debug, Default, serde::Deserialize)]
 struct CreateDirectoryRequest {
-    /// Create missing parent directories; absent creates only the final component.
     #[serde(default)]
     recursive: bool,
 }
@@ -296,10 +255,6 @@ struct CreateDirectoryRequest {
 /// rejected instead of buffered.
 const MAX_REQUEST_BODY: usize = 64 * 1024;
 
-/// Read the optional JSON body of `PUT ?type=directory`.
-///
-/// An absent body leaves every option at its default; a present body must be a
-/// JSON object that fits [`CreateDirectoryRequest`].
 async fn create_directory_request(body: Body) -> Result<CreateDirectoryRequest, AppError> {
     let bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY)
         .await
@@ -380,7 +335,6 @@ fn map_directory_error(error: DirectoryError) -> AppError {
     }
 }
 
-/// Serialize `metadata` and stamp the `ETag` its `etag` field carries.
 fn json_resource(metadata: &ResourceMetadata, status: StatusCode) -> Response {
     let mut response = Json(metadata).into_response();
     *response.status_mut() = status;
@@ -392,11 +346,9 @@ fn json_resource(metadata: &ResourceMetadata, status: StatusCode) -> Response {
 }
 
 impl FileHeaders {
-    /// Stamp the data-plane headers onto a response built from the content.
-    ///
-    /// Inserting after the body is built matters: `IntoResponse` for bytes
-    /// guesses `Content-Type` from the payload, and only a real `HeaderMap`
-    /// insert reliably overrides that guess.
+    /// Inserting after the body is built matters: `IntoResponse` for bytes guesses
+    /// `Content-Type` from the payload, and only a real `HeaderMap` insert reliably
+    /// overrides that guess.
     fn stamp_on(&self, response: &mut Response) {
         let headers = response.headers_mut();
         headers.insert(
@@ -425,10 +377,8 @@ impl FileHeaders {
     }
 }
 
-/// Conditional request headers shared by resource mutations.
-///
-/// The values are kept verbatim: interpreting `ETag` lists, and deciding which
-/// precondition status a failure maps to, is the handler's job.
+/// Values are kept verbatim: interpreting `ETag` lists and choosing the
+/// precondition status is the handler's job.
 #[derive(Debug, Default)]
 pub(super) struct ConditionalHeaders {
     #[expect(dead_code, reason = "read by the resource handlers, which are stubs")]
@@ -453,8 +403,8 @@ where
     }
 }
 
-/// The response shape depends on the `type` parameter, which is why this handler
-/// returns [`Response`] rather than a concrete JSON type.
+/// The response shape depends on the `type` parameter, which is why this returns
+/// [`Response`] rather than a concrete JSON type.
 async fn get_file(
     State(_state): State<AppState>,
     target: ResourceTarget,
@@ -483,7 +433,6 @@ async fn get_file(
     Ok(response)
 }
 
-/// `HEAD` runs the same validation as `GET` but answers headers only.
 async fn head_file(
     State(_state): State<AppState>,
     target: ResourceTarget,
@@ -507,7 +456,6 @@ async fn head_file(
     Ok(response)
 }
 
-/// Answer the control-plane read named by `type`.
 async fn query_resource(
     State(_state): State<AppState>,
     target: ResourceTarget,
@@ -611,12 +559,9 @@ async fn delete_resource(
     Err(AppError::NotImplemented("DELETE resource"))
 }
 
-/// Fallback for the methods a resource URI does not support.
-///
-/// axum answers those with `405 Method Not Allowed` on its own, but with an empty
-/// body; going through a fallback keeps the JSON error envelope. The `Allow`
-/// header is still added by axum, because every method this fallback covers is
-/// absent from the [`MethodRouter`].
+/// axum answers unsupported methods with an empty body; the fallback keeps the
+/// JSON error envelope. The `Allow` header is still added, because every method
+/// this covers is absent from the [`MethodRouter`].
 async fn method_not_allowed(method: Method) -> AppError {
     AppError::MethodNotAllowed(method)
 }

@@ -20,21 +20,15 @@ pub(crate) enum ReadFileError {
     Io(#[from] std::io::Error),
 }
 
-/// How a `GET` sends the bytes of a file.
 pub(crate) enum DownloadMode {
-    /// Buffer the whole file and send it as one response body.
     Direct,
-    /// Send the bytes through a fixed-size-buffer stream.
     Stream,
 }
 
-/// Bytes pulled from the file per read while streaming.
 const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 
-/// Fallback media type when the extension does not identify one.
 const FALLBACK_CONTENT_TYPE: Mime = mime_guess::mime::APPLICATION_OCTET_STREAM;
 
-/// A validated file read, ready to become a response.
 pub(crate) struct PreparedFile {
     pub(crate) content: FileContent,
     pub(crate) headers: FileHeaders,
@@ -45,10 +39,8 @@ pub(crate) enum FileContent {
     Stream(ReaderStream<tokio::fs::File>),
 }
 
-/// Everything the data-plane headers of a file response carry.
-///
-/// Gathered before any byte is sent, so a response carries a consistent view
-/// of the file even when the content streams.
+/// Gathered before any byte is sent, so a response carries a consistent view of
+/// the file even when the content streams.
 pub(crate) struct FileHeaders {
     pub(crate) content_type: Mime,
     pub(crate) content_length: u64,
@@ -75,7 +67,6 @@ pub(crate) async fn prepare_download(
     Ok(PreparedFile { content, headers })
 }
 
-/// Probe the target without touching its content, as `HEAD` does.
 pub(crate) async fn probe_file(target: &TargetFile) -> Result<FileHeaders, ReadFileError> {
     let path = checked_target_file(target).await?;
     stat_file(&path).await

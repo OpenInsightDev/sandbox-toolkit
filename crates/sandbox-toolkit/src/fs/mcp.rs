@@ -1,5 +1,3 @@
-//! The resource MCP tools, over the resource API's model.
-
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};

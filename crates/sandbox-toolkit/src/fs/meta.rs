@@ -1,5 +1,3 @@
-//! The facts one resource reports about itself.
-
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,8 +16,8 @@ pub(crate) enum MetadataError {
     Io(#[from] std::io::Error),
 }
 
-/// Describe the target as it stands: a trailing symlink is reported as a
-/// symlink and never followed to what it points at.
+/// A trailing symlink is reported as a symlink and never followed to what it
+/// points at.
 pub(super) async fn read_metadata(target: &TargetFile) -> Result<ResourceMetadata, MetadataError> {
     let path = target.path();
     let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|error| {
@@ -69,8 +67,8 @@ pub(super) async fn read_metadata(target: &TargetFile) -> Result<ResourceMetadat
     })
 }
 
-/// The attributes only some platforms record, so a resource can omit what its
-/// host cannot report.
+/// Only some platforms record these, so a resource can omit what its host cannot
+/// report.
 #[derive(Debug, Default)]
 struct PlatformAttributes {
     mode: Option<String>,
@@ -84,7 +82,6 @@ struct PlatformAttributes {
     blocks: Option<u64>,
 }
 
-/// Read the attributes `stat(2)` exposes through the Unix metadata extension.
 #[cfg(unix)]
 fn platform_attributes(metadata: &std::fs::Metadata) -> PlatformAttributes {
     use std::os::unix::fs::MetadataExt;
@@ -103,14 +100,12 @@ fn platform_attributes(metadata: &std::fs::Metadata) -> PlatformAttributes {
     }
 }
 
-/// Platforms without the Unix metadata extension report none of these fields.
 #[cfg(not(unix))]
 fn platform_attributes(_metadata: &std::fs::Metadata) -> PlatformAttributes {
     PlatformAttributes::default()
 }
 
-/// A filesystem timestamp as RFC 3339 at whole-second precision, or `None` when
-/// the platform or filesystem does not record it.
+/// `None` when the platform or filesystem does not record the timestamp.
 fn format_time(time: Option<SystemTime>) -> Option<String> {
     let duration = time?.duration_since(UNIX_EPOCH).ok()?;
     chrono::DateTime::<chrono::Utc>::from_timestamp(duration.as_secs() as i64, 0)
@@ -128,8 +123,6 @@ fn kind(metadata: &std::fs::Metadata) -> ResourceKind {
     }
 }
 
-/// Confine a workspace target to its root.
-///
 /// The trailing symlink is kept as-is, but where it points still decides
 /// containment. A dangling link resolves to nothing, so its target is judged
 /// lexically instead.
@@ -160,7 +153,6 @@ async fn confine(
     }
 }
 
-/// Where a dangling symlink points, touching nothing past its own directory.
 async fn dangling_target(path: &Path, link_target: &Path) -> Result<PathBuf, MetadataError> {
     let Some(parent) = path.parent() else {
         return Ok(link_target.to_owned());
@@ -200,8 +192,7 @@ pub(super) fn etag(metadata: &std::fs::Metadata) -> String {
     format!("\"{}-{}\"", metadata.len(), modified)
 }
 
-/// Modification time as RFC 3339, at the whole-second precision the
-/// `Last-Modified` header of the same resource carries.
+/// RFC 3339 at the whole-second precision the `Last-Modified` header carries.
 pub(super) fn modified_at(metadata: &std::fs::Metadata) -> String {
     let modified = metadata
         .modified()

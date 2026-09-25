@@ -1,5 +1,3 @@
-//! Glob search over a directory subtree.
-
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use thiserror::Error;
 
@@ -27,17 +25,14 @@ pub(crate) enum GlobError {
 
 /// The patterns and window of one glob search.
 pub(crate) struct GlobRequest {
-    /// Pattern a hit must match, relative to the search root.
     pub(crate) pattern: String,
-    /// Patterns that remove a hit, and prune a matching directory's subtree.
+    /// A match removes the hit and prunes the directory's subtree.
     pub(crate) exclude: Vec<String>,
     pub(crate) offset: usize,
     /// Absent means [`SERVER_LIMIT`].
     pub(crate) limit: Option<usize>,
 }
 
-/// Locate the resources under `target` whose relative path matches the request.
-///
 /// Directories are visited whether or not they match, so a match below a
 /// non-matching directory is still found; symbolic links are reported but never
 /// descended into. Hits come back in directory-walk order and are deliberately
@@ -91,7 +86,6 @@ pub(crate) async fn search(
     })
 }
 
-/// The compiled include and exclude patterns of a search.
 struct Matchers {
     include: GlobSet,
     exclude: GlobSet,

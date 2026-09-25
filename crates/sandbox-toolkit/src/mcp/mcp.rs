@@ -1,5 +1,3 @@
-//! The MCP resource-management tools over the HTTP control-plane models.
-
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};

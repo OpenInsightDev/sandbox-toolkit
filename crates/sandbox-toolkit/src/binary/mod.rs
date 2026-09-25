@@ -1,6 +1,5 @@
-//! Binaries bundled into the server, so a release needs no network to
-//! materialize them. `build.rs` supplies the payloads as gzipped bytes in
-//! `OUT_DIR`.
+//! Bundled into the server, so a release needs no network to materialize them.
+//! `build.rs` supplies the payloads as gzipped bytes in `OUT_DIR`.
 
 use std::{
     io::{self, Write},
@@ -12,32 +11,23 @@ use std::{
 use flate2::read::GzDecoder;
 use thiserror::Error;
 
-/// Name of the directory, inside the system temporary directory, that the
-/// bundled executables are materialized into.
 const BINARIES_DIR: &str = "sandbox-toolkit-binaries";
 
-/// Why materializing the bundled executables failed.
 #[derive(Debug, Error)]
 pub(crate) enum BinaryError {
-    /// The binaries directory could not be created.
     #[error("failed to create binaries directory {}", dir.display())]
     CreateDir {
-        /// Directory that could not be created.
         dir: PathBuf,
         #[source]
         source: io::Error,
     },
-    /// A bundled executable could not be written into place.
     #[error("failed to materialize binary `{binary}` to {}", destination.display())]
     Materialize {
-        /// Name of the binary that failed to materialize.
         binary: &'static str,
-        /// Path the binary was being written to.
         destination: PathBuf,
         #[source]
         source: io::Error,
     },
-    /// A materialization task panicked instead of returning.
     #[error("binary materialization task failed")]
     Task(#[from] tokio::task::JoinError),
 }
@@ -50,10 +40,8 @@ pub(crate) enum Payload {
     Gzip(&'static [u8]),
 }
 
-/// A single bundled executable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Binary {
-    /// Name the executable is invoked as.
     pub(crate) name: &'static str,
     pub(crate) payload: Payload,
 }
@@ -87,8 +75,7 @@ pub(crate) const UV: Binary = Binary {
 
 /// `uvx` — run a Python tool without installing it, `uv`'s `pipx` equivalent.
 ///
-/// The binary execs the `uv` sitting next to it, so it only works once both
-/// have been materialized into the same directory.
+/// It execs the `uv` sitting next to it, so both must land in the same directory.
 #[cfg(feature = "uv")]
 pub(crate) const UVX: Binary = Binary {
     name: "uvx",
@@ -102,7 +89,6 @@ pub(crate) const DENO: Binary = Binary {
     payload: Payload::Gzip(include_bytes!(concat!(env!("OUT_DIR"), "/deno.gz"))),
 };
 
-/// Every executable embedded in this build.
 pub(crate) fn bundled() -> Vec<Binary> {
     #[allow(unused_mut)]
     let mut binaries = vec![FD, RIPGREP];
@@ -131,8 +117,8 @@ pub(crate) fn materialized_dir() -> PathBuf {
     std::env::temp_dir().join(BINARIES_DIR)
 }
 
-/// Inflate every embedded executable into [`materialized_dir`], each written to
-/// a temporary name and atomically renamed into place. Returns that directory.
+/// Each executable is written to a temporary name and atomically renamed into
+/// place, so a concurrent reader never sees a partial binary.
 pub(crate) async fn materialize() -> Result<PathBuf, BinaryError> {
     let dir = materialized_dir();
     tokio::fs::create_dir_all(&dir)
@@ -156,7 +142,6 @@ pub(crate) async fn materialize() -> Result<PathBuf, BinaryError> {
     Ok(dir)
 }
 
-/// Write a single binary into `dir`, replacing any previous copy atomically.
 fn materialize_one(binary: Binary, dir: PathBuf) -> Result<(), BinaryError> {
     let destination = dir.join(binary.name);
     let staging = dir.join(format!(

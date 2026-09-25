@@ -1,13 +1,9 @@
-//! Frames of a pty session's WebSocket connection.
-//!
 //! A pty session runs over a WebSocket, so every message already carries its own
 //! boundary: the first byte selects a channel and the rest is the payload, with no
-//! length prefix. That is what separates these frames from the length-prefixed exec
-//! stream frames in [`super::exec`], which multiplex one HTTP stream.
+//! length prefix.
 //!
 //! The channel set is closed, so a connection never creates channels. It has no
-//! stderr because a pty folds stderr into stdout, and the process outcome shares the
-//! exit channel rather than taking a channel of its own.
+//! stderr because a pty folds stderr into stdout.
 
 #![expect(
     dead_code,
@@ -20,21 +16,16 @@ use ts_rs::TS;
 
 use super::model::Status;
 
-/// A mux channel of a pty connection.
-///
 /// The discriminants are wire identifiers; reordering them changes the format.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Channel {
-    /// Client to server: input for the remote process.
     Stdin = 0,
-    /// Server to client: output of the remote process, with stderr folded in.
+    /// With stderr folded in.
     Stdout = 1,
-    /// Server to client: the process outcome, carrying the exit code or an error.
+    /// The process outcome, carrying the exit code or an error.
     Exit = 3,
-    /// Client to server: a new terminal size.
     Resize = 4,
-    /// Either direction: end the session.
     Close = 255,
 }
 
@@ -63,7 +54,6 @@ impl Channel {
     }
 }
 
-/// Which peer may send on a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Direction {
     ClientToServer,
@@ -72,9 +62,6 @@ pub(crate) enum Direction {
 }
 
 /// Terminal geometry in character cells.
-///
-/// A pty session is sized, and resizing an existing one sends these two integers on
-/// the resize channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub(crate) struct TerminalSize {
@@ -107,16 +94,13 @@ impl TerminalSize {
     }
 }
 
-/// One WebSocket message on a pty connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Frame {
     Stdin(Bytes),
     Stdout(Bytes),
-    /// The process outcome, which ends the output stream.
+    /// Ends the output stream.
     Exit(Status),
-    /// A resize request from the client.
     Resize(TerminalSize),
-    /// A request to end the session.
     Close,
 }
 
@@ -135,8 +119,6 @@ impl Frame {
         self.channel().direction()
     }
 
-    /// Encodes the frame as a whole WebSocket message: the channel byte and then the
-    /// payload.
     pub(crate) fn encode(&self) -> Bytes {
         let payload = self.payload();
         let mut message = BytesMut::with_capacity(1 + payload.len());
@@ -145,7 +127,6 @@ impl Frame {
         message.freeze()
     }
 
-    /// Decodes one whole WebSocket message.
     pub(crate) fn decode(message: &[u8]) -> Result<Self, FrameError> {
         let Some((&id, payload)) = message.split_first() else {
             return Err(FrameError::EmptyMessage);
@@ -187,8 +168,8 @@ impl Frame {
     }
 }
 
-/// Tracks the order of frames on one pty connection: [`Frame::Exit`] is terminal for
-/// output, leaving only [`Frame::Close`], and nothing follows [`Frame::Close`].
+/// [`Frame::Exit`] is terminal for output, leaving only [`Frame::Close`], and
+/// nothing follows [`Frame::Close`].
 #[derive(Debug, Default)]
 pub(crate) struct SessionFrames {
     exited: bool,
@@ -196,8 +177,6 @@ pub(crate) struct SessionFrames {
 }
 
 impl SessionFrames {
-    /// Decodes one WebSocket message, rejecting a frame that [`Frame::Exit`] or
-    /// [`Frame::Close`] already ended.
     pub(crate) fn decode(&mut self, message: &[u8]) -> Result<Frame, FrameError> {
         if self.closed {
             return Err(FrameError::FrameAfterClose);

@@ -1,5 +1,3 @@
-//! The workspace control-plane endpoints.
-
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing;
@@ -9,7 +7,6 @@ use super::model::{CreateWorkspaceRequest, Workspace, WorkspaceId, WorkspaceList
 use super::registry::WorkspaceError;
 use crate::{AppError, AppState};
 
-/// Build the workspace control-plane router.
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -22,7 +19,6 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-/// Register a remote absolute path as a workspace.
 async fn create_workspace(
     State(state): State<AppState>,
     Json(request): Json<CreateWorkspaceRequest>,
@@ -55,7 +51,6 @@ async fn delete_workspace(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Map registry failures onto the shared HTTP error envelope.
 impl From<WorkspaceError> for AppError {
     fn from(error: WorkspaceError) -> Self {
         match error {
