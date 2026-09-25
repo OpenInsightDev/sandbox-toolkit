@@ -17,7 +17,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::dir::{DirectoryError, create_directory, read_directory, read_directory_recursive};
+use super::dir::{
+    DirectoryError, create_directory, create_directory_recursive, read_directory,
+    read_directory_recursive,
+};
 use super::file::{
     DownloadMode, FileContent, FileHeaders, ReadFileError, prepare_download, probe_file,
 };
@@ -279,6 +282,34 @@ async fn ensure_empty_body(body: Body, rejection: AppError) -> Result<(), AppErr
     }
 
     Ok(())
+}
+
+/// The optional body of `PUT ?type=directory`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct CreateDirectoryRequest {
+    /// Create missing parent directories; absent creates only the final component.
+    #[serde(default)]
+    recursive: bool,
+}
+
+/// Upper bound on a control-plane JSON body, so an oversized or endless body is
+/// rejected instead of buffered.
+const MAX_REQUEST_BODY: usize = 64 * 1024;
+
+/// Read the optional JSON body of `PUT ?type=directory`.
+///
+/// An absent body leaves every option at its default; a present body must be a
+/// JSON object that fits [`CreateDirectoryRequest`].
+async fn create_directory_request(body: Body) -> Result<CreateDirectoryRequest, AppError> {
+    let bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY)
+        .await
+        .map_err(|error| AppError::BadRequest(format!("failed to read request body: {error}")))?;
+
+    if bytes.is_empty() {
+        return Ok(CreateDirectoryRequest::default());
+    }
+
+    serde_json::from_slice(&bytes).map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
 fn validate_path(value: &str) -> Result<PathBuf, AppError> {
@@ -553,15 +584,14 @@ async fn put_resource(
     match request_type(&query)? {
         Some(ResourceType::Directory) => {
             target.require_resource_path()?;
-            ensure_empty_body(
-                body,
-                AppError::InvalidRequest("directory takes no request body".to_owned()),
-            )
-            .await?;
+            let request = create_directory_request(body).await?;
 
-            let metadata = create_directory(&target.resource)
-                .await
-                .map_err(map_directory_error)?;
+            let metadata = if request.recursive {
+                create_directory_recursive(&target.resource).await
+            } else {
+                create_directory(&target.resource).await
+            }
+            .map_err(map_directory_error)?;
 
             Ok(json_resource(&metadata, StatusCode::CREATED))
         }
@@ -1452,6 +1482,55 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn put_directory_recursive_creates_missing_parents() {
+        let dir = TempDir::new();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/fs{}?type=directory",
+                    dir.path().join("a/b/c").display()
+                ))
+                .body(Body::from(r#"{"recursive":true}"#))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(dir.path().join("a/b/c").is_dir());
+    }
+
+    #[tokio::test]
+    async fn put_directory_rejects_a_malformed_body() {
+        let dir = TempDir::new();
+        let app = router().with_state(AppState::new("."));
+
+        let response = call(
+            &app,
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/fs{}?type=directory",
+                    dir.path().join("child").display()
+                ))
+                .body(Body::from(r#"{"recursive":"yes"}"#))
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "invalid_request");
+        assert!(!dir.path().join("child").exists());
     }
 
     #[tokio::test]

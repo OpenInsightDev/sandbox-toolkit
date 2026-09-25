@@ -78,36 +78,75 @@ async fn read_directory_with_depth(
 pub(crate) async fn create_directory(
     target: &TargetFile,
 ) -> Result<ResourceMetadata, DirectoryError> {
+    create_directory_with_parents(target, false).await
+}
+
+/// Create `target` and every missing parent directory.
+///
+/// Unlike [`create_directory`], the parents are created on demand; an existing
+/// target is still a conflict rather than a quiet success.
+pub(crate) async fn create_directory_recursive(
+    target: &TargetFile,
+) -> Result<ResourceMetadata, DirectoryError> {
+    create_directory_with_parents(target, true).await
+}
+
+/// Create `target`, descending into missing parents when `recursive`.
+async fn create_directory_with_parents(
+    target: &TargetFile,
+    recursive: bool,
+) -> Result<ResourceMetadata, DirectoryError> {
     let path = target.path();
     ensure_within_workspace(target, &path).await?;
 
+    // `create_dir_all` would accept an existing directory, so the target is
+    // checked first to keep the conflict semantics in both modes.
     match tokio::fs::symlink_metadata(&path).await {
         Ok(_) => return Err(DirectoryError::AlreadyExists(path.display().to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| DirectoryError::ParentNotFound(path.display().to_string()))?;
-    match tokio::fs::metadata(parent).await {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Err(DirectoryError::ParentNotFound(parent.display().to_string())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(DirectoryError::ParentNotFound(parent.display().to_string()));
+    if recursive {
+        tokio::fs::create_dir_all(&path)
+            .await
+            .map_err(|error| create_error(&path, error))?;
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| DirectoryError::ParentNotFound(path.display().to_string()))?;
+        match tokio::fs::metadata(parent).await {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(DirectoryError::ParentNotFound(parent.display().to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(DirectoryError::ParentNotFound(parent.display().to_string()));
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
+
+        tokio::fs::create_dir(&path)
+            .await
+            .map_err(|error| create_error(&path, error))?;
     }
 
-    tokio::fs::create_dir(&path).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            DirectoryError::AlreadyExists(path.display().to_string())
-        } else {
-            DirectoryError::Io(error)
-        }
-    })?;
-
     Ok(read_metadata(target).await?)
+}
+
+/// Map a `create_dir*` failure onto the directory error vocabulary.
+///
+/// `AlreadyExists` covers the race with the existence check above, and
+/// `NotADirectory` a component that exists as a file, which is the same `MKCOL`
+/// conflict as a missing parent.
+fn create_error(path: &std::path::Path, error: std::io::Error) -> DirectoryError {
+    match error.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            DirectoryError::AlreadyExists(path.display().to_string())
+        }
+        std::io::ErrorKind::NotADirectory => {
+            DirectoryError::ParentNotFound(path.display().to_string())
+        }
+        _ => DirectoryError::Io(error),
+    }
 }
 
 pub(super) async fn checked_target(
@@ -136,19 +175,23 @@ async fn ensure_within_workspace(
         return Ok(());
     };
     let root = tokio::fs::canonicalize(root).await?;
-    let candidate = match tokio::fs::canonicalize(path).await {
-        Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = path
-                .parent()
-                .ok_or_else(|| DirectoryError::OutsideWorkspace(path.display().to_string()))?;
-            tokio::fs::canonicalize(parent).await?.join(
-                path.file_name()
-                    .ok_or_else(|| DirectoryError::OutsideWorkspace(path.display().to_string()))?,
-            )
+
+    // Resolve the deepest existing ancestor, so a target whose parents are still
+    // missing can be checked. The components past that ancestor are literal names
+    // from a normalized path, so nothing below it can escape.
+    let mut current = path;
+    let candidate = loop {
+        match tokio::fs::canonicalize(current).await {
+            Ok(resolved) => break resolved,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                current = current
+                    .parent()
+                    .ok_or_else(|| DirectoryError::OutsideWorkspace(path.display().to_string()))?;
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
     };
+
     if candidate.starts_with(&root) {
         Ok(())
     } else {
@@ -279,6 +322,28 @@ mod tests {
         assert!(dir.path().join("child").is_dir());
         assert!(matches!(
             create_directory(&target).await,
+            Err(DirectoryError::AlreadyExists(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn recursive_create_builds_missing_parents() {
+        let dir = TempDir::new();
+        let target = TargetFile::Absolute(dir.path().join("a/b/c"));
+
+        let metadata = create_directory_recursive(&target).await.unwrap();
+        assert_eq!(metadata.kind, ResourceKind::Directory);
+        assert!(dir.path().join("a/b/c").is_dir());
+    }
+
+    #[tokio::test]
+    async fn recursive_create_still_reports_an_existing_target() {
+        let dir = TempDir::new();
+        tokio::fs::create_dir(dir.path().join("a")).await.unwrap();
+        let target = TargetFile::Absolute(dir.path().join("a"));
+
+        assert!(matches!(
+            create_directory_recursive(&target).await,
             Err(DirectoryError::AlreadyExists(_))
         ));
     }

@@ -249,10 +249,10 @@
 创建目录，对应 WebDAV `MKCOL`。
 
 ```json
-{ "parents": true }
+{ "recursive": true }
 ```
 
-- body 可选；不带 `parents` 时只创建末级目录，`parents=true` 时递归创建缺失的父目录；
+- body 可选；不带 `recursive` 时只创建末级目录，`recursive=true` 时递归创建缺失的父目录；
 - 创建必须带 `If-None-Match: *`；目标已存在返回 `412`。
 
 #### `PUT ?type=symlink`
