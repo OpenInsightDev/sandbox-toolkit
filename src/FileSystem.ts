@@ -3,12 +3,26 @@ import {
   Effect,
   Layer,
   PlatformError,
+  Sink,
+  Stream,
   type ByteSize,
   type Scope,
-  type Sink,
-  type Stream,
 } from "effect";
 import type { OpenFlag, File, WatchOptions, WatchEvent } from "effect/FileSystem";
+import { HttpClientRequest } from "effect/unstable/http";
+
+import type { DirectoryResponse } from "./generated/DirectoryResponse.ts";
+import type { ResourceMetadata } from "./generated/ResourceMetadata.ts";
+import { Client } from "./internal/client.ts";
+import {
+  isNotFound,
+  joinPath,
+  metadataInfo,
+  resourceUrl,
+  toPlatformError,
+  unsupported,
+} from "./internal/filesystem.ts";
+import { endLines, takeLines } from "./internal/process.ts";
 
 export type FileSystemError = PlatformError.PlatformError;
 
@@ -166,7 +180,150 @@ export interface FileSystem {
 export const FileSystem: Context.Service<FileSystem, FileSystem> =
   Context.Service("effect/FileSystem");
 
-export const layerForWorkspace = ({ workspace: _workspace }: { workspace: string }) =>
-  Layer.effect(FileSystem, Effect.die(new Error("not implemented")));
+export const make = Effect.fn("FileSystem.make")(function* (
+  options: { workspace?: string | undefined } = {},
+) {
+  const client = yield* Client;
 
-export const layer = Layer.effect(FileSystem, Effect.die(new Error("not implemented")));
+  const url = (method: string, path: string) => resourceUrl(options.workspace, method, path);
+
+  const queryJson = <A>(
+    method: string,
+    path: string,
+    params: URLSearchParams,
+  ): Effect.Effect<A, FileSystemError> =>
+    Effect.flatMap(url(method, path), (target) =>
+      Effect.mapError(
+        client.json<A>(HttpClientRequest.query(`${target}?${params}`)),
+        toPlatformError(method, path),
+      ),
+    );
+
+  const readFile = ((path: string) =>
+    Effect.flatMap(url("readFile", path), (target) =>
+      Effect.mapError(
+        client.bytes(HttpClientRequest.get(target)),
+        toPlatformError("readFile", path),
+      ),
+    )) satisfies FileSystem["readFile"];
+
+  const stream = ((path: string, streamOptions) => {
+    if (streamOptions?.offset !== undefined || streamOptions?.bytesToRead !== undefined) {
+      return Stream.fail(unsupported("stream(offset/bytesToRead)"));
+    }
+
+    return Stream.unwrap(
+      Effect.map(url("stream", path), (target) =>
+        Stream.mapError(
+          client.stream(HttpClientRequest.get(`${target}?type=stream`)),
+          toPlatformError("stream", path),
+        ),
+      ),
+    );
+  }) satisfies FileSystem["stream"];
+
+  const stat = ((path: string) =>
+    Effect.map(
+      queryJson<ResourceMetadata>("stat", path, new URLSearchParams({ type: "metadata" })),
+      metadataInfo,
+    )) satisfies FileSystem["stat"];
+
+  const exists = ((path: string) =>
+    Effect.catchIf(Effect.as(stat(path), true), isNotFound, () =>
+      Effect.succeed(false),
+    )) satisfies FileSystem["exists"];
+
+  const readDirectory = ((path: string, readOptions) =>
+    Effect.map(
+      queryJson<DirectoryResponse>(
+        "readDirectory",
+        path,
+        readOptions?.recursive === true
+          ? new URLSearchParams({ type: "list", depth: "infinity" })
+          : new URLSearchParams({ type: "list" }),
+      ),
+      (directory) => directory.entries.map((entry) => joinPath(path, entry.name)),
+    )) satisfies FileSystem["readDirectory"];
+
+  const glob = ((pattern: string, globOptions) => {
+    const root = globOptions?.root ?? "";
+    const params = new URLSearchParams({ type: "glob", pattern });
+
+    for (const exclude of globOptions?.exclude ?? []) {
+      params.append("exclude", exclude);
+    }
+
+    // Matched entries carry the server's own paths, which only round-trip in
+    // direct mode; the `name` component is reliable in both modes.
+    return Effect.map(queryJson<DirectoryResponse>("glob", root, params), (directory) =>
+      directory.entries.map((entry) => entry.path),
+    );
+  }) satisfies FileSystem["glob"];
+
+  const makeDirectory = ((path: string, makeOptions) =>
+    Effect.flatMap(url("makeDirectory", path), (target) => {
+      const request = HttpClientRequest.put(`${target}?type=directory`).pipe(
+        HttpClientRequest.setHeader("if-none-match", "*"),
+        (self) =>
+          makeOptions?.recursive === true
+            ? HttpClientRequest.bodyJsonUnsafe(self, { recursive: true })
+            : self,
+      );
+
+      return Effect.mapError(client.void(request), toPlatformError("makeDirectory", path));
+    })) satisfies FileSystem["makeDirectory"];
+
+  const readFileString = ((path: string, encoding?: string) =>
+    Effect.map(readFile(path), (bytes) =>
+      new TextDecoder(encoding ?? "utf-8").decode(bytes),
+    )) satisfies FileSystem["readFileString"];
+
+  const readLines = ((path: string) =>
+    Stream.decodeText(stream(path, {})).pipe(
+      Stream.mapAccum(() => "", takeLines, { onHalt: endLines }),
+    )) satisfies FileSystem["readLines"];
+
+  const fails = (method: string): Effect.Effect<never, FileSystemError> =>
+    Effect.fail(unsupported(method));
+
+  return FileSystem.of({
+    access: () => fails("access"),
+    copy: () => fails("copy"),
+    copyFile: () => fails("copyFile"),
+    chmod: () => fails("chmod"),
+    glob,
+    exists,
+    symlink: () => fails("symlink"),
+    makeDirectory,
+    makeTempDirectory: () => fails("makeTempDirectory"),
+    makeTempDirectoryScoped: () => fails("makeTempDirectoryScoped"),
+    makeTempFile: () => fails("makeTempFile"),
+    makeTempFileScoped: () => fails("makeTempFileScoped"),
+    readDirectory,
+    readFile,
+    readLines,
+    readFileString,
+    readLink: () => fails("readLink"),
+    realPath: () => fails("realPath"),
+    remove: () => fails("remove"),
+    rename: () => fails("rename"),
+    sink: () => Sink.fail(unsupported("sink")),
+    stat,
+    stream,
+    truncate: () => fails("truncate"),
+    utimes: () => fails("utimes"),
+    watch: () => Stream.fail(unsupported("watch")),
+    writeFile: () => fails("writeFile"),
+    writeFileString: () => fails("writeFileString"),
+  });
+});
+
+/**
+ * The file system service over a workspace, where paths are workspace-relative
+ * and "" addresses the workspace root.
+ */
+export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
+  Layer.effect(FileSystem, make({ workspace }));
+
+/** The file system service in direct mode, where paths are absolute. */
+export const layer = Layer.effect(FileSystem, make());
