@@ -28,7 +28,7 @@
 | `POST`   | 作用于目标资源的动作，必须带 `type`           |
 | `DELETE` | 删除资源，目录递归删除                        |
 
-- `type` 放在 query；该 `type` 的其余参数一律放 JSON body，body 为空表示全部取默认；
+- `type` 放在 query；带参数的 `type` 要求 JSON body，且是该 `type` 的 schema 对象，全默认传 `{}`；无参数的 `type` 不接受 body；
 - 带分页的读取统一用 `offset` + `limit` 组合；
 - 条件仍用标准头 `If-Match`、`If-None-Match`，见“ETag 版本机制”；
 - WebDAV 的 `Depth`、`Destination`、`Overwrite` 等头不再使用，改由该 `type` 的 body schema 承载。
@@ -269,7 +269,7 @@
 { "recursive": true }
 ```
 
-- body 可选；不带 `recursive` 时只创建末级目录，`recursive=true` 时递归创建缺失的父目录；
+- 默认只创建末级目录；`recursive=true` 时递归创建缺失的父目录；
 - 创建必须带 `If-None-Match: *`；目标已存在返回 `412`。
 
 #### `PUT ?type=symlink`
