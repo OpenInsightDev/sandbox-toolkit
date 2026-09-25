@@ -1,10 +1,13 @@
-use axum::extract::{Path, State};
+use std::collections::HashMap;
+
+use axum::extract::{FromRequestParts, Path, State};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::routing;
 use axum::{Json, Router};
 
 use super::model::{CreateWorkspaceRequest, Workspace, WorkspaceId, WorkspaceList};
-use super::registry::WorkspaceError;
+use super::registry::{WorkspaceError, validate_id};
 use crate::{AppError, AppState};
 
 pub(crate) fn router() -> Router<AppState> {
@@ -17,6 +20,31 @@ pub(crate) fn router() -> Router<AppState> {
             "/workspaces/{workspace_id}",
             routing::get(get_workspace).delete(delete_workspace),
         )
+}
+
+/// Extraction is the parsing boundary, so a malformed id is reported as
+/// `bad_request` before any lookup and never falls through to `not_found`.
+impl FromRequestParts<AppState> for WorkspaceId {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let Path(captures): Path<HashMap<String, String>> = Path::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::BadRequest("invalid workspace path".to_owned()))?;
+
+        let workspace_id = captures
+            .get("workspace_id")
+            .ok_or_else(|| AppError::BadRequest("missing workspace id".to_owned()))?;
+
+        validate_id(workspace_id)?;
+
+        Ok(Self {
+            workspace_id: workspace_id.clone(),
+        })
+    }
 }
 
 async fn create_workspace(
@@ -37,14 +65,14 @@ async fn list_workspaces(State(state): State<AppState>) -> Result<Json<Workspace
 
 async fn get_workspace(
     State(state): State<AppState>,
-    Path(id): Path<WorkspaceId>,
+    id: WorkspaceId,
 ) -> Result<Json<Workspace>, AppError> {
     Ok(Json(state.workspaces().get(&id.workspace_id)?))
 }
 
 async fn delete_workspace(
     State(state): State<AppState>,
-    Path(id): Path<WorkspaceId>,
+    id: WorkspaceId,
 ) -> Result<StatusCode, AppError> {
     state.workspaces().remove(&id.workspace_id)?;
 
@@ -253,6 +281,27 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn get_and_delete_reject_malformed_ids() {
+        let app = router().with_state(AppState::new("."));
+
+        for method in ["GET", "DELETE"] {
+            let request = Request::builder()
+                .method(method)
+                .uri("/workspaces/Bad")
+                .body(Body::empty())
+                .unwrap();
+
+            let (status, body) = call(&app, request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{method}");
+            assert_eq!(
+                body["error"]["code"].as_str(),
+                Some("bad_request"),
+                "{method}"
+            );
+        }
     }
 
     #[tokio::test]

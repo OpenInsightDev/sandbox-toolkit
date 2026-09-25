@@ -141,9 +141,7 @@ impl WorkspaceRegistry {
         root: &str,
         properties: WorkspaceProperties,
     ) -> Result<WorkspaceHandle, WorkspaceError> {
-        if !ID_PATTERN.is_match(id) {
-            return Err(WorkspaceError::InvalidId { id: id.to_owned() });
-        }
+        validate_id(id)?;
         if self.read().contains_key(id) {
             return Err(WorkspaceError::AlreadyExists { id: id.to_owned() });
         }
@@ -253,6 +251,16 @@ impl WorkspaceRegistry {
 /// trailing newline.
 static ID_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z").expect("the pattern is valid"));
+
+/// The shared validation for any id arriving from outside the process, so a
+/// malformed id is rejected before it is treated as merely unknown.
+pub(crate) fn validate_id(id: &str) -> Result<(), WorkspaceError> {
+    if ID_PATTERN.is_match(id) {
+        Ok(())
+    } else {
+        Err(WorkspaceError::InvalidId { id: id.to_owned() })
+    }
+}
 
 /// Uppercasing and mapping `-` to `_` yields a valid POSIX name; ids exclude `_`,
 /// so the mapping is reversible and two ids never share a name.
