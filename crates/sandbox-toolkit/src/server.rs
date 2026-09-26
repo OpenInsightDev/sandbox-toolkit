@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::{AppError, AppState, Cli, fs, mcp, process, skill, workspace};
 
-fn api_router() -> Router<AppState> {
+fn api_router(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(workspace::router())
         .merge(fs::router())
@@ -25,7 +25,7 @@ fn api_router() -> Router<AppState> {
         // The MCP transport answers `POST` for JSON-RPC calls, `GET` for the
         // server-to-client stream and `DELETE` to end a session, so it owns every
         // method on the path.
-        .route("/mcp", any_service(mcp_service()))
+        .route("/mcp", any_service(mcp_service(state)))
         // Going through a fallback keeps the JSON error envelope for unmatched
         // routes; axum's own 404 would carry an empty body.
         .fallback(not_found)
@@ -35,21 +35,31 @@ async fn not_found(uri: Uri) -> AppError {
     AppError::NotFound(uri.path().to_owned())
 }
 
-fn mcp_service() -> StreamableHttpService<ToolkitServer, LocalSessionManager> {
+fn mcp_service(state: AppState) -> StreamableHttpService<ToolkitServer, LocalSessionManager> {
     StreamableHttpService::new(
-        || Ok(ToolkitServer),
+        move || Ok(ToolkitServer::new(state.clone())),
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     )
 }
 
 /// Cheap to clone because the transport builds one per session.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ToolkitServer;
+#[derive(Debug, Clone)]
+pub(crate) struct ToolkitServer {
+    state: AppState,
+}
 
 impl ToolkitServer {
+    pub(crate) fn new(state: AppState) -> Self {
+        Self { state }
+    }
+
+    pub(crate) fn state(&self) -> &AppState {
+        &self.state
+    }
+
     fn tool_router() -> ToolRouter<Self> {
-        Self::workspace_tools() + Self::process_tools() + Self::mcp_tools()
+        Self::workspace_tools() + Self::process_tools() + Self::mcp_tools() + Self::skill_tools()
     }
 }
 
@@ -69,7 +79,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
 
     info!(%addr, root = %state.root().display(), "sandbox-toolkit server listening");
 
-    let app = api_router()
+    let app = api_router(state.clone())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

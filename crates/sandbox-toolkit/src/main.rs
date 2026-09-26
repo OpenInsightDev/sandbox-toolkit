@@ -83,14 +83,20 @@ struct AppState {
 #[derive(Debug)]
 struct AppStateInner {
     root: PathBuf,
+    agents_dir: PathBuf,
     workspaces: workspace::WorkspaceRegistry,
 }
 
 impl AppState {
     fn new(root: impl Into<PathBuf>) -> Self {
+        Self::with_agents_dir(root, default_agents_dir())
+    }
+
+    fn with_agents_dir(root: impl Into<PathBuf>, agents_dir: impl Into<PathBuf>) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
                 root: root.into(),
+                agents_dir: agents_dir.into(),
                 workspaces: workspace::WorkspaceRegistry::default(),
             }),
         }
@@ -100,9 +106,35 @@ impl AppState {
         &self.inner.root
     }
 
+    fn agents_dir(&self) -> &Path {
+        &self.inner.agents_dir
+    }
+
     fn workspaces(&self) -> &workspace::WorkspaceRegistry {
         &self.inner.workspaces
     }
+
+    /// Resolves a workspace id to its root. A derived workspace is not
+    /// registered, so it is resolved from discovery on demand; the registered
+    /// lookup wins on a collision.
+    pub(crate) async fn resolve_workspace(
+        &self,
+        id: &str,
+    ) -> Result<workspace::registry::Workspace, workspace::registry::WorkspaceError> {
+        match self.workspaces().workspace(id) {
+            Ok(workspace) => Ok(workspace),
+            Err(error) => match skill::resolve_workspace(self, id).await {
+                Some(workspace) => Ok(workspace),
+                None => Err(error),
+            },
+        }
+    }
+}
+
+fn default_agents_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".agents")
 }
 
 #[derive(Debug, Serialize, TS)]

@@ -67,7 +67,7 @@ impl FromRequestParts<AppState> for ProcessTarget {
             .map_err(|_| AppError::BadRequest("invalid process path".to_owned()))?;
 
         let workspace = match captures.get("workspace_id") {
-            Some(id) => Some(state.workspaces().workspace(id)?),
+            Some(id) => Some(state.resolve_workspace(id).await?),
             None => None,
         };
 

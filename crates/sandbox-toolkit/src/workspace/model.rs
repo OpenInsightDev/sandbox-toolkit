@@ -60,13 +60,6 @@ impl WorkspaceHandle {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by tests and, later, callers that need the handle's id"
-        )
-    )]
     pub(crate) fn id(&self) -> &str {
         &self.id
     }

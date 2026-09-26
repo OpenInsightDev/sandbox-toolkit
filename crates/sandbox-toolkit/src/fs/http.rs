@@ -70,7 +70,7 @@ impl FromRequestParts<AppState> for FsTarget {
 
         match captures.get("workspace_id") {
             Some(id) => Ok(Self {
-                workspace: Some(state.workspaces().workspace(id)?),
+                workspace: Some(state.resolve_workspace(id).await?),
             }),
             None => Ok(Self { workspace: None }),
         }

@@ -9,6 +9,8 @@ name = "sbxtkt"
 path = "src/main.rs"
 
 [dependencies]
+# Parses and validates `SKILL.md` frontmatter against the Agent Skills spec.
+agent-plugins = "0.1.1"
 anyhow = "1.0.104"
 # Vendored as the git submodule at `crates/axum` (tokio-rs/axum @ 7c3c6787), because
 # the released 0.8.9 has no `MethodFilter::QUERY` but the unreleased `main` does.

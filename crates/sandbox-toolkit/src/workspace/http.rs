@@ -67,16 +67,31 @@ async fn get_workspace(
     State(state): State<AppState>,
     id: WorkspaceId,
 ) -> Result<Json<WorkspaceHandle>, AppError> {
-    Ok(Json(state.workspaces().get(&id.workspace_id)?))
+    Ok(Json(
+        state.resolve_workspace(&id.workspace_id).await?.handle(),
+    ))
 }
 
 async fn delete_workspace(
     State(state): State<AppState>,
     id: WorkspaceId,
 ) -> Result<StatusCode, AppError> {
-    state.workspaces().remove(&id.workspace_id)?;
+    if state.workspaces().get(&id.workspace_id).is_ok() {
+        state.workspaces().remove(&id.workspace_id)?;
 
-    Ok(StatusCode::NO_CONTENT)
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    // A derived workspace exists only through its source resource; removing it
+    // directly is refused rather than reported missing.
+    if state.resolve_workspace(&id.workspace_id).await.is_ok() {
+        return Err(AppError::ManagedWorkspace(id.workspace_id));
+    }
+
+    Err(AppError::NotFound(format!(
+        "workspace `{}`",
+        id.workspace_id
+    )))
 }
 
 impl From<WorkspaceError> for AppError {

@@ -44,6 +44,18 @@ impl Workspace {
         }
     }
 
+    /// A workspace derived from another resource rather than registered: read-only
+    /// so the resource it mirrors stays untouched, and not directly removable.
+    pub(crate) fn managed(id: impl Into<String>, root: PathBuf) -> Self {
+        Self::new(
+            id,
+            root,
+            WorkspaceProperties {
+                access: WorkspaceAccess::ReadOnly,
+            },
+        )
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -71,7 +83,7 @@ impl Workspace {
         self.properties.access
     }
 
-    fn handle(&self) -> WorkspaceHandle {
+    pub(crate) fn handle(&self) -> WorkspaceHandle {
         WorkspaceHandle::new(self.id.clone(), self.properties)
     }
 
