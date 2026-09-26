@@ -37,20 +37,20 @@ fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
 
     let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sbxkit=debug"));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sbxtkt=debug"));
 
     fmt().with_env_filter(filter).init();
 }
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "sbxkit", version, about, long_about = None)]
+#[command(name = "sbxtkt", version, about, long_about = None)]
 struct Cli {
     /// Interface address the HTTP server binds to.
     #[arg(
         long,
         value_name = "ADDR",
         default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST),
-        env = "SBXKIT_HOST",
+        env = "SBXTKT_HOST",
     )]
     host: IpAddr,
 
@@ -60,12 +60,12 @@ struct Cli {
         short,
         value_name = "PORT",
         default_value_t = 3000,
-        env = "SBXKIT_PORT"
+        env = "SBXTKT_PORT"
     )]
     port: u16,
 
     /// Root directory that filesystem routes are confined to.
-    #[arg(long, value_name = "DIR", default_value = ".", env = "SBXKIT_ROOT")]
+    #[arg(long, value_name = "DIR", default_value = ".", env = "SBXTKT_ROOT")]
     root: PathBuf,
 }
 

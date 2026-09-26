@@ -61,10 +61,10 @@ http://127.0.0.1:3000/mcp
 
 | Flag     | Environment Variable | Description                         | Default          |
 | -------- | -------------------- | ----------------------------------- | ---------------- |
-| `--root` | `SBXKIT_ROOT`        | Root directory the server may touch | `.`              |
-| `--host` | `SBXKIT_HOST`        | Bind address                        | `127.0.0.1`      |
-| `--port` | `SBXKIT_PORT`        | Bind port                           | `3000`           |
-| —        | `RUST_LOG`           | Log filter (e.g. `debug`)           | `info,sbxkit=debug` |
+| `--root` | `SBXTKT_ROOT`        | Root directory the server may touch | `.`              |
+| `--host` | `SBXTKT_HOST`        | Bind address                        | `127.0.0.1`      |
+| `--port` | `SBXTKT_PORT`        | Bind port                           | `3000`           |
+| —        | `RUST_LOG`           | Log filter (e.g. `debug`)           | `info,sbxtkt=debug` |
 
 ## License
 

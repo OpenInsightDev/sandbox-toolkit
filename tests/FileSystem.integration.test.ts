@@ -21,7 +21,7 @@ const repoRoot = resolve(import.meta.dirname, "..");
 
 const manifest = "crates/sandbox-toolkit/Cargo.toml";
 
-const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbxkit");
+const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbxtkt");
 
 const hasCargo = ((): boolean => {
   try {
