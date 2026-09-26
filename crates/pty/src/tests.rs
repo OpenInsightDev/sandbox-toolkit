@@ -1199,3 +1199,113 @@ async fn pty_resize_updates_terminal_size() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// `PR_SET_PDEATHSIG` needs a parent that can die without taking the child with
+// it, so this test re-execs itself: the second invocation owns the PTY child and
+// is killed by the first, which then checks the orphan.
+#[cfg(target_os = "linux")]
+const PTY_PARENT_DEATH_MARKER: &str = "CODEX_TEST_PTY_PARENT_DEATH";
+
+#[cfg(target_os = "linux")]
+const PTY_PARENT_DEATH_PID_FILE: &str = "CODEX_TEST_PTY_PARENT_DEATH_PID_FILE";
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pty_child_terminates_when_parent_dies() -> anyhow::Result<()> {
+    if std::env::var_os(PTY_PARENT_DEATH_MARKER).is_none() {
+        return run_pty_parent_death_parent();
+    }
+
+    let pid_file = std::env::var(PTY_PARENT_DEATH_PID_FILE)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let env_map: HashMap<String, String> = std::env::vars().collect();
+        // Ignoring SIGHUP isolates the parent-death signal: the PTY hangup caused
+        // by closing the master must not be what ends the child.
+        let script = format!("trap '' HUP; echo $$ > '{pid_file}'; exec sleep 60");
+        let (program, args) = shell_command(&script);
+        let spawned = spawn_pty_process(
+            &program,
+            &args,
+            Path::new("."),
+            &env_map,
+            &None,
+            TerminalSize::default(),
+        )
+        .await?;
+        let _spawned = spawned;
+        // Stay alive until the outer test kills this process.
+        std::future::pending::<()>().await;
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn run_pty_parent_death_parent() -> anyhow::Result<()> {
+    let pid_file = std::env::temp_dir().join(format!(
+        "pty-parent-death-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut parent = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "tests::pty_child_terminates_when_parent_dies",
+            "--nocapture",
+        ])
+        .env(PTY_PARENT_DEATH_MARKER, "1")
+        .env(PTY_PARENT_DEATH_PID_FILE, &pid_file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let child_pid = loop {
+        if let Ok(contents) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = contents.trim().parse::<i32>()
+        {
+            break pid;
+        }
+        if let Some(status) = parent.try_wait()? {
+            anyhow::bail!("PTY parent exited before reporting the child pid: {status:?}");
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the PTY child pid"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let _ = std::fs::remove_file(&pid_file);
+    anyhow::ensure!(
+        process_exists(child_pid)?,
+        "PTY child {child_pid} is not running"
+    );
+
+    // Kill only the direct parent: the child ignores SIGHUP, so its death must
+    // come from `PR_SET_PDEATHSIG`.
+    unsafe { libc::kill(parent.id() as i32, libc::SIGKILL) };
+    let _ = parent.wait();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut exited = false;
+    while std::time::Instant::now() < deadline {
+        if !process_exists(child_pid)? {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    if !exited {
+        let _ = unsafe { libc::kill(child_pid, libc::SIGKILL) };
+    }
+    anyhow::ensure!(
+        exited,
+        "PTY child {child_pid} survived its parent's death (PR_SET_PDEATHSIG is missing)"
+    );
+    Ok(())
+}

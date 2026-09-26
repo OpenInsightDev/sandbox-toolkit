@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
-use portable_pty::CommandBuilder;
 use portable_pty::native_pty_system;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -79,19 +82,73 @@ pub async fn spawn_process(
             .ok_or_else(|| anyhow::anyhow!("PTY master has no file descriptor"))?,
     )?;
 
-    let mut command_builder = CommandBuilder::new(arg0.as_ref().unwrap_or(&program.to_string()));
-    command_builder.cwd(cwd);
-    command_builder.env_clear();
+    let slave_path = pair
+        .master
+        .tty_name()
+        .ok_or_else(|| anyhow::anyhow!("PTY master has no slave device path"))?;
+    // The parent must not acquire the slave as its own controlling terminal;
+    // the child claims it with `TIOCSCTTY` after `setsid`.
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(&slave_path)?;
+
+    let program_arg = arg0.clone().unwrap_or_else(|| program.to_string());
+    let mut command = Command::new(&program_arg);
+    command.current_dir(cwd);
+    command.env_clear();
     for arg in args {
-        command_builder.arg(arg);
+        command.arg(arg);
     }
     for (key, value) in env {
-        command_builder.env(key, value);
+        command.env(key, value);
     }
 
-    let mut child = pair.slave.spawn_command(command_builder)?;
-    let process_group_id = child.process_id();
-    let killer = child.clone_killer();
+    #[cfg(target_os = "linux")]
+    let parent_pid = unsafe { libc::getpid() };
+    unsafe {
+        command
+            .stdin(Stdio::from(slave.try_clone()?))
+            .stdout(Stdio::from(slave.try_clone()?))
+            .stderr(Stdio::from(slave.try_clone()?))
+            .pre_exec(move || {
+                // portable-pty clears inherited dispositions and starts a new
+                // session so the slave becomes the child's controlling terminal.
+                for signo in &[
+                    libc::SIGCHLD,
+                    libc::SIGHUP,
+                    libc::SIGINT,
+                    libc::SIGQUIT,
+                    libc::SIGTERM,
+                    libc::SIGALRM,
+                ] {
+                    libc::signal(*signo, libc::SIG_DFL);
+                }
+
+                let empty_set: libc::sigset_t = std::mem::zeroed();
+                libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut());
+
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                #[allow(clippy::cast_lossless)]
+                if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                #[cfg(target_os = "linux")]
+                crate::process_group::set_parent_death_signal(parent_pid)?;
+
+                Ok(())
+            });
+    }
+
+    let mut child = command.spawn()?;
+    drop(slave);
+    let process_group_id = portable_pty::Child::process_id(&child);
+    let killer = portable_pty::ChildKiller::clone_killer(&child);
 
     let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
@@ -104,7 +161,7 @@ pub async fn spawn_process(
     let exit = Arc::new(StdMutex::new(None));
     let wait_exit = Arc::clone(&exit);
     let wait_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
-        let status = match child.wait() {
+        let status = match portable_pty::Child::wait(&mut child) {
             Ok(status) => match status.signal() {
                 Some(signal) => ProcessExit::signaled(status.exit_code() as i32, signal),
                 None => ProcessExit::exited(status.exit_code() as i32),
