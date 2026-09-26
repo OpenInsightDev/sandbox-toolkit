@@ -238,7 +238,7 @@ mod tests {
 
     use super::*;
     use crate::process::frame::FrameStream;
-    use crate::process::model::Status;
+    use crate::process::model::{ExecCommon, Status};
     use crate::workspace::model::WorkspaceProperties;
     use crate::workspace::registry::test_support::{TempDir, canonical};
 
@@ -547,9 +547,11 @@ mod tests {
                 "-c".to_owned(),
                 "printf out; printf err >&2; exit 3".to_owned(),
             ],
-            cwd: None,
-            env: HashMap::new(),
-            wait: 0,
+            common: ExecCommon {
+                cwd: None,
+                env: HashMap::new(),
+                wait: 0,
+            },
         };
         let stream = exec::exec(request, WorkspaceContext::default())
             .await

@@ -6,6 +6,23 @@ use ts_rs::TS;
 
 use super::pty::TerminalSize;
 
+/// The fields every format accepts, flattened into the selected variant so the
+/// common shape is defined once.
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+pub(crate) struct ExecCommon {
+    /// Workspace-relative in workspace mode, absolute in direct mode. Defaults to
+    /// the workspace root, or the server's directory in direct mode.
+    #[serde(default)]
+    pub(crate) cwd: Option<String>,
+    /// A name a workspace also sets takes this value instead.
+    #[serde(default)]
+    pub(crate) env: HashMap<String, String>,
+    /// How long the server waits before upgrading the response to a stream, in
+    /// milliseconds; zero streams immediately and never terminates the command.
+    #[serde(default)]
+    pub(crate) wait: u64,
+}
+
 /// A closed union discriminated by `format`, so the payload that was selected
 /// always has its required fields. The executable and its arguments are separate
 /// tokens and never re-parsed by a shell, while a shell script is a single argument
@@ -21,25 +38,18 @@ pub(crate) enum ExecRequest {
         command: String,
         #[serde(default)]
         args: Vec<String>,
-        cwd: Option<String>,
-        /// A name a workspace also sets takes this value instead.
-        #[serde(default)]
-        env: HashMap<String, String>,
-        /// How long the server waits before upgrading the response to a stream, in
-        /// milliseconds; zero streams immediately and never terminates the command.
-        #[serde(default)]
-        wait: u64,
+        #[serde(flatten)]
+        #[ts(flatten)]
+        common: ExecCommon,
     },
     Shell {
         /// The script handed to the interpreter as a single argument.
         script: String,
         /// The interpreter; `sh` when omitted. Resolved through `PATH`.
         shell: Option<String>,
-        cwd: Option<String>,
-        #[serde(default)]
-        env: HashMap<String, String>,
-        #[serde(default)]
-        wait: u64,
+        #[serde(flatten)]
+        #[ts(flatten)]
+        common: ExecCommon,
     },
 }
 
@@ -47,7 +57,7 @@ impl ExecRequest {
     /// How long the server waits before upgrading the response to a stream.
     pub(crate) const fn wait(&self) -> u64 {
         match self {
-            Self::Exec { wait, .. } | Self::Shell { wait, .. } => *wait,
+            Self::Exec { common, .. } | Self::Shell { common, .. } => common.wait,
         }
     }
 }

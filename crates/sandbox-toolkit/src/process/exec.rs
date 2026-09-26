@@ -21,7 +21,7 @@ use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tokio_util::io::ReaderStream;
 
 use super::frame::Frame;
-use super::model::{ExecRequest, Status};
+use super::model::{ExecCommon, ExecRequest, Status};
 use crate::binary;
 use crate::path::{self, PathError};
 use crate::workspace::registry::Workspace;
@@ -79,9 +79,7 @@ pub(crate) async fn exec(
         ExecRequest::Exec {
             command,
             args,
-            cwd,
-            env,
-            ..
+            common: ExecCommon { cwd, env, .. },
         } => {
             if command.trim().is_empty() {
                 return Err(ExecError::EmptyCommand);
@@ -92,9 +90,7 @@ pub(crate) async fn exec(
         ExecRequest::Shell {
             script,
             shell,
-            cwd,
-            env,
-            ..
+            common: ExecCommon { cwd, env, .. },
         } => {
             let interpreter = shell.unwrap_or_else(|| DEFAULT_SHELL.to_owned());
 
@@ -313,9 +309,7 @@ mod tests {
         ExecRequest::Exec {
             command: command.to_owned(),
             args: args.iter().copied().map(str::to_owned).collect(),
-            cwd,
-            env,
-            wait: 0,
+            common: ExecCommon { cwd, env, wait: 0 },
         }
     }
 
@@ -327,9 +321,11 @@ mod tests {
         ExecRequest::Shell {
             script: script.to_owned(),
             shell,
-            cwd,
-            env: HashMap::new(),
-            wait: 0,
+            common: ExecCommon {
+                cwd,
+                env: HashMap::new(),
+                wait: 0,
+            },
         }
     }
 
