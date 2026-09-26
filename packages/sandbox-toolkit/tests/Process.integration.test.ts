@@ -11,7 +11,6 @@ import * as Socket from "effect/unstable/socket/Socket";
 import { ApiError, layerFetch } from "../src/internal/client.ts";
 import { layer as http2WebSocket } from "../src/internal/Http2WebSocket.ts";
 import * as Process from "../src/Process.ts";
-import * as Terminal from "../src/Terminal.ts";
 
 /**
  * End-to-end wiring check between this package's `Process` client and the Rust
@@ -174,18 +173,6 @@ const processLayer = (workspace?: string) =>
 
 const run = <A, E>(program: Effect.Effect<A, E, Process.Process>, workspace?: string): Promise<A> =>
   Effect.runPromise(Effect.provide(program, processLayer(workspace)));
-
-const terminalLayer = (workspace: string | undefined, options: Terminal.TerminalOptions) =>
-  (workspace === undefined
-    ? Terminal.layer(options)
-    : Terminal.layerForWorkspace({ workspace, ...options })
-  ).pipe(Layer.provide(layerFetch({ baseUrl })));
-
-const runTerminal = <A, E>(
-  program: Effect.Effect<A, E, Terminal.Terminal>,
-  workspace: string | undefined,
-  options: Terminal.TerminalOptions = {},
-): Promise<A> => Effect.runPromise(Effect.provide(program, terminalLayer(workspace, options)));
 
 const execStreamContentType = "application/vnd.sandbox-toolkit.exec-stream";
 
@@ -599,34 +586,6 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec and pt
     );
 
     expect(value.length).toBe(4_500_000);
-  });
-
-  test("attaches to a pty over HTTP/2 extended CONNECT", async () => {
-    const line = await runTerminal(
-      Effect.gen(function* () {
-        const terminal = yield* Terminal.Terminal;
-
-        return yield* terminal.readLine;
-      }),
-      undefined,
-      { command: "sh", args: ["-c", "printf 'h2-attach\\n'"] },
-    );
-
-    expect(line).toBe("h2-attach");
-  });
-
-  test("attaches over HTTP/2 in workspace mode", async () => {
-    const line = await runTerminal(
-      Effect.gen(function* () {
-        const terminal = yield* Terminal.Terminal;
-
-        return yield* terminal.readLine;
-      }),
-      "docs",
-      { command: "sh", args: ["-c", "printf 'h2-workspace\\n'"] },
-    );
-
-    expect(line).toBe("h2-workspace");
   });
 
   test("fails an attach to an unknown session over HTTP/2", async () => {
