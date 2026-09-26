@@ -54,7 +54,6 @@ pub(crate) enum ExecRequest {
 }
 
 impl ExecRequest {
-    /// How long the server waits before upgrading the response to a stream.
     pub(crate) const fn wait(&self) -> u64 {
         match self {
             Self::Exec { common, .. } | Self::Shell { common, .. } => common.wait,
@@ -74,8 +73,8 @@ pub(crate) struct ExecToolRequest {
     pub(crate) exec: ExecRequest,
 }
 
-/// The command is fixed at creation and streams over a WebSocket, so unlike exec and
-/// shell there is no `wait`: the server owns the session lifetime.
+/// The command is fixed at creation and streams over a WebSocket, so unlike exec
+/// there is no `wait`: the server owns the session lifetime.
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
 #[expect(

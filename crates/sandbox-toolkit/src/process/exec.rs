@@ -1,6 +1,6 @@
 //! exec starts a single executable with no shell in between: the program is one
 //! executable token and its arguments are one argv entry each, so nothing is
-//! re-parsed. [`CommandSpec`] is the shared core that shell builds on.
+//! re-parsed. [`CommandSpec`] is the shared core the shell format builds on.
 //!
 //! The response is the length-prefixed frame stream in [`super::frame`].
 
@@ -141,7 +141,6 @@ impl CommandSpec {
         })
     }
 
-    /// Start the process with piped output and return the frames of its response.
     pub(crate) fn spawn(self) -> Result<ReceiverStream<Frame>, ExecError> {
         let path = self
             .env

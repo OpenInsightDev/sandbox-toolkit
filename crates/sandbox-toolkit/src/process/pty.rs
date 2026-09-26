@@ -1,6 +1,5 @@
 //! A pty session runs over a WebSocket, so every message already carries its own
-//! boundary: the first byte selects a channel and the rest is the payload, with no
-//! length prefix.
+//! boundary and a frame needs no length prefix.
 //!
 //! The channel set is closed, so a connection never creates channels. It has no
 //! stderr because a pty folds stderr into stdout.
@@ -70,7 +69,6 @@ pub(crate) struct TerminalSize {
 }
 
 impl TerminalSize {
-    /// Bytes on the wire: rows then cols, both big-endian.
     pub(crate) const WIRE_LEN: usize = 4;
 
     pub(crate) fn to_wire(self) -> [u8; Self::WIRE_LEN] {

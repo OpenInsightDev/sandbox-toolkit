@@ -1,5 +1,4 @@
-//! The length-prefixed frame stream carried by an upgraded exec response: one
-//! channel byte, a four-byte big-endian length, then the payload. Frames are
+//! The frame stream carried by an upgraded exec response. Frames are
 //! length-prefixed rather than separated, because command output may contain any
 //! byte a separator would use.
 //!
@@ -19,11 +18,8 @@ use thiserror::Error;
 
 use super::model::Status;
 
-/// A frame header: one channel byte and a four-byte big-endian length.
 pub(crate) const HEADER_LEN: usize = 5;
 
-/// The largest payload a frame may carry.
-///
 /// The peer controls the advertised length, so [`Frame::decode`] rejects anything
 /// larger before allocating.
 pub(crate) const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
@@ -85,8 +81,8 @@ impl Frame {
         }
     }
 
-    /// Encodes the frame. Splitting payloads above [`MAX_PAYLOAD_LEN`] is the
-    /// producer's responsibility, since only the decoder enforces that bound.
+    /// Splitting payloads above [`MAX_PAYLOAD_LEN`] is the producer's
+    /// responsibility, since only the decoder enforces that bound.
     pub(crate) fn encode(&self) -> Bytes {
         let payload = self.payload();
         let mut buffer = BytesMut::with_capacity(HEADER_LEN + payload.len());
