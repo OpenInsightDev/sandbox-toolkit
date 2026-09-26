@@ -169,6 +169,17 @@ pub fn kill_process_group(process_group_id: u32) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+/// Retry a denied SIGTERM against the exact group's individual members.
+pub fn terminate_process_group_with_member_fallback(process_group_id: u32) -> io::Result<bool> {
+    signal_process_group_with_member_fallback(
+        process_group_id,
+        libc::SIGTERM,
+        signal_process_group_id,
+        signal_process_id,
+    )
+}
+
+#[cfg(target_os = "macos")]
 /// Retry a denied SIGKILL against the exact group's individual members.
 pub fn kill_process_group_with_member_fallback(process_group_id: u32) -> io::Result<()> {
     signal_process_group_with_member_fallback(
@@ -179,3 +190,7 @@ pub fn kill_process_group_with_member_fallback(process_group_id: u32) -> io::Res
     )
     .map(|_| ())
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "process_group_tests.rs"]
+mod tests;
