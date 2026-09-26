@@ -6,7 +6,7 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import type { PtyRequest } from "./generated/PtyRequest.ts";
 import type { PtySession } from "./generated/PtySession.ts";
-import { layer as http2WebSocket } from "./Http2WebSocket.ts";
+import { layer as http2WebSocket } from "./internal/Http2WebSocket.ts";
 import { Client } from "./internal/client.ts";
 import { endLines, takeLines } from "./internal/process.ts";
 import { route, targetEnv } from "./internal/prelude.ts";

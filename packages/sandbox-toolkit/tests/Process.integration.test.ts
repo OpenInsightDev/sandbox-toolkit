@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { ApiError, layerFetch } from "../src/internal/client.ts";
-import { layer as http2WebSocket } from "../src/Http2WebSocket.ts";
+import { layer as http2WebSocket } from "../src/internal/Http2WebSocket.ts";
 import * as Process from "../src/Process.ts";
 import * as Terminal from "../src/Terminal.ts";
 
