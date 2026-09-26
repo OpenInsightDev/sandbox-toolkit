@@ -3,12 +3,20 @@ import type { HttpClientResponse } from "effect/unstable/http";
 import type { TemplateExpression } from "effect/unstable/process/ChildProcess";
 import { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
 
-import type { Command, ProcessResult, ShellCommandOptions } from "../Process.ts";
+import {
+  CommandFailed,
+  ProcessEvent,
+  StreamError,
+  type Command,
+  type ProcessError,
+  type ProcessResult,
+  type ShellCommandOptions,
+} from "../Process.ts";
 import type { ExecRequest } from "../generated/ExecRequest.ts";
 import type { ExecResult } from "../generated/ExecResult.ts";
 import type { ShellRequest } from "../generated/ShellRequest.ts";
 import type { Status } from "../generated/Status.ts";
-import { transportError, type ClientError } from "./client.ts";
+import { transportError } from "./client.ts";
 
 const targetEnv = (env: Record<string, string | undefined> | undefined): Record<string, string> =>
   Record.filter(env ?? {}, (value): value is string => value !== undefined);
@@ -89,44 +97,7 @@ export const takeLines = (
 export const endLines = (buffer: string): ReadonlyArray<string> =>
   buffer === "" ? [] : [buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer];
 
-/** A command that could not run, or was terminated before it could exit. */
-export class CommandFailed extends Data.TaggedError("CommandFailed")<{
-  readonly message: string;
-}> {}
-
-/** The exec frame stream violated its wire format. */
-export class StreamError extends Data.TaggedError("StreamError")<{
-  readonly message: string;
-}> {}
-
-/**
- * A shell command that ran to completion with a non-zero exit code, carrying
- * the script and both output streams so a failing command is diagnosable.
- */
-export class CommandExitError extends Data.TaggedError("CommandExitError")<{
-  readonly script: string;
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}> {}
-
-export type ProcessError = ClientError | CommandFailed | StreamError | CommandExitError;
-
-/**
- * One message read from the exec frame stream, tagged by channel.
- *
- * A run emits any number of `Stdout` and `Stderr` chunks, then exactly one
- * `Exit` carrying the command's exit code.
- */
-export type ProcessEvent = Data.TaggedEnum<{
-  Stdout: { readonly data: Uint8Array };
-  Stderr: { readonly data: Uint8Array };
-  Exit: { readonly exitCode: ExitCode };
-}>;
-
-export const ProcessEvent = Data.taggedEnum<ProcessEvent>();
-
-/** One message on the exec frame stream, before the status is turned into an exit code. */
+/** A frame header: one channel byte and a four-byte big-endian length. */
 type Frame = Data.TaggedEnum<{
   Stdout: { readonly data: Uint8Array };
   Stderr: { readonly data: Uint8Array };
@@ -349,20 +320,18 @@ export const responseEvents = (
     ? Stream.mapEffect(decodeFrames(Stream.mapError(response.stream, transportError)), frameToEvent)
     : Stream.unwrap(Effect.map(jsonBody(response), directEvents));
 
-const { $is } = ProcessEvent;
-
 /** Collapses the multiplexed events into the single final result of a collection. */
 const collectedResult = (events: ReadonlyArray<ProcessEvent>): ProcessResult => {
   // `decodeFrames` guarantees a terminal `Exit`, so the fallback is unreachable.
-  const exitCode = events.find($is("Exit"))?.exitCode ?? ExitCode(0);
+  const exitCode = events.find(ProcessEvent.$is("Exit"))?.exitCode ?? ExitCode(0);
 
   return {
     exitCode: Effect.succeed(exitCode),
     stdout: Stream.make(
-      concat(events.flatMap((event) => ($is("Stdout")(event) ? [event.data] : []))),
+      concat(events.flatMap((event) => (ProcessEvent.$is("Stdout")(event) ? [event.data] : []))),
     ),
     stderr: Stream.make(
-      concat(events.flatMap((event) => ($is("Stderr")(event) ? [event.data] : []))),
+      concat(events.flatMap((event) => (ProcessEvent.$is("Stderr")(event) ? [event.data] : []))),
     ),
   };
 };

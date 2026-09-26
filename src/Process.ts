@@ -1,14 +1,10 @@
-import { Context, Effect, Layer, Stream } from "effect";
+import { Context, Data, Effect, Layer, Stream } from "effect";
 import { HttpClientRequest } from "effect/unstable/http";
 import type { TemplateExpression } from "effect/unstable/process/ChildProcess";
 import { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
 
-import { Client } from "./internal/client.ts";
+import { Client, type ClientError } from "./internal/client.ts";
 import {
-  CommandExitError,
-  CommandFailed,
-  ProcessEvent,
-  StreamError,
   endLines,
   execRequest,
   isTemplateStrings,
@@ -18,13 +14,45 @@ import {
   responseResult,
   shellRequest,
   takeLines,
-  type ProcessError,
 } from "./internal/process.ts";
 import { route } from "./internal/prelude.ts";
 
-export { CommandExitError, CommandFailed, ProcessEvent, StreamError };
+/** A command that could not run, or was terminated before it could exit. */
+export class CommandFailed extends Data.TaggedError("CommandFailed")<{
+  readonly message: string;
+}> {}
 
-export type { ProcessError };
+/** The exec frame stream violated its wire format. */
+export class StreamError extends Data.TaggedError("StreamError")<{
+  readonly message: string;
+}> {}
+
+/**
+ * A shell command that ran to completion with a non-zero exit code, carrying
+ * the script and both output streams so a failing command is diagnosable.
+ */
+export class CommandExitError extends Data.TaggedError("CommandExitError")<{
+  readonly script: string;
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {}
+
+export type ProcessError = ClientError | CommandFailed | StreamError | CommandExitError;
+
+/**
+ * One message read from the exec frame stream, tagged by channel.
+ *
+ * A run emits any number of `Stdout` and `Stderr` chunks, then exactly one
+ * `Exit` carrying the command's exit code.
+ */
+export type ProcessEvent = Data.TaggedEnum<{
+  Stdout: { readonly data: Uint8Array };
+  Stderr: { readonly data: Uint8Array };
+  Exit: { readonly exitCode: ExitCode };
+}>;
+
+export const ProcessEvent = Data.taggedEnum<ProcessEvent>();
 
 export interface ProcessResult {
   /**
