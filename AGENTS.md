@@ -26,6 +26,11 @@ release. Add a tool name to select part of the graph. For example, run
 
 <!--VITE PLUS END-->
 
+# Platform
+
+The project only needs to run inside Linux containers.
+Do not add code, branches, or tests for other platforms, and treat non-Linux behavior as out of scope.
+
 # Comments
 
 - **No filler**: Do not repeat the file name, module path, or design-doc paths in comments (e.g. no `//! This module defines the... described in docs/...`).
