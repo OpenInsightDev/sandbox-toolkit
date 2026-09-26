@@ -4,11 +4,14 @@ import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Exit, Layer, Stream } from "effect";
 import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
+import * as Socket from "effect/unstable/socket/Socket";
 
 import { ApiError, layerFetch } from "../src/internal/client.ts";
+import { layer as http2WebSocket } from "../src/Http2WebSocket.ts";
 import * as Process from "../src/Process.ts";
+import * as Terminal from "../src/Terminal.ts";
 
 /**
  * End-to-end wiring check between this package's `Process` client and the Rust
@@ -171,6 +174,18 @@ const processLayer = (workspace?: string) =>
 
 const run = <A, E>(program: Effect.Effect<A, E, Process.Process>, workspace?: string): Promise<A> =>
   Effect.runPromise(Effect.provide(program, processLayer(workspace)));
+
+const terminalLayer = (workspace: string | undefined, options: Terminal.TerminalOptions) =>
+  (workspace === undefined
+    ? Terminal.layer(options)
+    : Terminal.layerForWorkspace({ workspace, ...options })
+  ).pipe(Layer.provide(layerFetch({ baseUrl })));
+
+const runTerminal = <A, E>(
+  program: Effect.Effect<A, E, Terminal.Terminal>,
+  workspace: string | undefined,
+  options: Terminal.TerminalOptions = {},
+): Promise<A> => Effect.runPromise(Effect.provide(program, terminalLayer(workspace, options)));
 
 const execStreamContentType = "application/vnd.sandbox-toolkit.exec-stream";
 
@@ -586,6 +601,50 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec and pt
     expect(value.length).toBe(4_500_000);
   });
 
+  test("attaches to a pty over HTTP/2 extended CONNECT", async () => {
+    const line = await runTerminal(
+      Effect.gen(function* () {
+        const terminal = yield* Terminal.Terminal;
+
+        return yield* terminal.readLine;
+      }),
+      undefined,
+      { command: "sh", args: ["-c", "printf 'h2-attach\\n'"] },
+    );
+
+    expect(line).toBe("h2-attach");
+  });
+
+  test("attaches over HTTP/2 in workspace mode", async () => {
+    const line = await runTerminal(
+      Effect.gen(function* () {
+        const terminal = yield* Terminal.Terminal;
+
+        return yield* terminal.readLine;
+      }),
+      "docs",
+      { command: "sh", args: ["-c", "printf 'h2-workspace\\n'"] },
+    );
+
+    expect(line).toBe("h2-workspace");
+  });
+
+  test("fails an attach to an unknown session over HTTP/2", async () => {
+    const { port } = new URL(baseUrl);
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const socket = yield* Socket.makeWebSocket(`ws://127.0.0.1:${port}/pty/missing`);
+        const reader = yield* socket.reader;
+
+        return yield* reader.pull;
+      }),
+    );
+
+    const exit = await Effect.runPromiseExit(Effect.provide(program, http2WebSocket));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+  });
+
   describe("raw HTTP contract", () => {
     test("answers a fast command with JSON and the flattened status", async () => {
       const response = await postJson("/exec", {
@@ -694,10 +753,12 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec and pt
       expect(await errorCode(response)).toBe("not_found");
     });
 
-    test("rejects a pty attach that is not a WebSocket handshake", async () => {
+    test("rejects an HTTP/1.1 WebSocket upgrade on the attach route", async () => {
+      // Attach is HTTP/2 extended CONNECT only, so the HTTP/1.1 `GET` handshake
+      // is stopped by the method filter before the handler.
       const response = await fetch(`${baseUrl}/pty/session-1`);
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(405);
     });
   });
 });

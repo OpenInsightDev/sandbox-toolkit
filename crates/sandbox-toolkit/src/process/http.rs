@@ -14,11 +14,13 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{FromRequestParts, Path};
 use axum::http::header;
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing;
+use base64::Engine as _;
 use bytes::Bytes;
 use serde_json::Value;
+use sha1::{Digest, Sha1};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -48,10 +50,10 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/pty", routing::post(create_pty))
         .route("/workspaces/{workspace_id}/pty", routing::post(create_pty))
-        .route("/pty/{session_id}", routing::get(attach_pty))
+        .route("/pty/{session_id}", routing::connect(attach_pty))
         .route(
             "/workspaces/{workspace_id}/pty/{session_id}",
-            routing::get(attach_pty),
+            routing::connect(attach_pty),
         )
 }
 
@@ -160,6 +162,7 @@ async fn read_pty_request(body: Body) -> Result<PtyRequest, AppError> {
 async fn attach_pty(
     target: ProcessTarget,
     Path(captures): Path<HashMap<String, String>>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
     let missing = || AppError::NotFound("pty session".to_owned());
@@ -178,9 +181,32 @@ async fn attach_pty(
         return Err(AppError::NotFound(format!("pty session `{session_id}`")));
     }
 
-    Ok(upgrade
+    let mut response = upgrade
         .max_message_size(pty::MAX_MESSAGE_LEN)
-        .on_upgrade(move |socket| session.run(socket)))
+        .on_upgrade(move |socket| session.run(socket));
+
+    if let Some(accept) = sec_websocket_accept(&headers) {
+        response
+            .headers_mut()
+            .entry(header::SEC_WEBSOCKET_ACCEPT)
+            .or_insert(accept);
+    }
+
+    Ok(response)
+}
+
+/// The RFC 6455 accept token for the request's `Sec-WebSocket-Key`.
+///
+/// HACK: RFC 8441 supersedes `Sec-WebSocket-Key`/`Sec-WebSocket-Accept`, so axum
+/// omits the accept header from the HTTP/2 extended CONNECT response. undici's
+/// WebSocket client still validates it, so it is added for compatibility.
+fn sec_websocket_accept(headers: &HeaderMap) -> Option<HeaderValue> {
+    let key = headers.get(header::SEC_WEBSOCKET_KEY)?;
+    let mut hasher = Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+
+    HeaderValue::from_str(&base64::engine::general_purpose::STANDARD.encode(hasher.finalize())).ok()
 }
 
 /// Every variant is the caller's doing: an empty command, an unusable `cwd`, or an
@@ -803,9 +829,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pty_attach_rejects_a_non_handshake_before_the_session() {
-        // The attach route is a WebSocket endpoint, so a request that is not a
-        // handshake is rejected before any session is reached.
+    async fn pty_attach_only_routes_connect() {
+        // The attach route is an HTTP/2 extended CONNECT endpoint, so the
+        // HTTP/1.1 WebSocket upgrade (`GET`) never reaches the handler.
         let response = send(
             &app(),
             Request::builder()
@@ -816,7 +842,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

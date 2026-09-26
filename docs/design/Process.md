@@ -101,7 +101,7 @@ exec 以 JSON body 执行一个可执行文件或一段脚本，`format` 区分�
 { "id": "…", "endpoint": "/workspaces/{id}/pty/{session_id}" }
 ```
 
-- `endpoint` 是连接该 session 的 WebSocket 端点，为服务器相对路径（直接模式下形如 `/pty/{session_id}`）；客户端在 HTTP 基址上把 scheme 换成 `ws`/`wss` 连接，服务端同时接受标准 WebSocket upgrade 与 HTTP/2 extended CONNECT（RFC 8441）；
+- `endpoint` 是连接该 session 的 WebSocket 端点，为服务器相对路径（直接模式下形如 `/pty/{session_id}`）；客户端在 HTTP 基址上把 scheme 换成 `ws`/`wss` 连接，服务端只接受 HTTP/2 extended CONNECT（RFC 8441）；
 - 一个 session 对应一条 WebSocket，生命周期归服务端持有；
 - 创建后 30s 内未建立连接即回收；连接后按 WebSocket 活动（含 ping/pong）计时，空闲超过 5min 回收；
 - 一个 session 只能附着一次，路径中的 session id 不存在或已被附着返回 `404 not_found`；

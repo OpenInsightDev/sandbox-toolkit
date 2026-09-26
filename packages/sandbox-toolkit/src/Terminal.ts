@@ -1,4 +1,3 @@
-import { NodeSocket } from "@effect/platform-node";
 import { Context, Effect, Layer, Option, PlatformError, Predicate, Queue } from "effect";
 import type { Cause, Scope } from "effect";
 import { QuitError, type UserInput } from "effect/Terminal";
@@ -7,6 +6,7 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import type { PtyRequest } from "./generated/PtyRequest.ts";
 import type { PtySession } from "./generated/PtySession.ts";
+import { layer as http2WebSocket } from "./Http2WebSocket.ts";
 import { Client } from "./internal/client.ts";
 import { endLines, takeLines } from "./internal/process.ts";
 import { route, targetEnv } from "./internal/prelude.ts";
@@ -201,10 +201,8 @@ export const layerForWorkspace = ({
   workspace,
   ...options
 }: { workspace: string } & TerminalOptions) =>
-  Layer.effect(Terminal, make({ workspace, ...options })).pipe(
-    Layer.provide(NodeSocket.layerWebSocketConstructor),
-  );
+  Layer.effect(Terminal, make({ workspace, ...options })).pipe(Layer.provide(http2WebSocket));
 
 /** The terminal service in direct mode, where `cwd` is an absolute path. */
 export const layer = (options: TerminalOptions = {}) =>
-  Layer.effect(Terminal, make(options)).pipe(Layer.provide(NodeSocket.layerWebSocketConstructor));
+  Layer.effect(Terminal, make(options)).pipe(Layer.provide(http2WebSocket));
