@@ -4,3 +4,4 @@
 - [ ] P1：服务端添加对 pty 的完整支持
 - [ ] P1：sdk 实现 Skill Service，并与服务端集成测试
 - [x] P2：sdk 的 pty 附着改用 HTTP/2 extended CONNECT（RFC 8441）
+- [ ] P2：探索 h2 only 的可行性
