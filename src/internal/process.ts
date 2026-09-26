@@ -1,4 +1,4 @@
-import { Data, Effect, Match, Option, Record, Ref, Schema, Stream } from "effect";
+import { Data, Effect, Match, Option, Ref, Schema, Stream } from "effect";
 import type { HttpClientResponse } from "effect/unstable/http";
 import type { TemplateExpression } from "effect/unstable/process/ChildProcess";
 import { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
@@ -17,9 +17,7 @@ import type { ExecResult } from "../generated/ExecResult.ts";
 import type { ShellRequest } from "../generated/ShellRequest.ts";
 import type { Status } from "../generated/Status.ts";
 import { transportError } from "./client.ts";
-
-const targetEnv = (env: Record<string, string | undefined> | undefined): Record<string, string> =>
-  Record.filter(env ?? {}, (value): value is string => value !== undefined);
+import { targetEnv } from "./prelude.ts";
 
 export const execRequest = (command: Command): ExecRequest => ({
   command: command.command,

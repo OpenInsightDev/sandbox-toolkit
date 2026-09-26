@@ -45,6 +45,9 @@ export interface ClientConfig {
 }
 
 export interface Client {
+  /** Base URL prepended to every request URL. */
+  readonly baseUrl: string;
+
   /**
    * Sends a request and returns the `2xx` response, exposing status, `ETag`,
    * and `Last-Modified` to the callers that need them.
@@ -130,6 +133,8 @@ export const make = (
       Effect.catchTag(client.execute(request), "HttpClientError", toClientError);
 
     return Client.of({
+      baseUrl: config.baseUrl?.toString() ?? "",
+
       execute,
 
       json: <A = Schema.Json>(request: HttpClientRequest.HttpClientRequest) =>
