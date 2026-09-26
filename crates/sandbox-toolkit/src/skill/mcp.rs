@@ -4,7 +4,7 @@ use rmcp::{tool, tool_router};
 use serde_json::json;
 
 use super::model::{GetRequest, ListRequest, SkillBody, SkillList};
-use super::query::{self, SkillError};
+use super::skill::{self, SkillError};
 use crate::server::ToolkitServer;
 
 #[tool_router(router = skill_tools, vis = "pub(crate)")]
@@ -15,7 +15,7 @@ impl ToolkitServer {
         &self,
         Parameters(request): Parameters<ListRequest>,
     ) -> Result<Json<SkillList>, ErrorData> {
-        let skills = query::list(self.state(), request)
+        let skills = skill::list(self.state(), request)
             .await
             .map_err(skill_error)?;
 
@@ -28,7 +28,7 @@ impl ToolkitServer {
         &self,
         Parameters(request): Parameters<GetRequest>,
     ) -> Result<Json<SkillBody>, ErrorData> {
-        let document = query::body(self.state(), request)
+        let document = skill::body(self.state(), request)
             .await
             .map_err(skill_error)?;
 

@@ -1,7 +1,7 @@
 mod http;
 mod mcp;
 pub(crate) mod model;
-mod query;
+mod skill;
 
 pub(crate) use self::http::router;
-pub(crate) use self::query::resolve_workspace;
+pub(crate) use self::skill::resolve_workspace;

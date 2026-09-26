@@ -11,7 +11,7 @@ use axum::response::Response;
 use axum::routing::{self, MethodRouter};
 
 use super::model::{GetRequest, ListRequest, SkillList};
-use super::query::{self, SkillError};
+use super::skill::{self, SkillError};
 use crate::{AppError, AppState};
 
 pub(crate) fn router() -> Router<AppState> {
@@ -74,7 +74,7 @@ async fn list_skills(
         limit: query.limit,
     };
 
-    Ok(Json(query::list(&state, request).await?))
+    Ok(Json(skill::list(&state, request).await?))
 }
 
 async fn get_skill_body(
@@ -88,7 +88,7 @@ async fn get_skill_body(
         workspace_id: target.workspace_id,
         skill_id,
     };
-    let document = query::body(&state, request).await?;
+    let document = skill::body(&state, request).await?;
 
     let mut response = Response::new(Body::from(document.content));
     response.headers_mut().insert(
