@@ -1,51 +1,28 @@
-import { ByteSize, Effect, Option, PlatformError } from "effect";
+import { ByteSize, Match, Option, PlatformError, Predicate } from "effect";
 import type { File } from "effect/FileSystem";
 
 import type { ResourceMetadata } from "../generated/ResourceMetadata.ts";
 import { ApiError, type ClientError } from "./client.ts";
 
-/** Percent-encode each segment, keeping the `/` separators. */
-const encodePath = (path: string): string => path.split("/").map(encodeURIComponent).join("/");
-
-/**
- * The resource URL `path` addresses. Workspace mode keeps the path relative to
- * the workspace prefix, where "" addresses the root; direct mode spells an
- * absolute path after `/fs`, which a relative path cannot express, so it is
- * rejected before the request rather than fixed up.
- */
-export const resourceUrl = (
-  workspace: string | undefined,
-  method: string,
-  path: string,
-): Effect.Effect<string, PlatformError.PlatformError> => {
-  if (workspace !== undefined) {
-    return Effect.succeed(
-      `/workspaces/${workspace}/fs${path === "" ? "" : `/${encodePath(path)}`}`,
-    );
-  }
-
-  return path.startsWith("/")
-    ? Effect.succeed(`/fs${encodePath(path)}`)
-    : Effect.fail(
-        PlatformError.badArgument({
-          module: "FileSystem",
-          method,
-          description: `path must be absolute: ${path}`,
-        }),
-      );
-};
-
 /** A `join` for the protocol's `/`-separated paths. */
 export const joinPath = (from: string, name: string): string =>
   from === "" ? name : `${from.replace(/\/+$/, "")}/${name}`;
+
+/** A `SystemError` reason without its tag, which the helper below supplies. */
+type SystemFailure = Omit<Parameters<typeof PlatformError.systemError>[0], "_tag">;
+
+/** Wraps a system failure as the platform error, keeping the tag in one place. */
+const systemError = (
+  tag: PlatformError.SystemErrorTag,
+  failure: SystemFailure,
+): PlatformError.PlatformError => PlatformError.systemError({ ...failure, _tag: tag });
 
 /**
  * Operations whose server endpoint is not wired up yet fail rather than die,
  * so callers can recover.
  */
 export const unsupported = (method: string): PlatformError.PlatformError =>
-  PlatformError.systemError({
-    _tag: "Unknown",
+  systemError("Unknown", {
     module: "FileSystem",
     method,
     description: "the sandbox file server does not implement this operation yet",
@@ -59,51 +36,44 @@ export const unsupported = (method: string): PlatformError.PlatformError =>
 export const toPlatformError =
   (method: string, path: string) =>
   (error: ClientError): PlatformError.PlatformError => {
-    if (!(error instanceof ApiError)) {
-      return PlatformError.systemError({
-        _tag: "Unknown",
-        module: "FileSystem",
-        method,
-        description: error.message,
-        pathOrDescriptor: path,
-        cause: error,
-      });
-    }
-
-    const options = {
+    const failure: SystemFailure = {
       module: "FileSystem",
       method,
       description: error.message,
       pathOrDescriptor: path,
       cause: error,
-    } as const;
+    };
+
+    if (!(error instanceof ApiError)) {
+      return systemError("Unknown", failure);
+    }
 
     switch (error.code) {
       case "not_found":
-        return PlatformError.systemError({ ...options, _tag: "NotFound" });
+        return systemError("NotFound", failure);
       case "not_a_file":
       case "not_a_directory":
-        return PlatformError.systemError({ ...options, _tag: "BadResource" });
+        return systemError("BadResource", failure);
       case "conflict":
-        return PlatformError.systemError({
-          ...options,
-          _tag: error.message.includes("already exists") ? "AlreadyExists" : "NotFound",
-        });
+        return systemError(
+          error.message.includes("already exists") ? "AlreadyExists" : "NotFound",
+          failure,
+        );
       case "read_only_workspace":
       case "managed_workspace":
-        return PlatformError.systemError({ ...options, _tag: "PermissionDenied" });
+        return systemError("PermissionDenied", failure);
       case "bad_request":
       case "invalid_request":
       case "unsupported_type":
       case "method_not_allowed":
         return PlatformError.badArgument({
-          module: options.module,
-          method: options.method,
-          description: options.description,
+          module: failure.module,
+          method: failure.method,
+          description: failure.description,
           cause: error,
         });
       default:
-        return PlatformError.systemError({ ...options, _tag: "Unknown" });
+        return systemError("Unknown", failure);
     }
   };
 
@@ -124,12 +94,11 @@ const optionalByteSize = (value: number | undefined): Option.Option<ByteSize.Byt
  * empty rather than fabricated.
  */
 export const metadataInfo = (metadata: ResourceMetadata): File.Info => ({
-  type:
-    metadata.kind === "file"
-      ? "File"
-      : metadata.kind === "directory"
-        ? "Directory"
-        : "SymbolicLink",
+  type: Match.value(metadata.kind).pipe(
+    Match.when("file", () => "File" as const),
+    Match.when("directory", () => "Directory" as const),
+    Match.orElse(() => "SymbolicLink" as const),
+  ),
   mtime: Option.some(new Date(metadata.modified_at)),
   atime: optionalDate(metadata.accessed_at),
   birthtime: optionalDate(metadata.birthtime),
@@ -147,4 +116,4 @@ export const metadataInfo = (metadata: ResourceMetadata): File.Info => ({
 
 /** The resource reports as absent only when the server said `not_found`. */
 export const isNotFound = (error: PlatformError.PlatformError): boolean =>
-  error.reason._tag === "NotFound";
+  Predicate.isTagged(error.reason, "NotFound");

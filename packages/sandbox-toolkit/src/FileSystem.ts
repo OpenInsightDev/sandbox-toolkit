@@ -11,24 +11,27 @@ import {
 import type { OpenFlag, File, WatchOptions, WatchEvent } from "effect/FileSystem";
 import { HttpClientRequest } from "effect/unstable/http";
 
+import type { CreateDirectoryRequest } from "./generated/CreateDirectoryRequest.ts";
 import type { DirectoryResponse } from "./generated/DirectoryResponse.ts";
 import type { GlobRequest } from "./generated/GlobRequest.ts";
 import type { ListRequest } from "./generated/ListRequest.ts";
 import type { ResourceMetadata } from "./generated/ResourceMetadata.ts";
 import { Client } from "./internal/client.ts";
-import {
-  isNotFound,
-  metadataInfo,
-  resourceUrl,
-  toPlatformError,
-  unsupported,
-} from "./internal/filesystem.ts";
+import { isNotFound, metadataInfo, toPlatformError, unsupported } from "./internal/filesystem.ts";
 import { endLines, takeLines } from "./internal/process.ts";
 
 export type FileSystemError = PlatformError.PlatformError;
 
-/** The JSON bodies of the `QUERY` types that carry one. */
-type QueryBody = GlobRequest | ListRequest;
+/**
+ * One filesystem request: the `operation` names the caller in errors, `type`
+ * selects the wire handler, and `body` carries `path` (plus any operation
+ * parameters) in JSON rather than in the URL.
+ */
+interface Query<Body extends { readonly path: string }> {
+  readonly operation: string;
+  readonly type: string;
+  readonly body: Body;
+}
 
 export interface FileSystem {
   readonly access: (
@@ -189,52 +192,86 @@ export const make = Effect.fn("FileSystem.make")(function* (
 ) {
   const client = yield* Client;
 
-  const url = (method: string, path: string) => resourceUrl(options.workspace, method, path);
+  const endpoint = (type: string): string =>
+    options.workspace === undefined
+      ? `/fs?type=${type}`
+      : `/workspaces/${options.workspace}/fs?type=${type}`;
 
-  // Only `type` travels in the query; every other parameter is the request body.
-  const queryJson = <A>(
-    method: string,
-    path: string,
-    type: string,
-    body?: QueryBody,
+  // Direct mode addresses absolute paths only, so a relative one is rejected
+  // before the request rather than fixed up.
+  const guardPath = ({
+    operation,
+    body,
+  }: Query<{ readonly path: string }>): Effect.Effect<void, FileSystemError> =>
+    options.workspace === undefined && !body.path.startsWith("/")
+      ? Effect.fail(
+          PlatformError.badArgument({
+            module: "FileSystem",
+            method: operation,
+            description: `path must be absolute: ${body.path}`,
+          }),
+        )
+      : Effect.void;
+
+  // The path travels in the JSON body; only the wire `type` is in the query.
+  const wire = <Body extends { readonly path: string }>({
+    type,
+    body,
+  }: Query<Body>): HttpClientRequest.HttpClientRequest =>
+    HttpClientRequest.query(endpoint(type)).pipe(HttpClientRequest.bodyJsonUnsafe(body));
+
+  const queryJson = <A, Body extends { readonly path: string } = { readonly path: string }>(
+    query: Query<Body>,
   ): Effect.Effect<A, FileSystemError> =>
-    url(method, path).pipe(
-      Effect.flatMap((target) => {
-        const request = HttpClientRequest.query(`${target}?type=${type}`).pipe((self) =>
-          body === undefined ? self : HttpClientRequest.bodyJsonUnsafe(self, body),
-        );
+    guardPath(query).pipe(
+      Effect.flatMap(() =>
+        client
+          .json<A>(wire(query))
+          .pipe(Effect.mapError(toPlatformError(query.operation, query.body.path))),
+      ),
+    );
 
-        return client.json<A>(request).pipe(Effect.mapError(toPlatformError(method, path)));
-      }),
+  const queryBytes = (
+    query: Query<{ readonly path: string }>,
+  ): Effect.Effect<Uint8Array, FileSystemError> =>
+    guardPath(query).pipe(
+      Effect.flatMap(() =>
+        client
+          .bytes(wire(query))
+          .pipe(Effect.mapError(toPlatformError(query.operation, query.body.path))),
+      ),
+    );
+
+  const queryStream = (
+    query: Query<{ readonly path: string }>,
+  ): Stream.Stream<Uint8Array, FileSystemError> =>
+    Stream.unwrap(
+      guardPath(query).pipe(
+        Effect.map(() =>
+          client
+            .stream(wire(query))
+            .pipe(Stream.mapError(toPlatformError(query.operation, query.body.path))),
+        ),
+      ),
     );
 
   const readFile = ((path: string) =>
-    url("readFile", path).pipe(
-      Effect.flatMap((target) =>
-        client
-          .bytes(HttpClientRequest.get(target))
-          .pipe(Effect.mapError(toPlatformError("readFile", path))),
-      ),
-    )) satisfies FileSystem["readFile"];
+    queryBytes({
+      operation: "readFile",
+      type: "stream",
+      body: { path },
+    })) satisfies FileSystem["readFile"];
 
   const stream = ((path: string, streamOptions) => {
     if (streamOptions?.offset !== undefined || streamOptions?.bytesToRead !== undefined) {
       return Stream.fail(unsupported("stream(offset/bytesToRead)"));
     }
 
-    return Stream.unwrap(
-      url("stream", path).pipe(
-        Effect.map((target) =>
-          client
-            .stream(HttpClientRequest.get(`${target}?type=stream`))
-            .pipe(Stream.mapError(toPlatformError("stream", path))),
-        ),
-      ),
-    );
+    return queryStream({ operation: "stream", type: "stream", body: { path } });
   }) satisfies FileSystem["stream"];
 
   const stat = ((path: string) =>
-    queryJson<ResourceMetadata>("stat", path, "metadata").pipe(
+    queryJson<ResourceMetadata>({ operation: "stat", type: "metadata", body: { path } }).pipe(
       Effect.map(metadataInfo),
     )) satisfies FileSystem["stat"];
 
@@ -245,7 +282,8 @@ export const make = Effect.fn("FileSystem.make")(function* (
     )) satisfies FileSystem["exists"];
 
   const readDirectory = ((path: string, readOptions) => {
-    const request: ListRequest = {
+    const body: ListRequest = {
+      path,
       offset: 0,
       limit: null,
       depth: readOptions?.recursive === true ? "infinity" : null,
@@ -253,15 +291,14 @@ export const make = Effect.fn("FileSystem.make")(function* (
 
     // Entries carry the addressing-mode path; rebuilding from the name would drop
     // the directory prefix of a recursive listing.
-    return queryJson<DirectoryResponse>("readDirectory", path, "list", request).pipe(
+    return queryJson<DirectoryResponse>({ operation: "readDirectory", type: "list", body }).pipe(
       Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );
   }) satisfies FileSystem["readDirectory"];
 
   const glob = ((pattern: string, globOptions) => {
-    const root = globOptions?.root ?? "";
-
-    const request: GlobRequest = {
+    const body: GlobRequest = {
+      path: globOptions?.root ?? "",
       pattern,
       exclude: [...(globOptions?.exclude ?? [])],
       offset: 0,
@@ -270,25 +307,32 @@ export const make = Effect.fn("FileSystem.make")(function* (
 
     // Matched entries carry the addressing-mode path, so they round-trip in
     // both modes.
-    return queryJson<DirectoryResponse>("glob", root, "glob", request).pipe(
+    return queryJson<DirectoryResponse>({ operation: "glob", type: "glob", body }).pipe(
       Effect.map((directory) => directory.entries.map((entry) => entry.path)),
     );
   }) satisfies FileSystem["glob"];
 
-  const makeDirectory = ((path: string, makeOptions) =>
-    url("makeDirectory", path).pipe(
-      Effect.flatMap((target) => {
-        const request = HttpClientRequest.put(`${target}?type=directory`).pipe(
-          HttpClientRequest.setHeader("if-none-match", "*"),
-          (self) =>
-            makeOptions?.recursive === true
-              ? HttpClientRequest.bodyJsonUnsafe(self, { recursive: true })
-              : self,
-        );
+  const makeDirectory = ((path: string, makeOptions) => {
+    const body: CreateDirectoryRequest = {
+      path,
+      recursive: makeOptions?.recursive ?? null,
+    };
 
-        return client.void(request).pipe(Effect.mapError(toPlatformError("makeDirectory", path)));
-      }),
-    )) satisfies FileSystem["makeDirectory"];
+    const query = { operation: "makeDirectory", type: "directory", body } as const;
+
+    return guardPath(query).pipe(
+      Effect.flatMap(() =>
+        client
+          .void(
+            HttpClientRequest.put(endpoint(query.type)).pipe(
+              HttpClientRequest.setHeader("if-none-match", "*"),
+              HttpClientRequest.bodyJsonUnsafe(query.body),
+            ),
+          )
+          .pipe(Effect.mapError(toPlatformError(query.operation, query.body.path))),
+      ),
+    );
+  }) satisfies FileSystem["makeDirectory"];
 
   const readFileString = ((path: string, encoding?: string) =>
     readFile(path).pipe(
