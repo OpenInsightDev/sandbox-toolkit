@@ -12,8 +12,9 @@ import * as Process from "../src/Process.ts";
 
 /**
  * End-to-end wiring check between this package's `Process` client and the Rust
- * `exec` server: real HTTP, real subprocesses, real frame stream. The server is
- * built from the source tree and spawned on a private port with a throwaway root.
+ * process module: real HTTP, real subprocesses, real frame stream, plus the raw
+ * exec and pty routes the typed client never reaches. The server is built from
+ * the source tree and spawned on a private port with a throwaway root.
  */
 
 const repoRoot = resolve(import.meta.dirname, "..");
@@ -171,7 +172,20 @@ const processLayer = (workspace?: string) =>
 const run = <A, E>(program: Effect.Effect<A, E, Process.Process>, workspace?: string): Promise<A> =>
   Effect.runPromise(Effect.provide(program, processLayer(workspace)));
 
-describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () => {
+const execStreamContentType = "application/vnd.sandbox-toolkit.exec-stream";
+
+/** A raw request, for the wire details the typed client never produces. */
+const postJson = (path: string, body: unknown): Promise<Response> =>
+  fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const errorCode = async (response: Response): Promise<string> =>
+  ((await response.json()) as { error: { code: string } }).error.code;
+
+describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec and pty", () => {
   let server: Server | undefined;
   let root = "";
   let workspaceRoot = "";
@@ -470,7 +484,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
       Effect.gen(function* () {
         const process = yield* Process.Process;
 
-        return yield* process.$({ timeout: 0 })`printf shell; sleep 0.2`;
+        return yield* process.$({ wait: 0 })`printf shell; sleep 0.2`;
       }),
     );
 
@@ -482,11 +496,11 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
       Effect.gen(function* () {
         const process = yield* Process.Process;
 
-        return yield* process.$`yes x | head -c 1500000`;
+        return yield* process.$`yes x | head -c 4500000`;
       }),
     );
 
-    expect(value.length).toBe(1_500_000);
+    expect(value.length).toBe(4_500_000);
   });
 
   test("returns only the stdout of a shell template", async () => {
@@ -520,7 +534,7 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
         const process = yield* Process.Process;
 
         return yield* Effect.flip(
-          process.$({ timeout: 0 })`printf out; printf err 1>&2; sleep 0.2; exit 3`,
+          process.$({ wait: 0 })`printf out; printf err 1>&2; sleep 0.2; exit 3`,
         );
       }),
     );
@@ -565,10 +579,119 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
       Effect.gen(function* () {
         const process = yield* Process.Process;
 
-        return yield* process.string({ command: "sh", args: ["-c", "yes x | head -c 1500000"] });
+        return yield* process.string({ command: "sh", args: ["-c", "yes x | head -c 4500000"] });
       }),
     );
 
-    expect(value.length).toBe(1_500_000);
+    expect(value.length).toBe(4_500_000);
+  });
+
+  describe("raw HTTP contract", () => {
+    test("answers a fast command with JSON and the flattened status", async () => {
+      const response = await postJson("/exec", {
+        command: "sh",
+        args: ["-c", "printf out; printf err 1>&2; exit 3"],
+        wait: 5000,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(await response.json()).toEqual({
+        status: "exited",
+        exit_code: 3,
+        stdout: "out",
+        stderr: "err",
+      });
+    });
+
+    test("accepts the shell payload on the same exec route", async () => {
+      const response = await postJson("/exec", {
+        format: "shell",
+        script: "printf hi",
+        wait: 5000,
+      });
+
+      expect(await response.json()).toMatchObject({
+        status: "exited",
+        exit_code: 0,
+        stdout: "hi",
+      });
+    });
+
+    test("streams immediately when wait is absent", async () => {
+      const response = await postJson("/exec", {
+        command: "sh",
+        args: ["-c", "printf out"],
+      });
+
+      expect(response.headers.get("content-type")).toContain(execStreamContentType);
+
+      await response.arrayBuffer();
+    });
+
+    test("upgrades once the output exceeds the direct response limit", async () => {
+      const response = await postJson("/exec", {
+        command: "sh",
+        args: ["-c", "yes x | head -c 4500000"],
+        wait: 5000,
+      });
+
+      expect(response.headers.get("content-type")).toContain(execStreamContentType);
+
+      await response.arrayBuffer();
+    });
+
+    test("rejects an unknown format", async () => {
+      const response = await postJson("/exec", { format: "python", script: "print(1)" });
+
+      expect(response.status).toBe(422);
+      expect(await errorCode(response)).toBe("unsupported_type");
+    });
+
+    test("rejects a body that fails the selected schema", async () => {
+      const response = await postJson("/exec", {});
+
+      expect(response.status).toBe(422);
+      expect(await errorCode(response)).toBe("invalid_request");
+    });
+
+    test("reports an unknown workspace", async () => {
+      const response = await postJson("/workspaces/missing/exec", { command: "true" });
+
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("not_found");
+    });
+
+    test("injects the workspace variable in direct mode", async () => {
+      const response = await postJson("/exec", {
+        command: "sh",
+        args: ["-c", 'printf %s "$WORKSPACE_DOCS"'],
+        wait: 5000,
+      });
+
+      const body = (await response.json()) as { stdout: string };
+
+      expect(body.stdout).toBe(realpathSync(workspaceRoot));
+    });
+
+    test("wires the pty create route to the not-implemented result", async () => {
+      const response = await postJson("/pty", { command: "sh" });
+
+      expect(response.status).toBe(501);
+      expect(await errorCode(response)).toBe("not_implemented");
+    });
+
+    test("rejects a pty create on an unknown workspace before the handler", async () => {
+      const response = await postJson("/workspaces/missing/pty", { command: "sh" });
+
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("not_found");
+    });
+
+    test("rejects a pty attach that is not a WebSocket handshake", async () => {
+      const response = await fetch(`${baseUrl}/pty/session-1`);
+
+      expect(response.status).toBe(400);
+    });
   });
 });

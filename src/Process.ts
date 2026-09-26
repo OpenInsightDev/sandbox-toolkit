@@ -77,31 +77,22 @@ export interface CommandOptions {
    */
   readonly cwd?: string | undefined;
   /**
-   * The environment of the child process.
-   *
-   * **Details**
-   *
-   * If `extendEnv` is set to `true`, the value of `env` will be merged with
-   * the value of `globalThis.process.env`, prioritizing the values in `env`
-   * when conflicts exist.
-   *
-   * **Gotchas**
-   *
-   * Without `extendEnv: true`, providing `env` replaces the inherited child
-   * environment. The child will not receive `PATH` unless `env` includes it.
+   * The environment of the child process, layered over the inherited service
+   * process environment and overriding the injected workspace variables.
    */
   readonly env?: Record<string, string | undefined> | undefined;
   /**
-   * How long the server waits for the command to finish before upgrading the
-   * response to the frame stream, in milliseconds.
+   * How long the server waits for the command to finish before answering with
+   * the direct JSON result, in milliseconds.
    *
    * **Details**
    *
    * It bounds only the wait for a direct result and never terminates the
    * command. `Process.stream` defaults it to `0`, so the response upgrades as
-   * soon as it can; the other operations leave the server's default in place.
+   * soon as it can; `Process.result` and `Process.exec` default it to a positive
+   * value so a fast command is answered directly.
    */
-  readonly timeout?: number | undefined;
+  readonly wait?: number | undefined;
 }
 
 export interface ShellCommandOptions extends CommandOptions {
@@ -200,10 +191,23 @@ export class Process extends Context.Service<
   }
 >()("process") {}
 
+/**
+ * The `wait` used by the operations that expect a direct result when the caller
+ * does not pick one, so a fast command is answered with JSON instead of a stream.
+ */
+const DEFAULT_WAIT = 500;
+
 export const make = Effect.fn("Process.make")(function* (
   options: { workspace?: string | undefined } = {},
 ) {
   const client = yield* Client;
+
+  // The direct result needs a positive `wait`; without one the server streams
+  // immediately, so the operations that expect a result choose this bound.
+  const withWait = (command: Command, fallback: number): Command => ({
+    ...command,
+    options: { ...command.options, wait: command.options?.wait ?? fallback },
+  });
 
   const execHttpRequest = (command: Command): HttpClientRequest.HttpClientRequest =>
     HttpClientRequest.post(route(options.workspace, "/exec")).pipe(
@@ -217,21 +221,18 @@ export const make = Effect.fn("Process.make")(function* (
   // is answered with the frame stream, a shorter one with the direct result.
   const result = ((command) =>
     Effect.flatMap(
-      client.execute(execHttpRequest(command)),
+      client.execute(execHttpRequest(withWait(command, DEFAULT_WAIT))),
       responseResult,
     )) satisfies Process["Service"]["result"];
 
   const exec = ((command) =>
     Effect.flatMap(
-      client.execute(execHttpRequest(command)),
+      client.execute(execHttpRequest(withWait(command, DEFAULT_WAIT))),
       responseExec,
     )) satisfies Process["Service"]["exec"];
 
   const stream = ((command) =>
-    eventStream({
-      ...command,
-      options: { ...command.options, timeout: command.options?.timeout ?? 0 },
-    })) satisfies Process["Service"]["stream"];
+    eventStream(withWait(command, 0))) satisfies Process["Service"]["stream"];
 
   const runShell = (
     shellOptions: ShellCommandOptions,
@@ -241,8 +242,10 @@ export const make = Effect.fn("Process.make")(function* (
     Effect.gen(function* () {
       const script = renderShell(strings, values);
 
-      const request = HttpClientRequest.post(route(options.workspace, "/shell")).pipe(
-        HttpClientRequest.bodyJsonUnsafe(shellRequest(script, shellOptions)),
+      const request = HttpClientRequest.post(route(options.workspace, "/exec")).pipe(
+        HttpClientRequest.bodyJsonUnsafe(
+          shellRequest(script, { ...shellOptions, wait: shellOptions.wait ?? DEFAULT_WAIT }),
+        ),
       );
 
       const collected = yield* Effect.flatMap(client.execute(request), responseResult);

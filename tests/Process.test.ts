@@ -37,7 +37,7 @@ const bodyOf = (request: HttpClientRequest.HttpClientRequest): unknown => {
 };
 
 const result = (status: Status, stdout = "", stderr = "") =>
-  Response.json({ status, stdout, stderr });
+  Response.json({ ...status, stdout, stderr });
 
 const execStreamContentType = "application/vnd.sandbox-toolkit.exec-stream";
 
@@ -55,7 +55,7 @@ const frame = (channel: number, payload: Uint8Array): Uint8Array => {
   return bytes;
 };
 
-const statusFrame = (status: Status): Uint8Array => frame(2, encodeText(JSON.stringify(status)));
+const statusFrame = (status: Status): Uint8Array => frame(3, encodeText(JSON.stringify(status)));
 
 const streamResponse = (...chunks: ReadonlyArray<Uint8Array>): Response =>
   new Response(
@@ -107,14 +107,14 @@ test("runs an exec in the workspace and returns its stdout", async () => {
   const value = await run(program, "docs", (request, url) => {
     requests.push({ url: url.toString(), body: bodyOf(request) });
 
-    return result({ status: "success" }, "hi\n");
+    return result({ status: "exited", exit_code: 0 }, "hi\n");
   });
 
   expect(value).toBe("hi\n");
   expect(requests).toEqual([
     {
       url: "http://sandbox.test/workspaces/docs/exec",
-      body: { command: "echo", args: ["hi"], cwd: null, env: {}, timeout: null },
+      body: { format: "exec", command: "echo", args: ["hi"], cwd: null, env: {}, wait: 500 },
     },
   ]);
 });
@@ -131,7 +131,7 @@ test("runs an exec in direct mode at the root route", async () => {
   const value = await run(program, undefined, (_request, url) => {
     seen = url.toString();
 
-    return result({ status: "exited", code: 3 });
+    return result({ status: "exited", exit_code: 3 });
   });
 
   expect(seen).toBe("http://sandbox.test/exec");
@@ -145,7 +145,9 @@ test("splits the output into lines", async () => {
     return yield* Stream.runCollect(process.lines({ command: "ls", args: [] }));
   });
 
-  const value = await run(program, "docs", () => result({ status: "success" }, "a\nb\n"));
+  const value = await run(program, "docs", () =>
+    result({ status: "exited", exit_code: 0 }, "a\nb\n"),
+  );
 
   expect(Array.from(value)).toEqual(["a", "b"]);
 });
@@ -157,7 +159,9 @@ test("streams a trailing line that has no line ending", async () => {
     return yield* Stream.runCollect(process.lines({ command: "ls", args: [] }));
   });
 
-  const value = await run(program, "docs", () => result({ status: "success" }, "a\r\nb\nlast"));
+  const value = await run(program, "docs", () =>
+    result({ status: "exited", exit_code: 0 }, "a\r\nb\nlast"),
+  );
 
   expect(Array.from(value)).toEqual(["a", "b", "last"]);
 });
@@ -169,7 +173,9 @@ test("folds stderr into the output when asked", async () => {
     return yield* process.string({ command: "ls", args: [] }, { includeStderr: true });
   });
 
-  const value = await run(program, "docs", () => result({ status: "success" }, "out", "err"));
+  const value = await run(program, "docs", () =>
+    result({ status: "exited", exit_code: 0 }, "out", "err"),
+  );
 
   expect(value).toBe("outerr");
 });
@@ -196,19 +202,20 @@ test("runs a shell template with its options", async () => {
   });
 
   const value = await run(program, "docs", (request, url) => {
-    expect(url.toString()).toBe("http://sandbox.test/workspaces/docs/shell");
+    expect(url.toString()).toBe("http://sandbox.test/workspaces/docs/exec");
     body = bodyOf(request);
 
-    return result({ status: "success" }, "hi\n");
+    return result({ status: "exited", exit_code: 0 }, "hi\n");
   });
 
   expect(value).toBe("hi\n");
   expect(body).toEqual({
+    format: "shell",
     script: "echo hi",
+    shell: null,
     cwd: "sub",
     env: {},
-    shell: null,
-    timeout: null,
+    wait: 500,
   });
 });
 
@@ -221,9 +228,9 @@ test("collects a shell template answered with the frame stream", async () => {
 
   const value = await run(program, "docs", () =>
     streamResponse(
-      frame(0, encodeText("hi\n")),
-      frame(1, encodeText("err")),
-      statusFrame({ status: "success" }),
+      frame(1, encodeText("hi\n")),
+      frame(2, encodeText("err")),
+      statusFrame({ status: "exited", exit_code: 0 }),
     ),
   );
 
@@ -238,7 +245,7 @@ test("fails a shell template with a non-zero exit and its output", async () => {
       return yield* Effect.flip(process.$`printf out; printf err 1>&2; exit 3`);
     }),
     "docs",
-    () => result({ status: "exited", code: 3 }, "out", "err"),
+    () => result({ status: "exited", exit_code: 3 }, "out", "err"),
   );
 
   expect(error).toBeInstanceOf(Process.CommandExitError);
@@ -260,9 +267,9 @@ test("fails a streamed shell template with a non-zero exit and its output", asyn
     "docs",
     () =>
       streamResponse(
-        frame(0, encodeText("out")),
-        frame(1, encodeText("err")),
-        statusFrame({ status: "exited", code: 4 }),
+        frame(1, encodeText("out")),
+        frame(2, encodeText("err")),
+        statusFrame({ status: "exited", exit_code: 4 }),
       ),
   );
 
@@ -286,9 +293,9 @@ test("decodes the multiplexed frame stream into events", async () => {
       body = bodyOf(request);
 
       return streamResponse(
-        frame(0, encodeText("out")),
-        frame(1, encodeText("err")),
-        statusFrame({ status: "exited", code: 2 }),
+        frame(1, encodeText("out")),
+        frame(2, encodeText("err")),
+        statusFrame({ status: "exited", exit_code: 2 }),
       );
     },
   );
@@ -298,12 +305,19 @@ test("decodes the multiplexed frame stream into events", async () => {
     { _tag: "Stderr", data: "err" },
     { _tag: "Exit", exitCode: 2 },
   ]);
-  expect(body).toEqual({ command: "ls", args: ["-l"], cwd: "sub", env: {}, timeout: 0 });
+  expect(body).toEqual({
+    format: "exec",
+    command: "ls",
+    args: ["-l"],
+    cwd: "sub",
+    env: {},
+    wait: 0,
+  });
 });
 
 test("reassembles frames split across chunks", async () => {
-  const stdout = frame(0, encodeText("hello"));
-  const status = statusFrame({ status: "success" });
+  const stdout = frame(1, encodeText("hello"));
+  const status = statusFrame({ status: "exited", exit_code: 0 });
 
   const chunk = await run(collectStream({ command: "ls", args: [] }), "docs", () =>
     streamResponse(stdout.slice(0, 3), stdout.slice(3), status.slice(0, 2), status.slice(2)),
@@ -317,7 +331,7 @@ test("reassembles frames split across chunks", async () => {
 
 test("synthesizes events from a direct result", async () => {
   const chunk = await run(collectStream({ command: "ls", args: [] }), "docs", () =>
-    result({ status: "exited", code: 5 }, "out", "err"),
+    result({ status: "exited", exit_code: 5 }, "out", "err"),
   );
 
   expect(decoded(chunk)).toEqual([
@@ -338,7 +352,7 @@ test("fails the stream when the command could not run", async () => {
 test("fails the stream when it ends without a status frame", async () => {
   await expect(
     run(collectStream({ command: "ls", args: [] }), "docs", () =>
-      streamResponse(frame(0, encodeText("out"))),
+      streamResponse(frame(1, encodeText("out"))),
     ),
   ).rejects.toBeInstanceOf(Process.StreamError);
 });
@@ -346,7 +360,7 @@ test("fails the stream when it ends without a status frame", async () => {
 test("fails the stream on a malformed status frame", async () => {
   await expect(
     run(collectStream({ command: "ls", args: [] }), "docs", () =>
-      streamResponse(frame(2, encodeText("not json"))),
+      streamResponse(frame(3, encodeText("not json"))),
     ),
   ).rejects.toBeInstanceOf(Process.StreamError);
 });
@@ -365,9 +379,9 @@ test("collects the frame stream into a result", async () => {
 
   const value = await run(program, "docs", () =>
     streamResponse(
-      frame(0, encodeText("out")),
-      frame(1, encodeText("err")),
-      statusFrame({ status: "exited", code: 4 }),
+      frame(1, encodeText("out")),
+      frame(2, encodeText("err")),
+      statusFrame({ status: "exited", exit_code: 4 }),
     ),
   );
 
@@ -388,7 +402,7 @@ test("exec hands back a direct result when the server answers inline", async () 
         };
   });
 
-  const value = await run(program, "docs", () => result({ status: "exited", code: 2 }, "out"));
+  const value = await run(program, "docs", () => result({ status: "exited", exit_code: 2 }, "out"));
 
   expect(value).toEqual({ shape: "result", stdout: "out", exitCode: 2 });
 });
@@ -403,9 +417,9 @@ test("exec hands back the frame stream when the server upgrades", async () => {
 
   const value = await run(program, "docs", () =>
     streamResponse(
-      frame(0, encodeText("out")),
-      frame(1, encodeText("err")),
-      statusFrame({ status: "exited", code: 2 }),
+      frame(1, encodeText("out")),
+      frame(2, encodeText("err")),
+      statusFrame({ status: "exited", exit_code: 2 }),
     ),
   );
 

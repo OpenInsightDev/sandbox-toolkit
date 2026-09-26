@@ -14,28 +14,29 @@ import {
 } from "../Process.ts";
 import type { ExecRequest } from "../generated/ExecRequest.ts";
 import type { ExecResult } from "../generated/ExecResult.ts";
-import type { ShellRequest } from "../generated/ShellRequest.ts";
 import type { Status } from "../generated/Status.ts";
 import { transportError } from "./client.ts";
 import { targetEnv } from "./prelude.ts";
 
 export const execRequest = (command: Command): ExecRequest => ({
+  format: "exec",
   command: command.command,
   args: [...command.args],
   cwd: command.options?.cwd ?? null,
   env: targetEnv(command.options?.env),
-  timeout: command.options?.timeout ?? null,
+  wait: command.options?.wait ?? 0,
 });
 
 export const shellRequest = (
   script: string,
   options: ShellCommandOptions | undefined,
-): ShellRequest => ({
+): ExecRequest => ({
+  format: "shell",
   script,
+  shell: options?.shell ?? null,
   cwd: options?.cwd ?? null,
   env: targetEnv(options?.env),
-  shell: options?.shell ?? null,
-  timeout: options?.timeout ?? null,
+  wait: options?.wait ?? 0,
 });
 
 /**
@@ -95,7 +96,7 @@ export const takeLines = (
 export const endLines = (buffer: string): ReadonlyArray<string> =>
   buffer === "" ? [] : [buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer];
 
-/** A frame header: one channel byte and a four-byte big-endian length. */
+/** One multiplexed frame: an output stream chunk or the terminal status. */
 type Frame = Data.TaggedEnum<{
   Stdout: { readonly data: Uint8Array };
   Stderr: { readonly data: Uint8Array };
@@ -110,18 +111,17 @@ const HEADER_LEN = 5;
 /** The largest payload a frame may carry, mirroring the server's bound. */
 const MAX_PAYLOAD_LEN = 4 * 1024 * 1024;
 
-const STDOUT = 0;
+const STDOUT = 1;
 
-const STDERR = 1;
+const STDERR = 2;
 
-const ERROR = 2;
+const ERROR = 3;
 
 const EMPTY = new Uint8Array(0);
 
 const statusSchema = Schema.fromJsonString(
   Schema.Union([
-    Schema.Struct({ status: Schema.Literal("success") }),
-    Schema.Struct({ status: Schema.Literal("exited"), code: Schema.Number }),
+    Schema.Struct({ status: Schema.Literal("exited"), exit_code: Schema.Number }),
     Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
   ]),
 );
@@ -257,8 +257,7 @@ const EXEC_STREAM_CONTENT_TYPE = "application/vnd.sandbox-toolkit.exec-stream";
 const exitCodeOf = (status: Status): Effect.Effect<ExitCode, CommandFailed> =>
   Match.value(status).pipe(
     Match.discriminatorsExhaustive("status")({
-      success: () => Effect.succeed(ExitCode(0)),
-      exited: ({ code }) => Effect.succeed(ExitCode(code)),
+      exited: ({ exit_code }) => Effect.succeed(ExitCode(exit_code)),
       failed: ({ message }) => Effect.fail(new CommandFailed({ message })),
     }),
   );
@@ -290,7 +289,7 @@ const directEvents = (result: ExecResult): Stream.Stream<ProcessEvent, CommandFa
   return Stream.concat(
     Stream.fromArray(events),
     Stream.fromEffect(
-      Effect.map(exitCodeOf(result.status), (exitCode) => ProcessEvent.Exit({ exitCode })),
+      Effect.map(exitCodeOf(result), (exitCode) => ProcessEvent.Exit({ exitCode })),
     ),
   );
 };
@@ -336,7 +335,7 @@ const collectedResult = (events: ReadonlyArray<ProcessEvent>): ProcessResult => 
 
 /** The collected result of a command the server answered directly. */
 const directResult = (result: ExecResult): Effect.Effect<ProcessResult, CommandFailed> =>
-  Effect.map(exitCodeOf(result.status), (exitCode) => ({
+  Effect.map(exitCodeOf(result), (exitCode) => ({
     exitCode: Effect.succeed(exitCode),
     stdout: Stream.make(textBytes(result.stdout)),
     stderr: Stream.make(textBytes(result.stderr)),
