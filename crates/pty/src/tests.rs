@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ProcessDriver;
+use crate::ProcessExit;
 use crate::ProcessSignal;
 use crate::SpawnedProcess;
 use crate::TerminalSize;
@@ -60,7 +61,7 @@ fn combine_spawned_output(
 ) -> (
     crate::ProcessHandle,
     tokio::sync::broadcast::Receiver<Vec<u8>>,
-    tokio::sync::oneshot::Receiver<i32>,
+    tokio::sync::oneshot::Receiver<ProcessExit>,
 ) {
     let SpawnedProcess {
         session,
@@ -77,9 +78,9 @@ fn combine_spawned_output(
 
 async fn collect_output_until_exit(
     mut output_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
-    exit_rx: tokio::sync::oneshot::Receiver<i32>,
+    exit_rx: tokio::sync::oneshot::Receiver<ProcessExit>,
     timeout_ms: u64,
-) -> (Vec<u8>, i32) {
+) -> (Vec<u8>, ProcessExit) {
     let mut collected = Vec::new();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
     tokio::pin!(exit_rx);
@@ -92,7 +93,7 @@ async fn collect_output_until_exit(
                 }
             }
             res = &mut exit_rx => {
-                let code = res.unwrap_or(-1);
+                let status = res.unwrap_or_else(|_| ProcessExit::exited(-1));
                 // The exit notification can race the final bytes still queued in
                 // the reader, so drain for a brief "quiet" window before returning.
                 let quiet = tokio::time::Duration::from_millis(50);
@@ -105,10 +106,10 @@ async fn collect_output_until_exit(
                         Err(_) => break,
                     }
                 }
-                return (collected, code);
+                return (collected, status);
             }
             _ = tokio::time::sleep_until(deadline) => {
-                return (collected, -1);
+                return (collected, ProcessExit::exited(-1));
             }
         }
     }
@@ -301,7 +302,7 @@ async fn pty_python_repl_emits_output_and_exits() -> anyhow::Result<()> {
         text.contains("hello from pty"),
         "expected python output in PTY: {text:?}"
     );
-    assert_eq!(code, 0, "expected python to exit cleanly");
+    assert_eq!(code.exit_code, 0, "expected python to exit cleanly");
 
     Ok(())
 }
@@ -333,7 +334,7 @@ async fn pipe_process_round_trips_stdin() -> anyhow::Result<()> {
         text.contains("roundtrip"),
         "expected pipe process to echo stdin: {text:?}"
     );
-    assert_eq!(code, 0, "expected python -c to exit cleanly");
+    assert_eq!(code.exit_code, 0, "expected python -c to exit cleanly");
 
     Ok(())
 }
@@ -371,9 +372,9 @@ async fn pipe_process_detaches_from_parent_session() -> anyhow::Result<()> {
         "expected child to be detached from parent session"
     );
 
-    let exit_code = exit_rx.await.unwrap_or(-1);
+    let status = exit_rx.await.unwrap_or_else(|_| ProcessExit::exited(-1));
     assert_eq!(
-        exit_code, 0,
+        status.exit_code, 0,
         "expected detached pipe process to exit cleanly"
     );
 
@@ -406,8 +407,8 @@ async fn pipe_and_pty_share_interface() -> anyhow::Result<()> {
     let (pty_out, pty_code) =
         collect_output_until_exit(pty_output_rx, pty_exit_rx, /*timeout_ms*/ 3_000).await;
 
-    assert_eq!(pipe_code, 0);
-    assert_eq!(pty_code, 0);
+    assert_eq!(pipe_code.exit_code, 0);
+    assert_eq!(pty_code.exit_code, 0);
     assert!(
         String::from_utf8_lossy(&pipe_out).contains("pipe_ok"),
         "pipe output mismatch: {pipe_out:?}"
@@ -435,7 +436,7 @@ async fn pipe_drains_stderr_without_stdout_activity() -> anyhow::Result<()> {
 
     let (output, code) = collect_output_until_exit(output_rx, exit_rx, /*timeout_ms*/ 10_000).await;
 
-    assert_eq!(code, 0, "expected python to exit cleanly");
+    assert_eq!(code.exit_code, 0, "expected python to exit cleanly");
     assert!(!output.is_empty(), "expected stderr output to be drained");
 
     Ok(())
@@ -457,10 +458,10 @@ async fn pipe_process_can_expose_split_stdout_and_stderr() -> anyhow::Result<()>
     let timeout = tokio::time::Duration::from_millis(2_000);
     let stdout_task = tokio::spawn(async move { collect_split_output(stdout_rx).await });
     let stderr_task = tokio::spawn(async move { collect_split_output(stderr_rx).await });
-    let code = tokio::time::timeout(timeout, exit_rx)
+    let status = tokio::time::timeout(timeout, exit_rx)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for split process exit"))?
-        .unwrap_or(-1);
+        .unwrap_or_else(|_| ProcessExit::exited(-1));
     let stdout = tokio::time::timeout(timeout, stdout_task)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting to drain split stdout"))??;
@@ -470,7 +471,7 @@ async fn pipe_process_can_expose_split_stdout_and_stderr() -> anyhow::Result<()>
 
     assert_eq!(stdout, b"split-out\n".to_vec());
     assert_eq!(stderr, b"split-err\n".to_vec());
-    assert_eq!(code, 0);
+    assert_eq!(status.exit_code, 0);
 
     Ok(())
 }
@@ -480,7 +481,7 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let (stdout_tx, stdout_driver_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
     let (stderr_tx, stderr_driver_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
-    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<ProcessExit>();
 
     let spawned = spawn_from_driver(ProcessDriver {
         writer_tx,
@@ -510,13 +511,15 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
     stderr_tx.send(b"driver-err".to_vec())?;
     drop(stdout_tx);
     drop(stderr_tx);
-    exit_tx.send(0).expect("send exit code");
+    exit_tx
+        .send(ProcessExit::exited(0))
+        .expect("send exit code");
 
     let timeout = tokio::time::Duration::from_secs(2);
-    let code = tokio::time::timeout(timeout, exit_rx)
+    let status = tokio::time::timeout(timeout, exit_rx)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for driver exit"))?
-        .unwrap_or(-1);
+        .unwrap_or_else(|_| ProcessExit::exited(-1));
     let stdout = tokio::time::timeout(timeout, stdout_task)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting to drain driver stdout"))??;
@@ -526,7 +529,7 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
 
     assert_eq!(stdout, b"driver-out".to_vec());
     assert_eq!(stderr, b"driver-err".to_vec());
-    assert_eq!(code, 0);
+    assert_eq!(status.exit_code, 0);
 
     Ok(())
 }
@@ -535,7 +538,7 @@ async fn driver_backed_process_can_expose_split_stdout_and_stderr() -> anyhow::R
 async fn driver_backed_process_can_resize_via_resizer_hook() -> anyhow::Result<()> {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let (_stdout_tx, stdout_driver_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
-    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<ProcessExit>();
     let (size_tx, size_rx) = tokio::sync::oneshot::channel::<TerminalSize>();
 
     let size_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(size_tx)));
@@ -566,7 +569,9 @@ async fn driver_backed_process_can_resize_via_resizer_hook() -> anyhow::Result<(
         rows: 40,
         cols: 120,
     })?;
-    exit_tx.send(0).expect("send exit code");
+    exit_tx
+        .send(ProcessExit::exited(0))
+        .expect("send exit code");
 
     let resized = tokio::time::timeout(tokio::time::Duration::from_secs(2), size_rx)
         .await
@@ -588,7 +593,7 @@ async fn driver_backed_process_drains_output_that_arrives_after_exit_signal() ->
 {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     let (stdout_tx, stdout_driver_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(8);
-    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<ProcessExit>();
 
     let spawned = spawn_from_driver(ProcessDriver {
         writer_tx,
@@ -608,22 +613,24 @@ async fn driver_backed_process_drains_output_that_arrives_after_exit_signal() ->
     } = spawned;
     let stdout_task = tokio::spawn(async move { collect_split_output(stdout_rx).await });
 
-    exit_tx.send(0).expect("send exit code");
+    exit_tx
+        .send(ProcessExit::exited(0))
+        .expect("send exit code");
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     stdout_tx.send(b"tail".to_vec())?;
     drop(stdout_tx);
 
     let timeout = tokio::time::Duration::from_secs(2);
-    let code = tokio::time::timeout(timeout, exit_rx)
+    let status = tokio::time::timeout(timeout, exit_rx)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for driver exit"))?
-        .unwrap_or(-1);
+        .unwrap_or_else(|_| ProcessExit::exited(-1));
     let stdout = tokio::time::timeout(timeout, stdout_task)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting to drain driver stdout"))??;
 
     assert_eq!(stdout, b"tail".to_vec());
-    assert_eq!(code, 0);
+    assert_eq!(status.exit_code, 0);
 
     Ok(())
 }
@@ -674,11 +681,16 @@ async fn pipe_terminate_reaps_child() -> anyhow::Result<()> {
 
     session.terminate();
 
-    let exit_code = tokio::time::timeout(tokio::time::Duration::from_secs(5), exit_rx)
+    let status = tokio::time::timeout(tokio::time::Duration::from_secs(5), exit_rx)
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for terminated child to be reaped"))?
         .map_err(|_| anyhow::anyhow!("child waiter was aborted before reaping"))?;
-    assert_eq!(session.exit_code(), Some(exit_code));
+    assert_eq!(session.exit_code(), Some(status.exit_code));
+    assert_eq!(session.exit_signal(), status.signal);
+    assert!(
+        status.signal.is_some(),
+        "expected a signal-terminated child"
+    );
     assert!(session.has_exited());
 
     Ok(())
@@ -909,8 +921,11 @@ async fn pty_dropped_output_receiver_keeps_draining_child() -> anyhow::Result<()
     )
     .await?;
     drop(stdout_rx);
-    let code = tokio::time::timeout(std::time::Duration::from_secs(2), exit_rx).await??;
-    assert_eq!(code, 0, "child should finish even when output is discarded");
+    let status = tokio::time::timeout(std::time::Duration::from_secs(2), exit_rx).await??;
+    assert_eq!(
+        status.exit_code, 0,
+        "child should finish even when output is discarded"
+    );
     Ok(())
 }
 
@@ -953,7 +968,7 @@ print('__complete__', flush=True)
 
     let (output, code) = collect_output_until_exit(output_rx, exit_rx, /*timeout_ms*/ 5_000).await;
     assert_eq!(
-        (code, String::from_utf8_lossy(&output).trim()),
+        (code.exit_code, String::from_utf8_lossy(&output).trim()),
         (0, "__complete__")
     );
     Ok(())
@@ -1096,6 +1111,45 @@ async fn pty_terminate_kills_background_children_in_same_process_group() -> anyh
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pty_signal_termination_reports_signal() -> anyhow::Result<()> {
+    let env_map: HashMap<String, String> = std::env::vars().collect();
+    let marker = "__codex_signal_pid:";
+    let script = format!("echo {marker}$$; sleep 60");
+    let (program, args) = shell_command(&script);
+    let spawned = spawn_pty_process(
+        &program,
+        &args,
+        Path::new("."),
+        &env_map,
+        &None,
+        TerminalSize::default(),
+    )
+    .await?;
+    let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
+
+    let pid = wait_for_marker_pid(&mut output_rx, marker, /*timeout_ms*/ 2_000).await?;
+    assert_eq!(
+        unsafe { libc::kill(pid, libc::SIGTERM) },
+        0,
+        "failed to signal PTY child {pid}"
+    );
+
+    let status = tokio::time::timeout(tokio::time::Duration::from_secs(5), exit_rx)
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for signalled PTY child"))?
+        .map_err(|_| anyhow::anyhow!("PTY child waiter was aborted before reaping"))?;
+
+    // A signal must stay distinguishable from a normal `exit 1`.
+    assert!(
+        status.signal.is_some(),
+        "expected a signal in {status:?} rather than a flattened exit code"
+    );
+    assert_eq!(session.exit_signal(), status.signal);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pty_resize_updates_terminal_size() -> anyhow::Result<()> {
     let env_map: HashMap<String, String> = std::env::vars().collect();
     let script = "stty -echo; printf 'start:%s\\n' \"$(stty size)\"; IFS= read _line; printf 'after:%s\\n' \"$(stty size)\"";
@@ -1138,7 +1192,10 @@ async fn pty_resize_updates_terminal_size() -> anyhow::Result<()> {
         normalized.contains("after:45 132\n"),
         "expected resized PTY dimensions in output: {text:?}"
     );
-    assert_eq!(code, 0, "expected shell to exit cleanly after resize");
+    assert_eq!(
+        code.exit_code, 0,
+        "expected shell to exit cleanly after resize"
+    );
 
     Ok(())
 }

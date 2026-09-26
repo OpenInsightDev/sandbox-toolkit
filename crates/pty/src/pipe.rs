@@ -19,10 +19,11 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::process::ChildTerminator;
+use crate::process::ProcessExit;
 use crate::process::ProcessHandle;
 use crate::process::ProcessSignal;
 use crate::process::SpawnedProcess;
-use crate::process::exit_code_from_status;
+use crate::process::process_exit_from_status;
 
 struct PipeChildTerminator {
     process_group_id: u32,
@@ -171,21 +172,21 @@ async fn spawn_process_with_stdin_mode(
         }
     });
 
-    let (exit_tx, exit_rx) = oneshot::channel::<i32>();
+    let (exit_tx, exit_rx) = oneshot::channel::<ProcessExit>();
     let exit_status = Arc::new(AtomicBool::new(false));
     let wait_exit_status = Arc::clone(&exit_status);
-    let exit_code = Arc::new(StdMutex::new(None));
-    let wait_exit_code = Arc::clone(&exit_code);
+    let exit = Arc::new(StdMutex::new(None));
+    let wait_exit = Arc::clone(&exit);
     let wait_handle: JoinHandle<()> = tokio::spawn(async move {
-        let code = match child.wait().await {
-            Ok(status) => exit_code_from_status(status),
-            Err(_) => -1,
+        let status = match child.wait().await {
+            Ok(status) => process_exit_from_status(status),
+            Err(_) => ProcessExit::exited(-1),
         };
         wait_exit_status.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut guard) = wait_exit_code.lock() {
-            *guard = Some(code);
+        if let Ok(mut guard) = wait_exit.lock() {
+            *guard = Some(status.clone());
         }
-        let _ = exit_tx.send(code);
+        let _ = exit_tx.send(status);
     });
 
     let handle = ProcessHandle::new(
@@ -196,7 +197,7 @@ async fn spawn_process_with_stdin_mode(
         writer_handle,
         wait_handle,
         exit_status,
-        exit_code,
+        exit,
         /*pty_master*/ None,
         /*resizer*/ None,
     );

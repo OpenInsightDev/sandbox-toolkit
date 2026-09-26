@@ -22,6 +22,8 @@ pub use pipe::spawn_process as spawn_pipe_process;
 pub use pipe::spawn_process_no_stdin as spawn_pipe_process_no_stdin;
 /// Driver-backed process adapter used by integrations with their own process transport.
 pub use process::ProcessDriver;
+/// Terminal outcome of a spawned process, including any terminating signal.
+pub use process::ProcessExit;
 /// Handle for interacting with a spawned process (PTY or pipe).
 pub use process::ProcessHandle;
 /// Process signal supported by spawned-process handles.

@@ -29,17 +29,51 @@ pub(crate) fn unsupported_signal(signal: ProcessSignal) -> io::Error {
     }
 }
 
-pub(crate) fn exit_code_from_status(status: ExitStatus) -> i32 {
-    if let Some(code) = status.code() {
-        return code;
+/// Terminal outcome of a spawned process.
+///
+/// A signal-terminated process keeps the backend's fallback exit code, so
+/// callers distinguish a real exit from `SIGKILL`/`SIGTERM` by [`Self::signal`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessExit {
+    pub exit_code: i32,
+    pub signal: Option<String>,
+}
+
+impl ProcessExit {
+    pub fn exited(exit_code: i32) -> Self {
+        Self {
+            exit_code,
+            signal: None,
+        }
     }
 
+    pub fn signaled(exit_code: i32, signal: impl Into<String>) -> Self {
+        Self {
+            exit_code,
+            signal: Some(signal.into()),
+        }
+    }
+}
+
+pub(crate) fn process_exit_from_status(status: ExitStatus) -> ProcessExit {
     use std::os::unix::process::ExitStatusExt;
+
     if let Some(signal) = status.signal() {
-        return 128 + signal;
+        return ProcessExit::signaled(128 + signal, signal_name(signal));
     }
 
-    -1
+    ProcessExit::exited(status.code().unwrap_or(-1))
+}
+
+fn signal_name(signal: i32) -> String {
+    let name = unsafe { libc::strsignal(signal) };
+    if name.is_null() {
+        return format!("signal {signal}");
+    }
+
+    unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub(crate) trait ChildTerminator: Send + Sync {
@@ -84,7 +118,7 @@ pub struct ProcessHandle {
     writer_handle: StdMutex<Option<JoinHandle<()>>>,
     wait_handle: StdMutex<Option<JoinHandle<()>>>,
     exit_status: Arc<AtomicBool>,
-    exit_code: Arc<StdMutex<Option<i32>>>,
+    exit: Arc<StdMutex<Option<ProcessExit>>>,
     // The PTY master must be preserved: the child receives Control+C if it is
     // dropped while the child is still running.
     _pty_master: StdMutex<Option<Box<dyn MasterPty + Send>>>,
@@ -109,7 +143,7 @@ impl ProcessHandle {
         writer_handle: JoinHandle<()>,
         wait_handle: JoinHandle<()>,
         exit_status: Arc<AtomicBool>,
-        exit_code: Arc<StdMutex<Option<i32>>>,
+        exit: Arc<StdMutex<Option<ProcessExit>>>,
         pty_master: Option<Box<dyn MasterPty + Send>>,
         resizer: Option<ResizeFn>,
     ) -> Self {
@@ -121,7 +155,7 @@ impl ProcessHandle {
             writer_handle: StdMutex::new(Some(writer_handle)),
             wait_handle: StdMutex::new(Some(wait_handle)),
             exit_status,
-            exit_code,
+            exit,
             _pty_master: StdMutex::new(pty_master),
             resizer: StdMutex::new(resizer),
         }
@@ -145,9 +179,19 @@ impl ProcessHandle {
         self.exit_status.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Returns the terminal outcome if the child has exited.
+    pub fn exit_status(&self) -> Option<ProcessExit> {
+        self.exit.lock().ok().and_then(|guard| guard.clone())
+    }
+
     /// Returns the exit code if known.
     pub fn exit_code(&self) -> Option<i32> {
-        self.exit_code.lock().ok().and_then(|guard| *guard)
+        self.exit_status().map(|status| status.exit_code)
+    }
+
+    /// Returns the terminating signal if the child was signalled.
+    pub fn exit_signal(&self) -> Option<String> {
+        self.exit_status().and_then(|status| status.signal)
     }
 
     /// Resize the PTY in character cells.
@@ -294,7 +338,7 @@ pub struct SpawnedProcess {
     pub session: ProcessHandle,
     pub stdout_rx: mpsc::Receiver<Vec<u8>>,
     pub stderr_rx: mpsc::Receiver<Vec<u8>>,
-    pub exit_rx: oneshot::Receiver<i32>,
+    pub exit_rx: oneshot::Receiver<ProcessExit>,
 }
 
 /// Driver-backed process handles for non-standard spawn backends.
@@ -302,7 +346,7 @@ pub struct ProcessDriver {
     pub writer_tx: mpsc::Sender<Vec<u8>>,
     pub stdout_rx: broadcast::Receiver<Vec<u8>>,
     pub stderr_rx: Option<broadcast::Receiver<Vec<u8>>>,
-    pub exit_rx: oneshot::Receiver<i32>,
+    pub exit_rx: oneshot::Receiver<ProcessExit>,
     pub terminator: Option<Box<dyn FnMut() + Send + Sync>>,
     pub writer_handle: Option<JoinHandle<()>>,
     pub resizer: Option<ResizeFn>,
@@ -366,19 +410,19 @@ pub fn spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess {
 
     let writer_handle = writer_handle.unwrap_or_else(|| tokio::spawn(async {}));
 
-    let (exit_tx, exit_rx_out) = oneshot::channel::<i32>();
+    let (exit_tx, exit_rx_out) = oneshot::channel::<ProcessExit>();
     let exit_status = Arc::new(AtomicBool::new(false));
     let wait_exit_status = Arc::clone(&exit_status);
-    let exit_code = Arc::new(StdMutex::new(None));
-    let wait_exit_code = Arc::clone(&exit_code);
+    let exit = Arc::new(StdMutex::new(None));
+    let wait_exit = Arc::clone(&exit);
     let wait_handle = tokio::spawn(async move {
-        let code = exit_rx.await.unwrap_or(-1);
+        let status = exit_rx.await.unwrap_or_else(|_| ProcessExit::exited(-1));
         wait_exit_status.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut guard) = wait_exit_code.lock() {
-            *guard = Some(code);
+        if let Ok(mut guard) = wait_exit.lock() {
+            *guard = Some(status.clone());
         }
         let _ = exit_seen_tx.send(true);
-        let _ = exit_tx.send(code);
+        let _ = exit_tx.send(status);
     });
 
     let handle = ProcessHandle::new(
@@ -392,7 +436,7 @@ pub fn spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess {
         writer_handle,
         wait_handle,
         exit_status,
-        exit_code,
+        exit,
         /*pty_master*/ None,
         resizer,
     );

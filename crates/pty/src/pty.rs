@@ -13,6 +13,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::process::ChildTerminator;
+use crate::process::ProcessExit;
 use crate::process::ProcessHandle;
 use crate::process::ProcessSignal;
 use crate::process::SpawnedProcess;
@@ -97,21 +98,24 @@ pub async fn spawn_process(
     let (_stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(1);
     let (reader_handle, writer_handle) = io.spawn(stdout_tx, writer_rx);
 
-    let (exit_tx, exit_rx) = oneshot::channel::<i32>();
+    let (exit_tx, exit_rx) = oneshot::channel::<ProcessExit>();
     let exit_status = Arc::new(AtomicBool::new(false));
     let wait_exit_status = Arc::clone(&exit_status);
-    let exit_code = Arc::new(StdMutex::new(None));
-    let wait_exit_code = Arc::clone(&exit_code);
+    let exit = Arc::new(StdMutex::new(None));
+    let wait_exit = Arc::clone(&exit);
     let wait_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
-        let code = match child.wait() {
-            Ok(status) => status.exit_code() as i32,
-            Err(_) => -1,
+        let status = match child.wait() {
+            Ok(status) => match status.signal() {
+                Some(signal) => ProcessExit::signaled(status.exit_code() as i32, signal),
+                None => ProcessExit::exited(status.exit_code() as i32),
+            },
+            Err(_) => ProcessExit::exited(-1),
         };
         wait_exit_status.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut guard) = wait_exit_code.lock() {
-            *guard = Some(code);
+        if let Ok(mut guard) = wait_exit.lock() {
+            *guard = Some(status.clone());
         }
-        let _ = exit_tx.send(code);
+        let _ = exit_tx.send(status);
     });
 
     let handle = ProcessHandle::new(
@@ -125,7 +129,7 @@ pub async fn spawn_process(
         writer_handle,
         wait_handle,
         exit_status,
-        exit_code,
+        exit,
         Some(pair.master),
         /*resizer*/ None,
     );
