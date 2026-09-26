@@ -197,11 +197,10 @@ static ID_PATTERN: LazyLock<Regex> =
 /// The shared validation for any id arriving from outside the process, so a
 /// malformed id is rejected before it is treated as merely unknown.
 pub(crate) fn validate_id(id: &str) -> Result<(), WorkspaceError> {
-    if ID_PATTERN.is_match(id) {
-        Ok(())
-    } else {
-        Err(WorkspaceError::InvalidId { id: id.to_owned() })
-    }
+    ID_PATTERN
+        .is_match(id)
+        .then_some(())
+        .ok_or_else(|| WorkspaceError::InvalidId { id: id.to_owned() })
 }
 
 /// Uppercasing and mapping `-` to `_` yields a valid POSIX name; ids exclude `_`,
@@ -209,7 +208,7 @@ pub(crate) fn validate_id(id: &str) -> Result<(), WorkspaceError> {
 fn environment_variable_name(id: &str) -> String {
     let mut name = String::with_capacity(ENVIRONMENT_PREFIX.len() + id.len());
     name.push_str(ENVIRONMENT_PREFIX);
-    name.extend(id.chars().map(|character| match character {
+    name.extend(id.chars().map(|char| match char {
         '-' => '_',
         other => other.to_ascii_uppercase(),
     }));
