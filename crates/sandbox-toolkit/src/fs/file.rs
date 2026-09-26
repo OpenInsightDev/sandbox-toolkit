@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 
-use super::meta::etag;
+use super::meta::{etag, timestamp};
 use super::model::{
     AccessRequest, AccessResponse, ContentRequest, ContentResponse, CreateSymlinkRequest,
     DeleteRequest, LinesRequest, LinesResponse, MetadataRequest, PatchMetadataRequest,
@@ -120,6 +120,13 @@ pub(crate) async fn metadata(
 ) -> Result<ResourceMetadata, FileError> {
     let entry = path::resolve_entry(workspace, &request.path).await?;
     let metadata = tokio::fs::symlink_metadata(&entry).await?;
+
+    // `resolve_entry` deliberately leaves a final symlink in place so it stays
+    // describable; a workspace link must still be confined by resolving its
+    // target, so a link that points outside the root is rejected.
+    if workspace.is_some() && metadata.is_symlink() {
+        path::resolve(workspace, &request.path).await?;
+    }
 
     describe(&entry, &request.path, &metadata).await
 }
@@ -322,7 +329,7 @@ pub(crate) async fn delete(
     Ok(())
 }
 
-async fn describe(
+pub(crate) async fn describe(
     entry: &Path,
     address: &str,
     metadata: &std::fs::Metadata,
@@ -382,10 +389,6 @@ async fn describe(
     described.blocks = Some(metadata.blocks());
 
     Ok(described)
-}
-
-fn timestamp(time: SystemTime) -> String {
-    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
 }
 
 fn process_access(path: &Path) -> AccessResponse {

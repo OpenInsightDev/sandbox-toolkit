@@ -1,4 +1,10 @@
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// A system time as RFC 3339, the encoding the resource model uses for all of
+/// its timestamps.
+pub(crate) fn timestamp(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
+}
 
 /// A strong validator over the file facts the server can cheaply observe.
 pub(crate) fn etag(metadata: &std::fs::Metadata) -> String {

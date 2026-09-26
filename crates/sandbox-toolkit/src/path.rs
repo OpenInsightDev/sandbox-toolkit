@@ -31,7 +31,7 @@ pub(crate) async fn resolve(
             let root = workspace.root();
             let target = canonicalize(root.join(relative), path).await?;
             if !target.starts_with(root) {
-                return Err(invalid(path, "path escapes the workspace"));
+                return Err(invalid(path, "path escapes workspace"));
             }
 
             Ok(target)
@@ -89,10 +89,42 @@ pub(crate) async fn resolve_entry(
     if let Some(root) = &root
         && !parent.starts_with(root)
     {
-        return Err(invalid(path, "path escapes the workspace"));
+        return Err(invalid(path, "path escapes workspace"));
     }
 
     Ok(parent.join(name))
+}
+
+/// Resolve a path for creation, where the final component and any missing
+/// ancestors do not exist yet. With no canonical target to compare, the
+/// workspace boundary is checked lexically.
+pub(crate) async fn resolve_new(
+    workspace: Option<&Workspace>,
+    path: &str,
+) -> Result<PathBuf, PathError> {
+    match workspace {
+        Some(workspace) => {
+            let relative = Path::new(path);
+            if relative.is_absolute() {
+                return Err(invalid(path, "path must be relative in workspace mode"));
+            }
+
+            let root = workspace.root();
+            let target = normalize(&root.join(relative));
+            if !target.starts_with(root) {
+                return Err(invalid(path, "path escapes workspace"));
+            }
+
+            Ok(target)
+        }
+        None => {
+            if !Path::new(path).is_absolute() {
+                return Err(invalid(path, "path must be absolute in direct mode"));
+            }
+
+            Ok(normalize(Path::new(path)))
+        }
+    }
 }
 
 /// Lexically normalize a path, resolving `.` and `..` without touching the

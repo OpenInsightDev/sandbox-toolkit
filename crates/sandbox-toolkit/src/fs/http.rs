@@ -1,7 +1,7 @@
 //! The method selects the operation class and `type` the exact operation, so
 //! `QUERY`, `PUT`, `PATCH` and `POST` each dispatch on it while `DELETE` has none.
-//! `QUERY ?type=content` is wired to its implementation; every other handler is
-//! a stub.
+//! Handlers a method lists but the server does not implement yet answer
+//! `not_implemented`.
 
 use std::collections::HashMap;
 
@@ -17,11 +17,13 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio_util::io::ReaderStream;
 
+use super::dir::{self, DirectoryError};
 use super::file::{self, FileError};
+use super::glob;
 use super::model::{
-    AccessRequest, ContentRequest, CreateSymlinkRequest, DeleteRequest, LinesRequest,
-    MetadataRequest, PatchMetadataRequest, RealpathRequest, StreamRequest, TruncateRequest,
-    WriteFileRequest,
+    AccessRequest, ContentRequest, CreateDirectoryRequest, CreateSymlinkRequest, DeleteRequest,
+    Depth, GlobRequest, LinesRequest, ListRequest, MetadataRequest, PatchMetadataRequest,
+    RealpathRequest, StreamRequest, TruncateRequest, WriteFileRequest,
 };
 use crate::path::PathError;
 use crate::workspace::registry::Workspace;
@@ -158,8 +160,8 @@ async fn query_endpoint(
         QueryType::Content => content(target, body).await,
         QueryType::Stream => stream(target, body).await,
         QueryType::Metadata => metadata(target, body).await,
-        QueryType::List => Err(not_implemented("QUERY ?type=list")),
-        QueryType::Glob => Err(not_implemented("QUERY ?type=glob")),
+        QueryType::List => list(target, body).await,
+        QueryType::Glob => glob_query(target, body).await,
         QueryType::Realpath => realpath(target, body).await,
         QueryType::Access => access(target, body).await,
         QueryType::Lines => lines(target, body).await,
@@ -236,6 +238,33 @@ async fn lines(target: FsTarget, body: Body) -> Result<Response, AppError> {
     Ok(Json(response).into_response())
 }
 
+async fn list(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: ListRequest = read_json(body).await?;
+    if request.limit == Some(0) {
+        return Err(AppError::BadRequest("`limit` must be positive".to_owned()));
+    }
+
+    let workspace = target.workspace.as_ref();
+    let directory = if request.depth == Some(Depth::Infinity) {
+        dir::read_directory_recursive(workspace, &request).await?
+    } else {
+        dir::read_directory(workspace, &request).await?
+    };
+
+    Ok(Json(directory).into_response())
+}
+
+async fn glob_query(target: FsTarget, body: Body) -> Result<Response, AppError> {
+    let request: GlobRequest = read_json(body).await?;
+    if request.limit == Some(0) {
+        return Err(AppError::BadRequest("`limit` must be positive".to_owned()));
+    }
+
+    let directory = glob::search(target.workspace.as_ref(), &request).await?;
+
+    Ok(Json(directory).into_response())
+}
+
 fn insert_etag(response: &mut Response, etag: &str) {
     response.headers_mut().insert(
         header::ETAG,
@@ -283,7 +312,12 @@ async fn put_endpoint(
             Ok(mutated(StatusCode::CREATED, metadata))
         }
         PutType::Sink => Err(not_implemented("PUT ?type=sink")),
-        PutType::Directory => Err(not_implemented("PUT ?type=directory")),
+        PutType::Directory => {
+            let request: CreateDirectoryRequest = read_json(body).await?;
+            let metadata = dir::create_directory(target.workspace.as_ref(), &request).await?;
+
+            Ok(mutated(StatusCode::CREATED, metadata))
+        }
     }
 }
 
@@ -343,6 +377,25 @@ fn mutated(status: StatusCode, metadata: super::model::ResourceMetadata) -> Resp
 
 fn not_implemented(operation: &'static str) -> AppError {
     AppError::NotImplemented(operation)
+}
+
+impl From<DirectoryError> for AppError {
+    fn from(error: DirectoryError) -> Self {
+        let message = error.to_string();
+
+        match error {
+            DirectoryError::NotDirectory(path) => Self::NotADirectory(path),
+            // Both an occupied target and a missing parent read as a conflict on
+            // the wire; the client distinguishes them by the message.
+            DirectoryError::AlreadyExists(_) | DirectoryError::ParentNotFound(_) => {
+                Self::Conflict(message)
+            }
+            DirectoryError::InvalidPattern(message) => Self::BadRequest(message),
+            DirectoryError::Path(error) => error.into(),
+            DirectoryError::File(error) => error.into(),
+            DirectoryError::Io(error) => Self::Internal(error.into()),
+        }
+    }
 }
 
 impl From<PathError> for AppError {
@@ -581,11 +634,8 @@ mod tests {
         let app = app();
 
         for (method, uri) in [
-            ("QUERY", "/fs?type=list"),
-            ("QUERY", "/fs?type=glob"),
             ("QUERY", "/fs?type=watch"),
             ("PUT", "/fs?type=sink"),
-            ("PUT", "/fs?type=directory"),
             ("PATCH", "/fs?type=patch"),
             ("POST", "/fs?type=copy"),
             ("POST", "/fs?type=move"),
