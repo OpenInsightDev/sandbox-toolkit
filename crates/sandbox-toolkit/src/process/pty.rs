@@ -231,7 +231,7 @@ mod tests {
         vec![
             Frame::Stdin(Bytes::from_static(b"in")),
             Frame::Stdout(Bytes::from_static(b"out")),
-            Frame::Exit(Status::Exited { code: 3 }),
+            Frame::Exit(Status::Exited { exit_code: 3 }),
             Frame::Resize(TerminalSize { rows: 24, cols: 80 }),
             Frame::Close,
         ]
@@ -265,8 +265,8 @@ mod tests {
     #[test]
     fn round_trips_every_status() {
         let statuses = [
-            Status::Success,
-            Status::Exited { code: 1 },
+            Status::Exited { exit_code: 0 },
+            Status::Exited { exit_code: 1 },
             Status::Failed {
                 message: "spawn failed".to_owned(),
             },
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn exit_payload_is_json() {
-        let status = Status::Exited { code: 2 };
+        let status = Status::Exited { exit_code: 2 };
         let encoded = Frame::Exit(status.clone()).encode();
 
         assert_eq!(
@@ -360,7 +360,7 @@ mod tests {
     fn only_close_follows_the_exit_frame() {
         let mut frames = SessionFrames::default();
         frames
-            .decode(&Frame::Exit(Status::Success).encode())
+            .decode(&Frame::Exit(Status::Exited { exit_code: 0 }).encode())
             .unwrap();
         assert!(frames.exited());
 
@@ -369,7 +369,7 @@ mod tests {
             Err(FrameError::FrameAfterExit)
         ));
         assert!(matches!(
-            frames.decode(&Frame::Exit(Status::Success).encode()),
+            frames.decode(&Frame::Exit(Status::Exited { exit_code: 0 }).encode()),
             Err(FrameError::FrameAfterExit)
         ));
 

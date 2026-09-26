@@ -1,6 +1,6 @@
-//! exec and shell answer with a single [`ExecResult`] when the command finishes
-//! within the request's `timeout`, and with the multiplexed frame stream of
-//! [`exec`] when it runs longer. The probe caps what it buffers, so a command that
+//! exec answers with a single [`ExecResult`] when the command finishes within the
+//! request's `wait`, and with the multiplexed frame stream of [`exec`] when it runs
+//! longer or `wait` is zero. The probe caps what it buffers, so a command that
 //! produces output faster than it exits cannot force unbounded memory.
 
 use std::collections::HashMap;
@@ -17,19 +17,25 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing;
 use bytes::Bytes;
+use serde_json::Value;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::exec::{self, ExecError, Frame};
-use super::model::{ExecRequest, ExecResult, PtyRequest, PtySession, ShellRequest};
-use crate::workspace::registry::Workspace;
+use super::exec::{self, ExecError, WorkspaceContext};
+use super::frame::Frame;
+use super::model::{ExecRequest, ExecResult, PtyRequest, PtySession};
 use crate::{AppError, AppState};
 
-const DIRECT_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
-
-const DIRECT_RESPONSE_LIMIT: usize = 1024 * 1024;
+/// The most output buffered before the response upgrades to a stream; also the
+/// per-frame bound, so a command that outruns its exit cannot force unbounded
+/// memory.
+const DIRECT_RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
 
 const STREAM_CONTENT_TYPE: &str = "application/vnd.sandbox-toolkit.exec-stream";
+
+/// An upper bound on a control-plane JSON body, so an oversized or endless body is
+/// rejected instead of buffered.
+const MAX_REQUEST_BODY: usize = 64 * 1024;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -37,11 +43,6 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/workspaces/{workspace_id}/exec",
             routing::post(exec_endpoint),
-        )
-        .route("/shell", routing::post(shell_endpoint))
-        .route(
-            "/workspaces/{workspace_id}/shell",
-            routing::post(shell_endpoint),
         )
         .route("/pty", routing::post(create_pty))
         .route("/workspaces/{workspace_id}/pty", routing::post(create_pty))
@@ -52,7 +53,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-struct ProcessTarget(Option<Workspace>);
+struct ProcessTarget(WorkspaceContext);
 
 impl FromRequestParts<AppState> for ProcessTarget {
     type Rejection = AppError;
@@ -65,31 +66,56 @@ impl FromRequestParts<AppState> for ProcessTarget {
             .await
             .map_err(|_| AppError::BadRequest("invalid process path".to_owned()))?;
 
-        match captures.get("workspace_id") {
-            Some(id) => Ok(Self(Some(state.workspaces().workspace(id)?))),
-            None => Ok(Self(None)),
-        }
+        let workspace = match captures.get("workspace_id") {
+            Some(id) => Some(state.workspaces().workspace(id)?),
+            None => None,
+        };
+
+        Ok(Self(WorkspaceContext {
+            workspace,
+            // Every registered workspace, injected in both addressing modes.
+            environment: state.workspaces().env(),
+        }))
     }
 }
 
-async fn exec_endpoint(
-    target: ProcessTarget,
-    Json(request): Json<ExecRequest>,
-) -> Result<Response, AppError> {
-    let timeout = probe_timeout(request.timeout);
+async fn exec_endpoint(target: ProcessTarget, body: Body) -> Result<Response, AppError> {
+    let request = read_exec_request(body).await?;
+    let wait = request.wait();
     let stream = exec::exec(request, target.0).await?;
 
-    respond(stream, timeout).await
+    respond(stream, wait).await
 }
 
-async fn shell_endpoint(
-    target: ProcessTarget,
-    Json(request): Json<ShellRequest>,
-) -> Result<Response, AppError> {
-    let timeout = probe_timeout(request.timeout);
-    let stream = exec::shell(request, target.0).await?;
+/// Reading the body by hand keeps a malformed body on the API's own envelope. The
+/// `format` tag is normalized first: absent means the default exec payload, and an
+/// unknown value is a distinct error from a body that fails the chosen schema.
+async fn read_exec_request(body: Body) -> Result<ExecRequest, AppError> {
+    let bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY)
+        .await
+        .map_err(|error| AppError::BadRequest(format!("failed to read request body: {error}")))?;
 
-    respond(stream, timeout).await
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::InvalidRequest("the request body must be an object".to_owned()))?;
+
+    match object.get("format") {
+        None => {
+            object.insert("format".to_owned(), Value::String("exec".to_owned()));
+        }
+        Some(Value::String(name)) if name == "exec" || name == "shell" => {}
+        Some(Value::String(other)) => return Err(AppError::UnsupportedType(other.clone())),
+        Some(_) => {
+            return Err(AppError::InvalidRequest(
+                "`format` must be a string".to_owned(),
+            ));
+        }
+    }
+
+    serde_json::from_value(value).map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
 async fn create_pty(
@@ -119,22 +145,24 @@ impl From<ExecError> for AppError {
     }
 }
 
-fn probe_timeout(request_timeout: Option<u64>) -> Duration {
-    request_timeout.map_or(DIRECT_RESPONSE_TIMEOUT, Duration::from_millis)
-}
+/// A zero `wait` streams immediately, so the client deterministically gets the
+/// frame stream regardless of how fast the command exits.
+async fn respond(stream: ReceiverStream<Frame>, wait: u64) -> Result<Response, AppError> {
+    if wait == 0 {
+        return Ok(streaming(Vec::new(), stream));
+    }
 
-async fn respond(stream: ReceiverStream<Frame>, timeout: Duration) -> Result<Response, AppError> {
-    respond_with(stream, timeout, DIRECT_RESPONSE_LIMIT).await
+    respond_with(stream, Duration::from_millis(wait), DIRECT_RESPONSE_LIMIT).await
 }
 
 /// Reaching either bound switches to the stream and flushes what was buffered, so
 /// no frame is lost across the two response shapes.
 async fn respond_with(
     mut stream: ReceiverStream<Frame>,
-    timeout: Duration,
+    wait: Duration,
     limit: usize,
 ) -> Result<Response, AppError> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + wait;
     let mut buffered = Vec::new();
     let mut buffered_bytes = 0;
 
@@ -209,7 +237,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::process::exec::FrameStream;
+    use crate::process::frame::FrameStream;
     use crate::process::model::Status;
     use crate::workspace::model::WorkspaceProperties;
     use crate::workspace::registry::test_support::{TempDir, canonical};
@@ -288,7 +316,11 @@ mod tests {
             json_request(
                 "POST",
                 "/exec",
-                &json!({ "command": "sh", "args": ["-c", "printf out; printf err >&2; exit 3"] }),
+                &json!({
+                    "command": "sh",
+                    "args": ["-c", "printf out; printf err >&2; exit 3"],
+                    "wait": 5000,
+                }),
             ),
         )
         .await;
@@ -301,7 +333,8 @@ mod tests {
         assert_eq!(
             json_body(response).await,
             json!({
-                "status": { "status": "exited", "code": 3 },
+                "status": "exited",
+                "exit_code": 3,
                 "stdout": "out",
                 "stderr": "err",
             })
@@ -312,7 +345,11 @@ mod tests {
     async fn shell_answers_with_a_direct_result() {
         let response = send(
             &app(),
-            json_request("POST", "/shell", &json!({ "script": "printf hi" })),
+            json_request(
+                "POST",
+                "/exec",
+                &json!({ "format": "shell", "script": "printf hi", "wait": 5000 }),
+            ),
         )
         .await;
 
@@ -340,6 +377,7 @@ mod tests {
                     "command": "sh",
                     "args": ["-c", "printf %s \"$WORKSPACE_DOCS\""],
                     "cwd": ".",
+                    "wait": 5000,
                 }),
             ),
         )
@@ -348,6 +386,47 @@ mod tests {
         assert_eq!(
             json_body(response).await["stdout"],
             json!(canonical(dir.path()).to_str().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn every_registered_workspace_is_injected_in_direct_mode() {
+        let first = TempDir::new();
+        let second = TempDir::new();
+        let state = AppState::new(".");
+        state
+            .workspaces()
+            .register("docs", &first.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        state
+            .workspaces()
+            .register("notes", &second.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        let app = router().with_state(state);
+
+        let response = send(
+            &app,
+            json_request(
+                "POST",
+                "/exec",
+                &json!({
+                    "command": "sh",
+                    "args": ["-c", "printf %s:%s \"$WORKSPACE_DOCS\" \"$WORKSPACE_NOTES\""],
+                    "wait": 5000,
+                }),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            json_body(response).await["stdout"],
+            json!(format!(
+                "{}:{}",
+                canonical(first.path()).to_str().unwrap(),
+                canonical(second.path()).to_str().unwrap(),
+            ))
         );
     }
 
@@ -394,8 +473,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schema_violations_are_invalid_requests() {
+        let app = app();
+
+        for body in [
+            json!({}),
+            json!({ "format": "shell" }),
+            json!({ "format": 3, "command": "true" }),
+        ] {
+            let response = send(&app, json_request("POST", "/exec", &body)).await;
+
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unexpected status for {body}"
+            );
+            assert_eq!(
+                json_body(response).await["error"]["code"],
+                json!("invalid_request"),
+                "unexpected code for {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_format_is_rejected() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/exec",
+                &json!({ "format": "python", "script": "print(1)" }),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(response).await["error"]["code"],
+            json!("unsupported_type")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_wait_streams_immediately() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/exec",
+                &json!({ "command": "sh", "args": ["-c", "printf out; printf err >&2; exit 3"] }),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+            STREAM_CONTENT_TYPE
+        );
+
+        let frames = frames(response).await;
+        assert_eq!(stream_bytes(&frames, false), b"out");
+        assert_eq!(stream_bytes(&frames, true), b"err");
+        assert_eq!(final_status(&frames), Status::Exited { exit_code: 3 });
+    }
+
+    #[tokio::test]
     async fn a_probe_that_expires_upgrades_to_the_frame_stream() {
-        let request = ExecRequest {
+        let request = ExecRequest::Exec {
             command: "sh".to_owned(),
             args: vec![
                 "-c".to_owned(),
@@ -403,9 +549,11 @@ mod tests {
             ],
             cwd: None,
             env: HashMap::new(),
-            timeout: None,
+            wait: 0,
         };
-        let stream = exec::exec(request, None).await.unwrap();
+        let stream = exec::exec(request, WorkspaceContext::default())
+            .await
+            .unwrap();
 
         let response = respond_with(stream, Duration::ZERO, DIRECT_RESPONSE_LIMIT)
             .await
@@ -419,7 +567,7 @@ mod tests {
         let frames = frames(response).await;
         assert_eq!(stream_bytes(&frames, false), b"out");
         assert_eq!(stream_bytes(&frames, true), b"err");
-        assert_eq!(final_status(&frames), Status::Exited { code: 3 });
+        assert_eq!(final_status(&frames), Status::Exited { exit_code: 3 });
     }
 
     #[tokio::test]
@@ -429,7 +577,7 @@ mod tests {
             json_request(
                 "POST",
                 "/exec",
-                &json!({ "command": "sh", "args": ["-c", "sleep 1; printf late"] }),
+                &json!({ "command": "sh", "args": ["-c", "sleep 1; printf late"], "wait": 100 }),
             ),
         )
         .await;
@@ -442,11 +590,11 @@ mod tests {
 
         let frames = frames(response).await;
         assert_eq!(stream_bytes(&frames, false), b"late");
-        assert_eq!(final_status(&frames), Status::Success);
+        assert_eq!(final_status(&frames), Status::Exited { exit_code: 0 });
     }
 
     #[tokio::test]
-    async fn a_short_request_timeout_upgrades_the_response() {
+    async fn a_short_wait_upgrades_the_response() {
         let response = send(
             &app(),
             json_request(
@@ -455,7 +603,7 @@ mod tests {
                 &json!({
                     "command": "sh",
                     "args": ["-c", "sleep 0.3; printf late"],
-                    "timeout": 50,
+                    "wait": 50,
                 }),
             ),
         )
@@ -471,7 +619,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_long_request_timeout_keeps_a_slow_command_direct() {
+    async fn a_long_wait_keeps_a_slow_command_direct() {
         let response = send(
             &app(),
             json_request(
@@ -480,7 +628,7 @@ mod tests {
                 &json!({
                     "command": "sh",
                     "args": ["-c", "sleep 0.3; printf late"],
-                    "timeout": 5000,
+                    "wait": 5000,
                 }),
             ),
         )
@@ -494,13 +642,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shell_honors_the_request_timeout() {
+    async fn shell_honors_the_wait() {
         let response = send(
             &app(),
             json_request(
                 "POST",
-                "/shell",
-                &json!({ "script": "sleep 0.3; printf late", "timeout": 50 }),
+                "/exec",
+                &json!({
+                    "format": "shell",
+                    "script": "sleep 0.3; printf late",
+                    "wait": 50,
+                }),
             ),
         )
         .await;

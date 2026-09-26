@@ -145,6 +145,12 @@ impl WorkspaceRegistry {
             .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
     }
 
+    /// Every registered workspace's variable, injected into a child process
+    /// regardless of which workspace, if any, the request addresses.
+    pub(crate) fn env(&self) -> HashMap<String, OsString> {
+        self.read().values().map(Workspace::env).collect()
+    }
+
     pub(crate) fn remove(&self, id: &str) -> Result<(), WorkspaceError> {
         let mut workspaces = self.write();
         if workspaces.remove(id).is_some() {
