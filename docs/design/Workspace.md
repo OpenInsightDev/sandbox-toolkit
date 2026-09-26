@@ -98,4 +98,4 @@ DELETE /workspaces/{workspace_id}
 - 每次操作都必须校验工作区存在、具备权限，且解析后的目标位于工作区根目录内，并遵循该工作区属性，见“工作区属性”；
 - 被其它资源引用的工作区不能直接注销，返回 `409 workspace_in_use`，须先注销引用方；由上层资源派生并托管的工作区不能直接删除，返回 `403 managed_workspace`。
 
-上述引用约束见 [MCP.md](./MCP.md) 的“工作区耦合”与 [Skill.md](./Skill.md) 的“附属文件：只读工作区”，由工作区 API 统一执行。
+上述引用约束见 [Skill.md](./Skill.md) 的“附属文件：只读工作区”，由工作区 API 统一执行；注销工作区同时卸载其 `.agents/mcp.json` 发现的 MCP，见 [MCP.md](./MCP.md) 的“生命周期”。

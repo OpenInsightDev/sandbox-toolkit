@@ -9,7 +9,7 @@
 | HTTP 端点 | SDK / 程序化客户端 | REST：路由 + 请求头 + JSON 或原始 body         |
 | MCP 工具  | agent              | `/mcp` 上的 Streamable HTTP，JSON-RPC 工具调用 |
 
-MCP 工具面由 rmcp 提供，所有工具注册在同一个 `/mcp` server 上；管理外部 MCP server 是另一项资源，见 [MCP.md](./MCP.md)。
+MCP 工具面由 rmcp 提供，所有工具注册在同一个 `/mcp` server 上；从 `.agents/mcp.json` 发现并代理外部 MCP server 是另一项资源，见 [MCP.md](./MCP.md)。
 
 ## 分层
 
