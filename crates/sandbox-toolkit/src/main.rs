@@ -3,6 +3,7 @@
 mod binary;
 mod fs;
 mod mcp;
+mod path;
 mod process;
 mod server;
 mod skill;

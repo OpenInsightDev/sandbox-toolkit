@@ -193,7 +193,7 @@ mod tests {
         // The router shares the registry with the rest of the process, which is
         // how other modules resolve a workspace id to its root.
         assert_eq!(
-            state.workspaces().resolve("docs").unwrap(),
+            state.workspaces().workspace("docs").unwrap().root(),
             canonical(dir.path())
         );
 

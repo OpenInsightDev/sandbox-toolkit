@@ -22,7 +22,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::exec::{self, ExecError, Frame};
 use super::model::{ExecRequest, ExecResult, PtyRequest, PtySession, ShellRequest};
-use crate::workspace::registry::WorkspaceEnvironment;
+use crate::workspace::registry::Workspace;
 use crate::{AppError, AppState};
 
 const DIRECT_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -52,7 +52,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-struct ProcessTarget(Option<WorkspaceEnvironment>);
+struct ProcessTarget(Option<Workspace>);
 
 impl FromRequestParts<AppState> for ProcessTarget {
     type Rejection = AppError;
@@ -66,7 +66,7 @@ impl FromRequestParts<AppState> for ProcessTarget {
             .map_err(|_| AppError::BadRequest("invalid process path".to_owned()))?;
 
         match captures.get("workspace_id") {
-            Some(id) => Ok(Self(Some(state.workspaces().environment(id)?))),
+            Some(id) => Ok(Self(Some(state.workspaces().workspace(id)?))),
             None => Ok(Self(None)),
         }
     }

@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
@@ -27,14 +28,6 @@ pub(crate) enum WorkspaceError {
     ReadOnly { id: String },
 }
 
-/// The value is the workspace root, so a command references its root through the
-/// variable instead of carrying the remote absolute path itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkspaceEnvironment {
-    pub(crate) name: String,
-    pub(crate) value: PathBuf,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Workspace {
     id: String,
@@ -57,6 +50,21 @@ impl Workspace {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The `(name, value)` pair a child process reads its root through, ready to
+    /// merge into its environment. Ids exclude `_`, so mapping `-` to `_` in the
+    /// name stays reversible.
+    pub(crate) fn env(&self) -> (String, OsString) {
+        let id = self.id();
+        let mut name = String::with_capacity(ENVIRONMENT_PREFIX.len() + id.len());
+        name.push_str(ENVIRONMENT_PREFIX);
+        name.extend(id.chars().map(|char| match char {
+            '-' => '_',
+            other => other.to_ascii_uppercase(),
+        }));
+
+        (name, self.root.clone().into_os_string())
     }
 
     fn access(&self) -> WorkspaceAccess {
@@ -137,28 +145,6 @@ impl WorkspaceRegistry {
             .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by process handlers"))]
-    pub(crate) fn resolve(&self, id: &str) -> Result<PathBuf, WorkspaceError> {
-        self.read()
-            .get(id)
-            .map(|workspace| workspace.root().to_owned())
-            .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
-    }
-
-    /// Hands a process the root as a variable, so a command never has to hardcode
-    /// the remote absolute path.
-    pub(crate) fn environment(&self, id: &str) -> Result<WorkspaceEnvironment, WorkspaceError> {
-        let workspaces = self.read();
-        let workspace = workspaces
-            .get(id)
-            .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })?;
-
-        Ok(WorkspaceEnvironment {
-            name: environment_variable_name(workspace.id()),
-            value: workspace.root().to_owned(),
-        })
-    }
-
     pub(crate) fn remove(&self, id: &str) -> Result<(), WorkspaceError> {
         let mut workspaces = self.write();
         if workspaces.remove(id).is_some() {
@@ -201,19 +187,6 @@ pub(crate) fn validate_id(id: &str) -> Result<(), WorkspaceError> {
         .is_match(id)
         .then_some(())
         .ok_or_else(|| WorkspaceError::InvalidId { id: id.to_owned() })
-}
-
-/// Uppercasing and mapping `-` to `_` yields a valid POSIX name; ids exclude `_`,
-/// so the mapping is reversible and two ids never share a name.
-fn environment_variable_name(id: &str) -> String {
-    let mut name = String::with_capacity(ENVIRONMENT_PREFIX.len() + id.len());
-    name.push_str(ENVIRONMENT_PREFIX);
-    name.extend(id.chars().map(|char| match char {
-        '-' => '_',
-        other => other.to_ascii_uppercase(),
-    }));
-
-    name
 }
 
 /// Canonicalizing yields a stable path the boundary checks can compare against.
@@ -314,7 +287,6 @@ mod tests {
         let stored = registry.read().get("docs").unwrap().clone();
         assert_eq!(stored.id(), "docs");
         assert_eq!(stored.root(), canonical(dir.path()));
-        assert_eq!(registry.resolve("docs").unwrap(), canonical(dir.path()));
     }
 
     #[tokio::test]
@@ -362,7 +334,10 @@ mod tests {
                 id: "docs".to_owned()
             }
         );
-        assert_eq!(registry.resolve("docs").unwrap(), canonical(first.path()));
+        assert_eq!(
+            registry.workspace("docs").unwrap().root(),
+            canonical(first.path())
+        );
     }
 
     #[tokio::test]
@@ -385,7 +360,10 @@ mod tests {
                 id: "docs".to_owned()
             }
         );
-        assert_eq!(registry.resolve("docs").unwrap(), canonical(dir.path()));
+        assert_eq!(
+            registry.workspace("docs").unwrap().root(),
+            canonical(dir.path())
+        );
     }
 
     #[tokio::test]
@@ -470,7 +448,7 @@ mod tests {
         registry.remove("docs").unwrap();
 
         assert_eq!(
-            registry.resolve("docs"),
+            registry.workspace("docs"),
             Err(WorkspaceError::NotFound {
                 id: "docs".to_owned()
             })
@@ -492,21 +470,14 @@ mod tests {
             .await
             .unwrap();
 
-        let environment = registry.environment("my-project").unwrap();
-
-        assert_eq!(environment.name, "WORKSPACE_MY_PROJECT");
-        assert_eq!(environment.value, canonical(dir.path()));
-    }
-
-    #[tokio::test]
-    async fn environment_reports_unknown_ids() {
-        let registry = WorkspaceRegistry::default();
+        let workspace = registry.workspace("my-project").unwrap();
 
         assert_eq!(
-            registry.environment("missing"),
-            Err(WorkspaceError::NotFound {
-                id: "missing".to_owned()
-            })
+            workspace.env(),
+            (
+                "WORKSPACE_MY_PROJECT".to_owned(),
+                canonical(dir.path()).into_os_string()
+            )
         );
     }
 
@@ -554,18 +525,21 @@ mod tests {
 
     #[test]
     fn derives_environment_variable_names_from_ids() {
+        let name_of = |id: &str| {
+            Workspace::new(id, PathBuf::new(), WorkspaceProperties::default())
+                .env()
+                .0
+        };
+
         for (id, name) in [
             ("docs", "WORKSPACE_DOCS"),
             ("my-project", "WORKSPACE_MY_PROJECT"),
             ("a1", "WORKSPACE_A1"),
         ] {
-            assert_eq!(environment_variable_name(id), name);
+            assert_eq!(name_of(id), name);
         }
 
         // `-` maps to `_` and ids cannot contain `_`, so the mapping is injective.
-        assert_ne!(
-            environment_variable_name("a-b"),
-            environment_variable_name("ab")
-        );
+        assert_ne!(name_of("a-b"), name_of("ab"));
     }
 }

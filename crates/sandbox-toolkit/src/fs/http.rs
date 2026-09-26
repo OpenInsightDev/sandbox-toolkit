@@ -23,7 +23,7 @@ use super::model::{
     MetadataRequest, PatchMetadataRequest, RealpathRequest, StreamRequest, TruncateRequest,
     WriteFileRequest,
 };
-use super::path::PathError;
+use crate::path::PathError;
 use crate::workspace::registry::Workspace;
 use crate::{AppError, AppState};
 

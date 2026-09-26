@@ -18,7 +18,7 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    path::{Component, Path, PathBuf},
+    path::PathBuf,
     process::{ExitStatus, Stdio},
 };
 
@@ -34,7 +34,8 @@ use tokio_util::io::ReaderStream;
 
 use super::model::{ExecRequest, ShellRequest, Status};
 use crate::binary;
-use crate::workspace::registry::WorkspaceEnvironment;
+use crate::path::{self, PathError};
+use crate::workspace::registry::Workspace;
 
 /// A frame header: one channel byte and a four-byte big-endian length.
 pub(crate) const HEADER_LEN: usize = 5;
@@ -247,7 +248,7 @@ pub(crate) struct CommandSpec {
 
 pub(crate) async fn exec(
     request: ExecRequest,
-    workspace: Option<WorkspaceEnvironment>,
+    workspace: Option<Workspace>,
 ) -> Result<ReceiverStream<Frame>, ExecError> {
     CommandSpec::from_exec(request, workspace.as_ref())
         .await?
@@ -256,7 +257,7 @@ pub(crate) async fn exec(
 
 pub(crate) async fn shell(
     request: ShellRequest,
-    workspace: Option<WorkspaceEnvironment>,
+    workspace: Option<Workspace>,
 ) -> Result<ReceiverStream<Frame>, ExecError> {
     CommandSpec::from_shell(request, workspace.as_ref())
         .await?
@@ -266,7 +267,7 @@ pub(crate) async fn shell(
 impl CommandSpec {
     async fn from_exec(
         request: ExecRequest,
-        workspace: Option<&WorkspaceEnvironment>,
+        workspace: Option<&Workspace>,
     ) -> Result<Self, ExecError> {
         if request.command.trim().is_empty() {
             return Err(ExecError::EmptyCommand);
@@ -284,7 +285,7 @@ impl CommandSpec {
 
     async fn from_shell(
         request: ShellRequest,
-        workspace: Option<&WorkspaceEnvironment>,
+        workspace: Option<&Workspace>,
     ) -> Result<Self, ExecError> {
         let interpreter = request.shell.unwrap_or_else(|| DEFAULT_SHELL.to_owned());
 
@@ -303,23 +304,18 @@ impl CommandSpec {
         args: Vec<String>,
         cwd: Option<String>,
         env: HashMap<String, String>,
-        workspace: Option<&WorkspaceEnvironment>,
+        workspace: Option<&Workspace>,
     ) -> Result<Self, ExecError> {
         let cwd = match cwd.as_deref() {
             Some(cwd) => resolve_cwd(cwd, workspace).await?,
-            None => workspace.map_or_else(|| PathBuf::from("."), |w| w.value.clone()),
+            None => workspace.map_or_else(|| PathBuf::from("."), |w| w.root().to_path_buf()),
         };
 
         // The workspace variable comes first so a request variable of the same name
         // overrides it.
         let env = workspace
             .iter()
-            .map(|workspace| {
-                (
-                    workspace.name.clone(),
-                    workspace.value.clone().into_os_string(),
-                )
-            })
+            .map(|workspace| workspace.env())
             .chain(
                 env.into_iter()
                     .map(|(name, value)| (name, OsString::from(value))),
@@ -369,57 +365,31 @@ impl CommandSpec {
     }
 }
 
-async fn resolve_cwd(
-    cwd: &str,
-    workspace: Option<&WorkspaceEnvironment>,
-) -> Result<PathBuf, ExecError> {
+async fn resolve_cwd(cwd: &str, workspace: Option<&Workspace>) -> Result<PathBuf, ExecError> {
     let invalid = |reason: &str| ExecError::InvalidCwd {
         cwd: cwd.to_owned(),
         reason: reason.to_owned(),
     };
 
-    let Some(workspace) = workspace else {
-        let path = PathBuf::from(cwd);
-        if !path.is_absolute() {
-            return Err(invalid("cwd must be absolute in direct mode"));
-        }
-        if !tokio::fs::metadata(&path)
-            .await
-            .is_ok_and(|meta| meta.is_dir())
-        {
-            return Err(invalid("cwd must be an existing directory"));
-        }
-        return Ok(path);
-    };
+    // The same resolver as the filesystem API: relative and confined in workspace
+    // mode, absolute in direct mode, with symlink escapes caught by canonicalizing
+    // before the boundary check.
+    let resolved = path::resolve(workspace, cwd)
+        .await
+        .map_err(|error| match error {
+            PathError::InvalidPath { reason, .. } => invalid(&reason),
+            PathError::NotFound(_) => invalid("cwd must be an existing directory"),
+            PathError::Io(error) => invalid(&error.to_string()),
+        })?;
 
-    // Workspace mode: `cwd` is relative and confined to the root, so it is joined and
-    // then canonicalized the same way file paths are, which catches symlink escapes.
-    let relative = Path::new(cwd);
-    if relative.is_absolute() {
-        return Err(invalid("cwd must be relative in workspace mode"));
-    }
-    if relative
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
+    if !tokio::fs::metadata(&resolved)
+        .await
+        .is_ok_and(|meta| meta.is_dir())
     {
-        return Err(invalid("cwd must not contain `..`"));
-    }
-
-    let root = tokio::fs::canonicalize(&workspace.value)
-        .await
-        .map_err(|_| invalid("workspace root is not readable"))?;
-    let target = tokio::fs::canonicalize(root.join(relative))
-        .await
-        .map_err(|_| invalid("cwd must be an existing directory"))?;
-
-    if !target.starts_with(&root) {
-        return Err(invalid("cwd escapes the workspace"));
-    }
-    if !target.is_dir() {
         return Err(invalid("cwd must be a directory"));
     }
 
-    Ok(target)
+    Ok(resolved)
 }
 
 /// The search path handed to the process: the materialized binaries directory first,
@@ -512,7 +482,9 @@ fn exit_status(status: ExitStatus) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::registry::test_support::{TempDir, canonical};
+    use crate::workspace::model::WorkspaceProperties;
+    use crate::workspace::registry::WorkspaceRegistry;
+    use crate::workspace::registry::test_support::TempDir;
 
     fn samples() -> Vec<Frame> {
         vec![
@@ -668,15 +640,18 @@ mod tests {
         }
     }
 
-    fn workspace(dir: &TempDir) -> WorkspaceEnvironment {
-        WorkspaceEnvironment {
-            name: "WORKSPACE_DOCS".to_owned(),
-            value: canonical(dir.path()),
-        }
+    async fn workspace(dir: &TempDir) -> Workspace {
+        let registry = WorkspaceRegistry::default();
+        registry
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+
+        registry.workspace("docs").unwrap()
     }
 
     /// Run a request expected to spawn, collecting its whole response.
-    async fn run(request: ExecRequest, workspace: Option<WorkspaceEnvironment>) -> Vec<Frame> {
+    async fn run(request: ExecRequest, workspace: Option<Workspace>) -> Vec<Frame> {
         exec(request, workspace).await.unwrap().collect().await
     }
 
@@ -750,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn injects_the_workspace_variable_and_confines_a_relative_cwd() {
         let dir = TempDir::new();
-        let workspace = workspace(&dir);
+        let workspace = workspace(&dir).await;
         let request = ExecRequest {
             cwd: Some(".".to_owned()),
             ..request("sh", &["-c", "printf %s \"$WORKSPACE_DOCS\""])
@@ -760,7 +735,7 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(stream_bytes(&frames, false)).unwrap(),
-            workspace.value.display().to_string()
+            workspace.root().display().to_string()
         );
         assert_eq!(final_status(&frames), Status::Success);
     }
@@ -773,7 +748,7 @@ mod tests {
             ..request("sh", &["-c", "printf %s \"$WORKSPACE_DOCS\""])
         };
 
-        let frames = run(request, Some(workspace(&dir))).await;
+        let frames = run(request, Some(workspace(&dir).await)).await;
 
         assert_eq!(stream_bytes(&frames, false), b"override");
     }
@@ -787,7 +762,7 @@ mod tests {
         };
 
         assert!(matches!(
-            exec(request, Some(workspace(&dir))).await,
+            exec(request, Some(workspace(&dir).await)).await,
             Err(ExecError::InvalidCwd { .. })
         ));
     }
@@ -867,7 +842,7 @@ mod tests {
         };
 
         assert!(matches!(
-            shell(request, Some(workspace(&dir))).await,
+            shell(request, Some(workspace(&dir).await)).await,
             Err(ExecError::InvalidCwd { .. })
         ));
     }

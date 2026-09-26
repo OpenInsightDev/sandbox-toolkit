@@ -16,7 +16,7 @@ use super::model::{
     RealpathRequest, RealpathResponse, ResourceKind, ResourceMetadata, StreamRequest,
     TruncateRequest, WriteFileRequest,
 };
-use super::path::{self, PathError};
+use crate::path::{self, PathError};
 use crate::workspace::registry::Workspace;
 
 /// Absent `limit` on a line read uses this page size.
