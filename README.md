@@ -1,6 +1,6 @@
 # Sandbox Toolkit
 
-[Design](./docs/design/Toolkit.md) • [File API](./docs/design/FileSystem.md) • [Process](./docs/design/Process.md) • [MCP](./docs/design/MCP.md) • [Skill](./docs/design/Skill.md)
+[Design](./docs/design/Toolkit.md) • [File API](./docs/design/FileSystem.md) • [Process](./docs/design/Process.md) • [MCP](./docs/design/MCP.md) • [Skill](./docs/design/Skill.md) • [Plugin](./docs/design/Plugin.md)
 
 A sandbox server that gives agents and programs safe access to a remote directory. Register a folder, then read and write files, run commands, and reach your MCP servers — all through one HTTP API, with the same operations exposed as MCP tools.
 
@@ -12,6 +12,7 @@ A sandbox server that gives agents and programs safe access to a remote director
 - **Real terminals** — interactive pty sessions over WebSocket for REPLs, editors, and anything else that needs a TTY.
 - **MCP in one place** — register local subprocess or remote URL servers, then reach every one of them through a single `/mcp` endpoint.
 - **Agent Skills** — discover skills from `.agents/skills`, and serve their metadata, content, and bundled files to a remote agent.
+- **Agent Plugins** — discover plugins from `.agents/plugins`, and fold their skills, MCP servers, and client-extension files into the same resources.
 - **Tools included** — `fd`, `rg`, and `jaq` (plus `uv`, `uvx`, `deno` when built in) are callable by name inside the sandbox, with no pre-install and no network.
 
 ## Installation
@@ -53,6 +54,7 @@ http://127.0.0.1:3000/mcp
 | [Process](./docs/design/Process.md)        | `exec`, `shell`, and pty sessions                       |
 | [MCP](./docs/design/MCP.md)                | Registering and proxying MCP servers                    |
 | [Skill](./docs/design/Skill.md)            | Discovering and serving Agent Skills                    |
+| [Plugin](./docs/design/Plugin.md)          | Discovering and loading Agent Plugins                   |
 | [Binary](./docs/design/Binary.md)          | Bundled command-line tools                              |
 
 ## Configuration

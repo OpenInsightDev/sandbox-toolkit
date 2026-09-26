@@ -5,7 +5,7 @@ Workspace 是对远程文件系统中可操作目录的抽象，解决两类问�
 - **寻址**：把一个远程目录注册为指定 `id` 的工作区，后续操作以 `/workspaces/{id}` 前缀 + 相对路径定位文件；
 - **整体管理**：以目录为粒度管理工作区，例如确保用户在该目录的权限，以及对该目录进行版本管理、git 操作等。
 
-工作区是路径访问的边界，复用 [FileSystem.md](./FileSystem.md) 的路径模型与边界校验；MCP、skill 等资源复用工作区作为运行和访问边界，见 [MCP.md](./MCP.md)、[Skill.md](./Skill.md)。
+工作区是路径访问的边界，复用 [FileSystem.md](./FileSystem.md) 的路径模型与边界校验；MCP、skill、plugin 等资源复用工作区作为运行和访问边界，见 [MCP.md](./MCP.md)、[Skill.md](./Skill.md)、[Plugin.md](./Plugin.md)。
 
 ## 路由与寻址
 
@@ -16,7 +16,7 @@ Workspace 是对远程文件系统中可操作目录的抽象，解决两类问�
 | 工作区模式 | `/workspaces/{id}` | 工作区相对路径 |
 | 直接模式   | 无                 | 远程绝对路径   |
 
-工作区模式下，功能各占一个子路由：`/workspaces/{id}/fs` 与 `/workspaces/{id}/upload`（[FileSystem.md](./FileSystem.md)）、`/workspaces/{id}/exec`、`/workspaces/{id}/shell` 与 `/workspaces/{id}/pty`（[Process.md](./Process.md)）、`/workspaces/{id}/mcps`（[MCP.md](./MCP.md)）、`/workspaces/{id}/skills`（[Skill.md](./Skill.md)）。两种模式不得混用；路径参数的缺省值由各功能自行规定。
+工作区模式下，功能各占一个子路由：`/workspaces/{id}/fs` 与 `/workspaces/{id}/upload`（[FileSystem.md](./FileSystem.md)）、`/workspaces/{id}/exec`、`/workspaces/{id}/shell` 与 `/workspaces/{id}/pty`（[Process.md](./Process.md)）、`/workspaces/{id}/mcps`（[MCP.md](./MCP.md)）、`/workspaces/{id}/skills`（[Skill.md](./Skill.md)）、`/workspaces/{id}/plugins`（[Plugin.md](./Plugin.md)）。两种模式不得混用；路径参数的缺省值由各功能自行规定。
 
 ## 路径规则
 
