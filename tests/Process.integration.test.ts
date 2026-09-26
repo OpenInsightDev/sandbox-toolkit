@@ -431,4 +431,144 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec", () =
 
     expect(error).toBeInstanceOf(ApiError);
   });
+
+  test("collects a command that outlives the probe into a result", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        const spawned = yield* process.result({
+          command: "sh",
+          args: ["-c", "printf out; printf err 1>&2; sleep 0.4"],
+        });
+
+        return {
+          stdout: yield* Stream.mkString(Stream.decodeText(spawned.stdout)),
+          stderr: yield* Stream.mkString(Stream.decodeText(spawned.stderr)),
+          exitCode: yield* spawned.exitCode,
+        };
+      }),
+    );
+
+    expect(value).toEqual({ stdout: "out", stderr: "err", exitCode: 0 });
+  });
+
+  test("reports the exit code of a command that outlives the probe", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* process.exitCode({ command: "sh", args: ["-c", "sleep 0.3; exit 9"] });
+      }),
+    );
+
+    expect(value).toBe(9);
+  });
+
+  test("runs a shell template that outlives the probe", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* process.$({ timeout: 0 })`printf shell; sleep 0.2`;
+      }),
+    );
+
+    expect(value).toBe("shell");
+  });
+
+  test("runs a shell template whose output exceeds the direct response limit", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* process.$`yes x | head -c 1500000`;
+      }),
+    );
+
+    expect(value.length).toBe(1_500_000);
+  });
+
+  test("returns only the stdout of a shell template", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* process.$`printf out; printf err 1>&2`;
+      }),
+    );
+
+    expect(value).toBe("out");
+  });
+
+  test("fails a shell template with a non-zero exit and its output", async () => {
+    const error = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* Effect.flip(process.$`printf out; printf err 1>&2; exit 3`);
+      }),
+    );
+
+    expect(error).toBeInstanceOf(Process.CommandExitError);
+    expect(error).toMatchObject({ exitCode: 3, stdout: "out", stderr: "err" });
+  });
+
+  test("carries the streamed output of a failing shell template", async () => {
+    const error = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* Effect.flip(
+          process.$({ timeout: 0 })`printf out; printf err 1>&2; sleep 0.2; exit 3`,
+        );
+      }),
+    );
+
+    expect(error).toBeInstanceOf(Process.CommandExitError);
+    expect(error).toMatchObject({ exitCode: 3, stdout: "out", stderr: "err" });
+  });
+
+  test("applies the shell template's cwd and env", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return {
+          cwd: yield* process.$({ cwd: "sub" })`pwd`,
+          env: yield* process.$({ env: { SBXTKT_E2E_SHELL: "ok" } })`printf %s "$SBXTKT_E2E_SHELL"`,
+        };
+      }),
+      "docs",
+    );
+
+    expect(value.cwd.trim()).toBe(realpathSync(join(workspaceRoot, "sub")));
+    expect(value.env).toBe("ok");
+  });
+
+  test("splits CRLF output into lines", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* Stream.runCollect(
+          process.lines({ command: "sh", args: ["-c", "printf 'a\\r\\nb\\nlast'"] }),
+        );
+      }),
+    );
+
+    expect(Array.from(value)).toEqual(["a", "b", "last"]);
+  });
+
+  test("collects output larger than the direct response limit", async () => {
+    const value = await run(
+      Effect.gen(function* () {
+        const process = yield* Process.Process;
+
+        return yield* process.string({ command: "sh", args: ["-c", "yes x | head -c 1500000"] });
+      }),
+    );
+
+    expect(value.length).toBe(1_500_000);
+  });
 });

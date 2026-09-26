@@ -3,9 +3,9 @@ import { HttpClientRequest } from "effect/unstable/http";
 import type { TemplateExpression } from "effect/unstable/process/ChildProcess";
 import { ExitCode } from "effect/unstable/process/ChildProcessSpawner";
 
-import type { ExecResult } from "./generated/ExecResult.ts";
 import { Client } from "./internal/client.ts";
 import {
+  CommandExitError,
   CommandFailed,
   ProcessEvent,
   StreamError,
@@ -22,7 +22,7 @@ import {
 } from "./internal/process.ts";
 import { route } from "./internal/prelude.ts";
 
-export { CommandFailed, ProcessEvent, StreamError };
+export { CommandExitError, CommandFailed, ProcessEvent, StreamError };
 
 export type { ProcessError };
 
@@ -122,6 +122,15 @@ export class Process extends Context.Service<
       command: Command,
     ): Effect.Effect<ProcessResult | Stream.Stream<ProcessEvent, ProcessError>, ProcessError>;
 
+    /**
+     * Run a shell script and return its standard output.
+     *
+     * **Details**
+     *
+     * Interpolated values are inlined verbatim. A command that exits with a
+     * non-zero code fails with a `CommandExitError` carrying the script, its
+     * exit code, and both output streams, rather than discarding them.
+     */
     $: {
       (
         strings: TemplateStringsArray,
@@ -202,13 +211,23 @@ export const make = Effect.fn("Process.make")(function* (
     values: ReadonlyArray<TemplateExpression>,
   ): Effect.Effect<string, ProcessError> =>
     Effect.gen(function* () {
+      const script = renderShell(strings, values);
+
       const request = HttpClientRequest.post(route(options.workspace, "/shell")).pipe(
-        HttpClientRequest.bodyJsonUnsafe(shellRequest(renderShell(strings, values), shellOptions)),
+        HttpClientRequest.bodyJsonUnsafe(shellRequest(script, shellOptions)),
       );
 
-      const result = yield* client.json<ExecResult>(request);
+      const collected = yield* Effect.flatMap(client.execute(request), responseResult);
+      const stdout = yield* Stream.mkString(Stream.decodeText(collected.stdout));
+      const exitCode = yield* collected.exitCode;
 
-      return result.stdout;
+      if (exitCode === 0) {
+        return stdout;
+      }
+
+      const stderr = yield* Stream.mkString(Stream.decodeText(collected.stderr));
+
+      return yield* Effect.fail(new CommandExitError({ script, exitCode, stdout, stderr }));
     });
 
   function $(

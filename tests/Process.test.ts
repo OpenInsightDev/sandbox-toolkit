@@ -212,6 +212,64 @@ test("runs a shell template with its options", async () => {
   });
 });
 
+test("collects a shell template answered with the frame stream", async () => {
+  const program = Effect.gen(function* () {
+    const process = yield* Process.Process;
+
+    return yield* process.$`echo hi`;
+  });
+
+  const value = await run(program, "docs", () =>
+    streamResponse(
+      frame(0, encodeText("hi\n")),
+      frame(1, encodeText("err")),
+      statusFrame({ status: "success" }),
+    ),
+  );
+
+  expect(value).toBe("hi\n");
+});
+
+test("fails a shell template with a non-zero exit and its output", async () => {
+  const error = await run(
+    Effect.gen(function* () {
+      const process = yield* Process.Process;
+
+      return yield* Effect.flip(process.$`printf out; printf err 1>&2; exit 3`);
+    }),
+    "docs",
+    () => result({ status: "exited", code: 3 }, "out", "err"),
+  );
+
+  expect(error).toBeInstanceOf(Process.CommandExitError);
+  expect(error).toMatchObject({
+    script: "printf out; printf err 1>&2; exit 3",
+    exitCode: 3,
+    stdout: "out",
+    stderr: "err",
+  });
+});
+
+test("fails a streamed shell template with a non-zero exit and its output", async () => {
+  const error = await run(
+    Effect.gen(function* () {
+      const process = yield* Process.Process;
+
+      return yield* Effect.flip(process.$`exit 4`);
+    }),
+    "docs",
+    () =>
+      streamResponse(
+        frame(0, encodeText("out")),
+        frame(1, encodeText("err")),
+        statusFrame({ status: "exited", code: 4 }),
+      ),
+  );
+
+  expect(error).toBeInstanceOf(Process.CommandExitError);
+  expect(error).toMatchObject({ script: "exit 4", exitCode: 4, stdout: "out", stderr: "err" });
+});
+
 const collectStream = (
   command: Process.Command,
 ): Effect.Effect<ReadonlyArray<Process.ProcessEvent>, Process.ProcessError, Process.Process> =>

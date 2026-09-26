@@ -99,7 +99,18 @@ export class StreamError extends Data.TaggedError("StreamError")<{
   readonly message: string;
 }> {}
 
-export type ProcessError = ClientError | CommandFailed | StreamError;
+/**
+ * A shell command that ran to completion with a non-zero exit code, carrying
+ * the script and both output streams so a failing command is diagnosable.
+ */
+export class CommandExitError extends Data.TaggedError("CommandExitError")<{
+  readonly script: string;
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {}
+
+export type ProcessError = ClientError | CommandFailed | StreamError | CommandExitError;
 
 /**
  * One message read from the exec frame stream, tagged by channel.
