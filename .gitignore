@@ -12,7 +12,7 @@ dist
 !.env.example
 
 /references
-src/generated
+packages/sandbox-toolkit/src/generated
 
 # Cargo workspace build output, which now lives at the repository root.
 /target

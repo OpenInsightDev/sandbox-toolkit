@@ -17,11 +17,11 @@ import * as Process from "../src/Process.ts";
  * the source tree and spawned on a private port with a throwaway root.
  */
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const repoRoot = resolve(import.meta.dirname, "../../..");
 
 const manifest = "crates/sandbox-toolkit/Cargo.toml";
 
-const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbxtkt");
+const serverBinary = join(repoRoot, "target", "debug", "sbxtkt");
 
 const hasCargo = ((): boolean => {
   try {

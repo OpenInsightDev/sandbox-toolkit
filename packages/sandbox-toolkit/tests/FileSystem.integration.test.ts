@@ -17,11 +17,11 @@ import { layerFetch } from "../src/internal/client.ts";
  * throwaway root and a registered workspace.
  */
 
-const repoRoot = resolve(import.meta.dirname, "..");
+const repoRoot = resolve(import.meta.dirname, "../../..");
 
 const manifest = "crates/sandbox-toolkit/Cargo.toml";
 
-const serverBinary = join(repoRoot, "crates", "sandbox-toolkit", "target", "debug", "sbxtkt");
+const serverBinary = join(repoRoot, "target", "debug", "sbxtkt");
 
 const hasCargo = ((): boolean => {
   try {

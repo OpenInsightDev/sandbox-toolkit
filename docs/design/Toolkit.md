@@ -44,7 +44,7 @@ pub(crate) struct CreateWorkspaceRequest {
 }
 ```
 
-TS 绑定由 `#[ts(export)]` 生成的测试在 `cargo test` 时写出；落盘目录、整型映射与导入扩展名由 `.cargo/config.toml` 的 `TS_RS_EXPORT_DIR`、`TS_RS_LARGE_INT`、`TS_RS_IMPORT_EXTENSION` 固定。产物落在 `src/generated`，只由重新生成更新，不手工编辑。
+TS 绑定由 `#[ts(export)]` 生成的测试在 `cargo test` 时写出；落盘目录、整型映射与导入扩展名由 `.cargo/config.toml` 的 `TS_RS_EXPORT_DIR`、`TS_RS_LARGE_INT`、`TS_RS_IMPORT_EXTENSION` 固定。产物落在 `packages/sandbox-toolkit/src/generated`，只由重新生成更新，不手工编辑。
 
 ### 三面兼容约束
 

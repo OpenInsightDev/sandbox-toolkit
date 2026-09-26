@@ -1,41 +1,18 @@
 {
-  "name": "sandbox-toolkit",
+  "name": "sandbox-toolkit-workspace",
   "version": "0.0.0",
-  "description": "A starter for creating a TypeScript package.",
-  "homepage": "https://github.com/author/library#readme",
-  "bugs": {
-    "url": "https://github.com/author/library/issues"
-  },
-  "license": "MIT",
-  "author": "Author Name <author.name@mail.com>",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/author/library.git"
-  },
-  "files": [
-    "dist"
-  ],
+  "private": true,
   "type": "module",
-  "exports": {
-    ".": "./dist/index.mjs",
-    "./package.json": "./package.json"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
-    "build": "vp pack",
-    "dev": "vp pack --watch",
-    "test": "vp test",
-    "check": "vp check",
     "bindings": "cargo test --manifest-path crates/sandbox-toolkit/Cargo.toml export_bindings",
-    "prepublishOnly": "vp run build",
+    "build": "vp run -r build",
+    "dev": "vp run sandbox-toolkit#dev",
+    "test": "vp run -r test",
+    "check": "vp check",
     "prepare": "vp config"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.79.0",
-    "@types/node": "^26.1.1",
-    "bumpp": "^11.1.0",
     "typescript": "^7.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
@@ -47,8 +24,7 @@
       "onFail": "download"
     }
   },
-  "dependencies": {
-    "@effect/platform-node": "4.0.0-rc.117",
-    "effect": "4.0.0-rc.117"
-  }
+  "workspaces": [
+    "packages/*"
+  ]
 }

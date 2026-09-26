@@ -1,6 +1,6 @@
 import { defineConfig } from "vite-plus";
 
-/** The vendored plugin's rules, enabled at `error` for application code. */
+/** The vendored plugin's rules, enabled at `error` for workspace package sources. */
 const antiSlopRules = {
   "anti-slop/no-array-filter-map": "error",
   "anti-slop/no-reduce-accumulator-copy": "error",
@@ -34,9 +34,13 @@ const antiSlopOffForTests = Object.fromEntries(
   Object.keys(antiSlopRules).map((rule) => [rule, "off"]),
 ) as Record<string, "off">;
 
-// Installed agent tooling and the vendored anti-slop plugin are not application
-// source, so both lint and format stay away from them.
-const vendoredIgnores = [
+// Installed agent tooling, vendored upstream sources, and the Rust workspace are
+// not TypeScript application source, so lint and format stay away from them.
+const ignoredPaths = [
+  "crates/**",
+  "references/**",
+  "target/**",
+  "tools/oxlint/anti-slop/**",
   ".agent/**",
   ".agents/**",
   ".claude/**",
@@ -48,26 +52,18 @@ const vendoredIgnores = [
   ".pi/**",
   ".roo/**",
   ".windsurf/**",
-  "tools/oxlint/anti-slop/**",
 ];
 
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
   },
-  pack: {
-    dts: {
-      tsgo: true,
-    },
-    exports: true,
-  },
   lint: {
     options: {
       typeAware: true,
       typeCheck: true,
     },
-    // Only lint the package's own sources, leaving vendored trees alone.
-    ignorePatterns: ["/*", "!/src", "!/tests", ...vendoredIgnores],
+    ignorePatterns: ignoredPaths,
     jsPlugins: [
       { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
       {
@@ -75,23 +71,29 @@ export default defineConfig({
         specifier: "./tools/oxlint/anti-slop/effect/index.ts",
       },
     ],
-    rules: {
-      "oxc/no-accumulating-spread": "error",
-      ...antiSlopRules,
-    },
     overrides: [
       {
-        files: ["tests/**"],
+        files: ["packages/**"],
+        rules: {
+          "oxc/no-accumulating-spread": "error",
+          ...antiSlopRules,
+        },
+      },
+      {
+        files: ["packages/**/tests/**"],
         rules: antiSlopOffForTests,
       },
     ],
   },
   fmt: {
-    // Only format the package's own sources, leaving vendored trees alone.
-    // `src/generated/**` is written by `cargo test` via ts-rs; reformatting it would churn on every regeneration.
-    ignorePatterns: ["/*", "!/src", "!/tests", "src/generated/**", ...vendoredIgnores],
-  },
-  test: {
-    include: ["tests/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    // Only format workspace package sources, leaving root metadata, docs, vendored
+    // trees, and the Rust workspace alone. `src/generated/**` is written by
+    // `cargo test` via ts-rs; reformatting it would churn on every regeneration.
+    ignorePatterns: [
+      "/*",
+      "!/packages",
+      "packages/**/src/generated/**",
+      ...ignoredPaths,
+    ],
   },
 });

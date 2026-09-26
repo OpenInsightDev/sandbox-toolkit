@@ -1,7 +1,7 @@
 [env]
 # Relative paths resolve against the repository root, so `cargo test` writes the
 # ts-rs bindings where the TypeScript package reads them.
-TS_RS_EXPORT_DIR = { value = "src/generated", relative = true }
+TS_RS_EXPORT_DIR = { value = "packages/sandbox-toolkit/src/generated", relative = true }
 # JSON carries no bigint; `u64` sizes reach the client as plain numbers.
 TS_RS_LARGE_INT = "number"
 # Cross-file imports need an extension under `moduleResolution: nodenext`;
