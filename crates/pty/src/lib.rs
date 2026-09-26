@@ -1,1 +1,38 @@
+//! Spawn interactive processes either under a PTY (pseudo terminal) or regular
+//! pipes, with matching handles and output/exit channels so callers can switch
+//! backends without changing the surrounding code.
+//!
+//! Only Unix is supported; the crate compiles to nothing elsewhere.
+#![cfg(unix)]
 
+pub mod pipe;
+pub mod process_group;
+pub mod pty;
+
+mod process;
+#[cfg(test)]
+mod tests;
+mod unix_io;
+
+pub const DEFAULT_OUTPUT_BYTES_CAP: usize = 1024 * 1024;
+
+/// Spawn a non-interactive process using regular pipes for stdin/stdout/stderr.
+pub use pipe::spawn_process as spawn_pipe_process;
+/// Spawn a non-interactive process using regular pipes, but close stdin immediately.
+pub use pipe::spawn_process_no_stdin as spawn_pipe_process_no_stdin;
+/// Driver-backed process adapter used by integrations with their own process transport.
+pub use process::ProcessDriver;
+/// Handle for interacting with a spawned process (PTY or pipe).
+pub use process::ProcessHandle;
+/// Process signal supported by spawned-process handles.
+pub use process::ProcessSignal;
+/// Bundle of process handles plus split output and exit receivers returned by spawn helpers.
+pub use process::SpawnedProcess;
+/// Terminal size in character cells used for PTY spawn and resize operations.
+pub use process::TerminalSize;
+/// Combine stdout/stderr receivers into a single broadcast receiver.
+pub use process::combine_output_receivers;
+/// Adapt an externally-driven process into the standard spawned-process handle.
+pub use process::spawn_from_driver;
+/// Spawn a process attached to a PTY for interactive use.
+pub use pty::spawn_process as spawn_pty_process;

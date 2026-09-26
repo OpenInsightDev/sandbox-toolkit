@@ -1279,7 +1279,10 @@ dependencies = [
 name = "pty"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
+ "libc",
  "portable-pty",
+ "tokio",
 ]
 
 [[package]]
