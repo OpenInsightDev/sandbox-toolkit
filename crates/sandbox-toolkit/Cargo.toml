@@ -13,10 +13,10 @@ anyhow = "1.0.104"
 # Vendored as the git submodule at `crates/axum` (tokio-rs/axum @ 7c3c6787), because
 # the released 0.8.9 has no `MethodFilter::QUERY` but the unreleased `main` does.
 axum = { path = "../axum/axum", features = ["http2", "ws"] }
+blake3 = "1.8"
 bytes = { version = "1.12.1", features = ["serde"] }
 chrono = "0.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
-flate2 = "1.1"
 globset = "0.4.20"
 httpdate = "1.0.3"
 # `access(2)` has no std binding; the probe needs the effective-uid semantics of
@@ -40,17 +40,24 @@ ts-rs = "12.0.1"
 url = "2.5"
 strum = { version = "0.28.0", features = ["derive"] }
 regex = "1.13.1"
+zstd = "0.13"
 
 [build-dependencies]
+blake3 = "1.8"
 flate2 = "1.1"
+# The build needs HTTPS to fetch the pinned release assets.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tar = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "fs", "io-util"] }
 # Only deflate entries need to be read.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zstd = "0.13"
 
 [features]
 default = []
-binaries = ["jaq", "uv", "deno"]
+binaries = ["jaq", "jq", "uv", "deno"]
 jaq = []
+jq = []
 uv = []
 deno = []
 

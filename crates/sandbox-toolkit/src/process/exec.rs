@@ -425,7 +425,12 @@ async fn resolve_cwd(
 /// The search path handed to the process: the materialized binaries directory first,
 /// so bundled tools resolve by name, then whatever the caller or the server had.
 fn search_path(inherited: Option<OsString>) -> OsString {
-    let materialized = binary::materialized_dir();
+    // Startup fails without `$HOME`, so the fallback only covers a process that
+    // somehow spawns a child before materialization.
+    let Ok(materialized) = binary::materialized_dir() else {
+        return inherited.unwrap_or_default();
+    };
+
     let Some(inherited) = inherited.filter(|path| !path.is_empty()) else {
         return materialized.into_os_string();
     };
