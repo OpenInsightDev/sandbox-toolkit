@@ -50,7 +50,7 @@ exec 以 JSON body 执行一个可执行文件或一段脚本，`format` 区分�
 
 ### 响应
 
-服务端按 `wait` 与输出量在两种形态间选择，两种都承载在普通 `200` 响应上、靠 `Content-Type` 区分，不涉及 `101`：
+服务端按 `wait` 与输出量在两种形态间选择，两种都承载在普通 `200` 响应上、靠 `Content-Type` 区分：
 
 - `wait>0`，命令在 `wait` 内结束，且 stdout、stderr 累计未超缓冲上限（4 MiB）：返回 JSON（`Content-Type: application/json`），stdout、stderr 按 UTF-8 解码，非法序列替换；
 - 否则：升级为帧流（`Content-Type: application/vnd.sandbox-toolkit.exec-stream`），在流中多路返回 stdout、stderr 与终态；输出累计超过缓冲上限时提前升级。
