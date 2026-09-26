@@ -106,7 +106,7 @@ plugin 条目沿用 [MCP.md](./MCP.md) 的“插件变量”，差别只在取�
 - 两个变量注入 stdio 子进程环境并展开 `args`、`env` 值、`cwd`，展开规则同 [MCP.md](./MCP.md)；
 - `plugins_dir` 为该挂载点的 plugins 目录；`PLUGIN_DATA` 按 plugin 而非按条目分配，随 `.agents` 目录持久化，不随 plugin 卸载删除；
 - `./` 开头的 `command`、`cwd` 相对 plugin 根目录解析，解析后必须留在 plugin 根目录内；
-- 工作区挂载点下同时受该工作区边界约束，并按 [Workspace.md](./Workspace.md) 的环境变量注入工作区根目录。
+- 工作区挂载点下同时受该工作区边界约束，并按 [Workspace.md](./Workspace.md) 的环境变量注入已注册工作区根目录。
 
 ## 附属文件：只读工作区
 

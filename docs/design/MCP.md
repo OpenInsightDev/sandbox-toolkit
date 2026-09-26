@@ -68,7 +68,7 @@ MCP server 从两处固定的 `.agents/mcp.json` 发现，各对应一个挂载�
 - `command` 是单个可执行 token：bare 名按平台搜索规则解析，`./` 开头的路径相对 `${PLUGIN_ROOT}` 解析，参数逐项传递，不经过 shell；
 - `cwd` 是工作目录，只接受 `${PLUGIN_ROOT}`、`${PLUGIN_DATA}` 前缀，缺省取 `${PLUGIN_ROOT}`；占位符展开见“插件变量”；
 - 工作区挂载点下，`command` 与 `cwd` 解析后必须留在工作区内，复用 [FileSystem.md](./FileSystem.md) 的路径规范化与边界校验，子进程的文件访问也经该工作区受限；全局挂载点下不受工作区边界约束，但必须在启动前完成绝对路径规范化与目录校验；
-- 工作区挂载点下按 [Workspace.md](./Workspace.md) 的环境变量把工作区根目录注入子进程环境。
+- 按 [Workspace.md](./Workspace.md) 的环境变量把已注册工作区根目录注入子进程环境。
 
 ### streamable-http
 

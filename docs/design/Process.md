@@ -5,8 +5,6 @@
 - exec 模仿 MCP 的 streamable-http：请求在阈值 `wait` 内结束则直接返回 JSON 结果，否则在同一个 `200` 响应上升级为帧流，多路返回 stdout、stderr 与终态；
 - pty 提供独立的 session API，每个 session 通过一条 WebSocket 双向通信。
 
-具体设计参考 k8s api server 与 Docker remote api，见“参考”。
-
 ## 端点与寻址
 
 exec 与 pty 各占一个子路由：
@@ -16,9 +14,8 @@ exec 与 pty 各占一个子路由：
 | 工作区模式 | `/workspaces/{id}/exec` | `/workspaces/{id}/pty` | 工作区相对路径 |
 | 直接模式   | `/exec`                 | `/pty`                 | 远程绝对路径   |
 
-- 两种模式不得混用，与 [Workspace.md](./Workspace.md) 一致；
-- 工作区模式下按 [Workspace.md](./Workspace.md) 的环境变量注入当前工作区根目录，且 `cwd` 必须位于工作区根目录内，越界返回 `400 bad_request`；`command` 不受工作区边界约束；
-- 直接模式没有工作区，不注入变量。
+- 无论哪种寻址模式，都按 [Workspace.md](./Workspace.md) 的环境变量注入全部已注册工作区的变量；
+- 工作区模式下 `cwd` 必须位于工作区根目录内，越界返回 `400 bad_request`；`command` 不受工作区边界约束。
 
 ## exec
 
