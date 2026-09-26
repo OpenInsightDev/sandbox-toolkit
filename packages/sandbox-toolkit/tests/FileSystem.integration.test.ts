@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 
 import * as FileSystem from "../src/FileSystem.ts";
 import { layerFetch } from "../src/internal/client.ts";
+import * as Workspace from "../src/Workspace.ts";
 
 /**
  * End-to-end wiring check between this package's `FileSystem` client and the
@@ -133,10 +134,17 @@ const registerWorkspace = async (server: Server, id: string, root: string): Prom
 
 let baseUrl = "";
 
+/** The handle a workspace registered with the default access mode carries. */
+const workspaceHandle = (id: string): Workspace.WorkspaceHandle => ({
+  id,
+  properties: { access: "read-write" },
+});
+
 const fileSystemLayer = (workspace?: string) =>
-  (workspace === undefined ? FileSystem.layer : FileSystem.layerForWorkspace({ workspace })).pipe(
-    Layer.provide(layerFetch({ baseUrl })),
-  );
+  (workspace === undefined
+    ? FileSystem.layer
+    : FileSystem.layerForWorkspace({ workspace: workspaceHandle(workspace) })
+  ).pipe(Layer.provide(layerFetch({ baseUrl })));
 
 const run = <A, E>(
   program: Effect.Effect<A, E, FileSystem.FileSystem>,

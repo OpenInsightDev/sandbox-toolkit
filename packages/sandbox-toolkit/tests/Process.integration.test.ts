@@ -11,6 +11,7 @@ import * as Socket from "effect/unstable/socket/Socket";
 import { ApiError, layerFetch } from "../src/internal/client.ts";
 import { layer as http2WebSocket } from "../src/internal/Http2WebSocket.ts";
 import * as Process from "../src/Process.ts";
+import * as Workspace from "../src/Workspace.ts";
 
 /**
  * End-to-end wiring check between this package's `Process` client and the Rust
@@ -164,10 +165,17 @@ const collectEvents = (events: ReadonlyArray<Process.ProcessEvent>): Collected =
 
 let baseUrl = "";
 
+/** The handle a workspace registered with the default access mode carries. */
+const workspaceHandle = (id: string): Workspace.WorkspaceHandle => ({
+  id,
+  properties: { access: "read-write" },
+});
+
 const processLayer = (workspace?: string) =>
-  (workspace === undefined ? Process.layer : Process.layerForWorkspace({ workspace })).pipe(
-    Layer.provide(layerFetch({ baseUrl })),
-  );
+  (workspace === undefined
+    ? Process.layer
+    : Process.layerForWorkspace({ workspace: workspaceHandle(workspace) })
+  ).pipe(Layer.provide(layerFetch({ baseUrl })));
 
 const run = <A, E>(program: Effect.Effect<A, E, Process.Process>, workspace?: string): Promise<A> =>
   Effect.runPromise(Effect.provide(program, processLayer(workspace)));

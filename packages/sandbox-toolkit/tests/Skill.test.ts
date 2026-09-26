@@ -9,6 +9,7 @@ import { expect, test } from "vite-plus/test";
 
 import * as Client from "../src/internal/client.ts";
 import * as Skill from "../src/Skill.ts";
+import * as Workspace from "../src/Workspace.ts";
 
 const baseUrl = "http://sandbox.test";
 
@@ -32,12 +33,20 @@ const stub = (handle: Handler): HttpClient.HttpClient =>
 const errorBody = (code: string, message: string, status = 404) =>
   Response.json({ error: { code, message, request_id: "req-1" } }, { status });
 
+const workspaceHandle = (id: string): Workspace.WorkspaceHandle => ({
+  id,
+  properties: { access: "read-write" },
+});
+
 const layerOf = (workspace: string | undefined, handle: Handler) => {
   const client = Client.layer({ baseUrl }).pipe(
     Layer.provide(Layer.succeed(HttpClient.HttpClient, stub(handle))),
   );
 
-  const skill = workspace === undefined ? Skill.layer : Skill.layerForWorkspace({ workspace });
+  const skill =
+    workspace === undefined
+      ? Skill.layer
+      : Skill.layerForWorkspace({ workspace: workspaceHandle(workspace) });
 
   return skill.pipe(Layer.provide(client));
 };

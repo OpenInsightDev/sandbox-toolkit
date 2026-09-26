@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 
 import { ApiError, layerFetch } from "../src/internal/client.ts";
 import * as Skill from "../src/Skill.ts";
+import * as Workspace from "../src/Workspace.ts";
 
 /**
  * End-to-end wiring check between this package's `Skill` client and the Rust
@@ -141,10 +142,17 @@ const writeSkill = (skillsDir: string, id: string, frontmatter: string, body: st
 
 let baseUrl = "";
 
+/** The handle a workspace registered with the default access mode carries. */
+const workspaceHandle = (id: string): Workspace.WorkspaceHandle => ({
+  id,
+  properties: { access: "read-write" },
+});
+
 const skillLayer = (workspace?: string) =>
-  (workspace === undefined ? Skill.layer : Skill.layerForWorkspace({ workspace })).pipe(
-    Layer.provide(layerFetch({ baseUrl })),
-  );
+  (workspace === undefined
+    ? Skill.layer
+    : Skill.layerForWorkspace({ workspace: workspaceHandle(workspace) })
+  ).pipe(Layer.provide(layerFetch({ baseUrl })));
 
 const runSkill = <A, E>(
   program: Effect.Effect<A, E, Skill.Skill>,

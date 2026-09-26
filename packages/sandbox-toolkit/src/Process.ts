@@ -16,6 +16,7 @@ import {
   takeLines,
 } from "./internal/process.ts";
 import { route } from "./internal/prelude.ts";
+import type { WorkspaceHandle } from "./Workspace.ts";
 
 /** A command that could not run, or was terminated before it could exit. */
 export class CommandFailed extends Data.TaggedError("CommandFailed")<{
@@ -330,8 +331,8 @@ export const make = Effect.fn("Process.make")(function* (
  * The process service over a workspace, where `cwd` is a workspace-relative
  * path.
  */
-export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
-  Layer.effect(Process, make({ workspace }));
+export const layerForWorkspace = ({ workspace }: { workspace: WorkspaceHandle }) =>
+  Layer.effect(Process, make({ workspace: workspace.id }));
 
 /** The process service in direct mode, where `cwd` is an absolute path. */
 export const layer = Layer.effect(Process, make());

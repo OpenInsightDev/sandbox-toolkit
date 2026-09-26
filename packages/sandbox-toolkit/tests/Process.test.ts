@@ -10,6 +10,7 @@ import { expect, test } from "vite-plus/test";
 import type { Status } from "../src/generated/Status.ts";
 import * as Client from "../src/internal/client.ts";
 import * as Process from "../src/Process.ts";
+import * as Workspace from "../src/Workspace.ts";
 
 const baseUrl = "http://sandbox.test";
 
@@ -78,13 +79,20 @@ const decoded = (events: ReadonlyArray<Process.ProcessEvent>) =>
       : { _tag: event._tag, data: new TextDecoder().decode(event.data) },
   );
 
+const workspaceHandle = (id: string): Workspace.WorkspaceHandle => ({
+  id,
+  properties: { access: "read-write" },
+});
+
 const layerOf = (workspace: string | undefined, handle: Handler) => {
   const client = Client.layer({ baseUrl }).pipe(
     Layer.provide(Layer.succeed(HttpClient.HttpClient, stub(handle))),
   );
 
   const process =
-    workspace === undefined ? Process.layer : Process.layerForWorkspace({ workspace });
+    workspace === undefined
+      ? Process.layer
+      : Process.layerForWorkspace({ workspace: workspaceHandle(workspace) });
 
   return process.pipe(Layer.provide(client));
 };

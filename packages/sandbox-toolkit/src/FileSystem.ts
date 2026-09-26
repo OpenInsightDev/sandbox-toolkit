@@ -16,6 +16,7 @@ import type { DirectoryResponse } from "./generated/DirectoryResponse.ts";
 import type { GlobRequest } from "./generated/GlobRequest.ts";
 import type { ListRequest } from "./generated/ListRequest.ts";
 import type { ResourceMetadata } from "./generated/ResourceMetadata.ts";
+import type { WorkspaceHandle } from "./Workspace.ts";
 import { Client } from "./internal/client.ts";
 import { isNotFound, metadataInfo, toPlatformError, unsupported } from "./internal/filesystem.ts";
 import { endLines, takeLines } from "./internal/process.ts";
@@ -384,8 +385,8 @@ export const make = Effect.fn("FileSystem.make")(function* (
  * The file system service over a workspace, where paths are workspace-relative
  * and "" addresses the workspace root.
  */
-export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
-  Layer.effect(FileSystem, make({ workspace }));
+export const layerForWorkspace = ({ workspace }: { workspace: WorkspaceHandle }) =>
+  Layer.effect(FileSystem, make({ workspace: workspace.id }));
 
 /** The file system service in direct mode, where paths are absolute. */
 export const layer = Layer.effect(FileSystem, make());

@@ -4,6 +4,7 @@ import { HttpClientRequest } from "effect/unstable/http";
 import type { SkillList as SkillListResponse } from "./generated/SkillList.ts";
 import { Client, type ClientError } from "./internal/client.ts";
 import { itemUrl, listUrl, toMetadata, toReadError, validateSkillId } from "./internal/skill.ts";
+import type { WorkspaceHandle } from "./Workspace.ts";
 
 /**
  * A skill id outside the Agent Skills charset: `[a-z0-9-]`, at most 64
@@ -38,7 +39,8 @@ export interface SkillMetadata {
   /** Address of the skill's body at this mount point. */
   readonly uri: string;
   /**
-   * Id of the read-only workspace holding the skill's other files, opened with
+   * Id of the read-only workspace holding the skill's other files; resolve it
+   * with the workspace service before opening it with
    * `FileSystem.layerForWorkspace`.
    */
   readonly workspace: string;
@@ -102,8 +104,8 @@ export const make = Effect.fn("Skill.make")(function* (
  * The skill service over the mount point of a workspace, discovered under its
  * `.agents/skills` directory.
  */
-export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
-  Layer.effect(Skill, make({ workspace }));
+export const layerForWorkspace = ({ workspace }: { workspace: WorkspaceHandle }) =>
+  Layer.effect(Skill, make({ workspace: workspace.id }));
 
 /** The skill service over the global mount point. */
 export const layer = Layer.effect(Skill, make());

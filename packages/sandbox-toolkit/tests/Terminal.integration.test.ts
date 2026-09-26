@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vite-plus/test";
 
 import { ApiError, layerFetch } from "../src/internal/client.ts";
 import * as Terminal from "../src/Terminal.ts";
+import * as Workspace from "../src/Workspace.ts";
 
 /**
  * End-to-end wiring check between this package's `Terminal` client and the Rust
@@ -134,10 +135,16 @@ const registerWorkspace = async (server: Server, id: string, root: string): Prom
 
 let baseUrl = "";
 
+/** The handle a workspace registered with the default access mode carries. */
+const workspaceHandle = (id: string): Workspace.WorkspaceHandle => ({
+  id,
+  properties: { access: "read-write" },
+});
+
 const terminalLayer = (workspace: string | undefined, options: Terminal.TerminalOptions) =>
   (workspace === undefined
     ? Terminal.layer(options)
-    : Terminal.layerForWorkspace({ workspace, ...options })
+    : Terminal.layerForWorkspace({ workspace: workspaceHandle(workspace), ...options })
   ).pipe(Layer.provide(layerFetch({ baseUrl })));
 
 const runTerminal = <A, E>(

@@ -11,6 +11,7 @@ import { Client } from "./internal/client.ts";
 import { endLines, takeLines } from "./internal/process.ts";
 import { route, targetEnv } from "./internal/prelude.ts";
 import { Frame, decodeFrame, encodeFrame, webSocketUrl } from "./internal/terminal.ts";
+import type { WorkspaceHandle } from "./Workspace.ts";
 
 export interface Terminal {
   /**
@@ -200,8 +201,10 @@ export const make = Effect.fn("Terminal.make")(function* (
 export const layerForWorkspace = ({
   workspace,
   ...options
-}: { workspace: string } & TerminalOptions) =>
-  Layer.effect(Terminal, make({ workspace, ...options })).pipe(Layer.provide(http2WebSocket));
+}: { workspace: WorkspaceHandle } & TerminalOptions) =>
+  Layer.effect(Terminal, make({ workspace: workspace.id, ...options })).pipe(
+    Layer.provide(http2WebSocket),
+  );
 
 /** The terminal service in direct mode, where `cwd` is an absolute path. */
 export const layer = (options: TerminalOptions = {}) =>
