@@ -1,7 +1,5 @@
 use std::{
-    env,
-    ffi::OsString,
-    fs,
+    env, fs,
     io::{self, BufReader, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -21,17 +19,25 @@ const FILE_MODE: u32 = 0o755;
 
 /// The directory the bundled executables are materialized into.
 ///
-/// The path is derived from `$HOME` alone, so it stays the same across restarts
-/// and can be referenced by the sandboxes the server spawns later.
+/// The path is derived from the user cache directory alone, so it stays the same
+/// across restarts and can be referenced by the sandboxes the server spawns later.
 pub(crate) fn materialized_dir() -> Result<PathBuf, BinaryError> {
-    dir_under(env::var_os("HOME"))
+    dir_under(cache_base())
 }
 
-pub(super) fn dir_under(home: Option<OsString>) -> Result<PathBuf, BinaryError> {
-    let home = home
-        .filter(|home| !home.is_empty())
-        .ok_or(BinaryError::MissingHome)?;
-    Ok(PathBuf::from(home).join(".sandbox-toolkit").join("bin"))
+/// `$CACHE`: the caller's override, else the platform cache directory.
+fn cache_base() -> Option<PathBuf> {
+    env::var_os("SANDBOX_TOOLKIT_CACHE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::cache_dir)
+}
+
+pub(super) fn dir_under(base: Option<PathBuf>) -> Result<PathBuf, BinaryError> {
+    let base = base
+        .filter(|base| !base.as_os_str().is_empty())
+        .ok_or(BinaryError::MissingCacheDir)?;
+    Ok(base.join("sandbox-toolkit").join("bin"))
 }
 
 /// Materialize every bundled tool once, in parallel, before the server starts.
@@ -46,7 +52,7 @@ pub(crate) async fn materialize() -> Result<PathBuf, BinaryError> {
 }
 
 /// The directory creation and parallel expansion shared by [`materialize`] and the
-/// tests, which point it at a scratch directory instead of `$HOME`.
+/// tests, which point it at a scratch directory instead of the cache directory.
 pub(super) async fn materialize_into(dir: &Path) -> Result<(), BinaryError> {
     tokio::fs::DirBuilder::new()
         .recursive(true)

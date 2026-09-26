@@ -17,6 +17,8 @@ blake3 = "1.8"
 bytes = { version = "1.12.1", features = ["serde"] }
 chrono = "0.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
+# Resolves the platform cache directory the materialized binaries live under.
+dirs = "7"
 globset = "0.4.20"
 httpdate = "1.0.3"
 # `access(2)` has no std binding; the probe needs the effective-uid semantics of

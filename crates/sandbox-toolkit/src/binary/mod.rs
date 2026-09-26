@@ -17,10 +17,8 @@ pub(crate) use self::materialize::{materialize, materialized_dir};
 
 #[derive(Debug, Error)]
 pub(crate) enum BinaryError {
-    #[error(
-        "the `HOME` environment variable is not set, so the binaries directory cannot be resolved"
-    )]
-    MissingHome,
+    #[error("no user cache directory is available, so the binaries directory cannot be resolved")]
+    MissingCacheDir,
 
     #[error("the embedded manifest has no digest for binary `{binary}`")]
     MissingDigest { binary: &'static str },
@@ -98,18 +96,18 @@ mod tests {
     }
 
     #[test]
-    fn materialized_dir_is_under_home() {
+    fn materialized_dir_is_under_the_cache_dir() {
         assert_eq!(
             super::materialize::dir_under(Some("/home/example".into())).unwrap(),
-            PathBuf::from("/home/example/.sandbox-toolkit/bin")
+            PathBuf::from("/home/example/sandbox-toolkit/bin")
         );
         assert!(matches!(
             super::materialize::dir_under(None),
-            Err(BinaryError::MissingHome)
+            Err(BinaryError::MissingCacheDir)
         ));
         assert!(matches!(
             super::materialize::dir_under(Some("".into())),
-            Err(BinaryError::MissingHome)
+            Err(BinaryError::MissingCacheDir)
         ));
     }
 
@@ -181,10 +179,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn materialize_uses_the_home_directory() {
+    async fn materialize_uses_the_cache_directory() {
         let dir = materialize().await.expect("materializing binaries failed");
 
-        assert_eq!(dir, materialized_dir().expect("HOME is set in tests"));
+        assert_eq!(
+            dir,
+            materialized_dir().expect("a cache directory is available in tests")
+        );
         for binary in catalog::bundled() {
             assert!(
                 dir.join(binary.name).is_file(),
