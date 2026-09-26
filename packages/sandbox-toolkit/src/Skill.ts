@@ -1,4 +1,9 @@
 import { Context, Data, Effect, Layer } from "effect";
+import { HttpClientRequest } from "effect/unstable/http";
+
+import type { SkillList as SkillListResponse } from "./generated/SkillList.ts";
+import { Client, type ClientError } from "./internal/client.ts";
+import { itemUrl, listUrl, toMetadata, toReadError, validateSkillId } from "./internal/skill.ts";
 
 /**
  * A skill id outside the Agent Skills charset: `[a-z0-9-]`, at most 64
@@ -14,7 +19,7 @@ export class SkillNotFound extends Data.TaggedError("SkillNotFound")<{
   readonly skillId: string;
 }> {}
 
-export type SkillError = InvalidSkillId | SkillNotFound;
+export type SkillError = ClientError | InvalidSkillId | SkillNotFound;
 
 /**
  * The metadata layer of a skill's progressive disclosure: its `SKILL.md`
@@ -69,12 +74,36 @@ export interface Skill {
 
 export const Skill: Context.Service<Skill, Skill> = Context.Service("skill");
 
+export const make = Effect.fn("Skill.make")(function* (
+  mount: { workspace?: string | undefined } = {},
+) {
+  const client = yield* Client;
+
+  const list = ((options?: ListSkillsOptions) =>
+    client
+      .json<SkillListResponse>(HttpClientRequest.get(listUrl(mount.workspace, options)))
+      .pipe(
+        Effect.map((response) => ({ skills: response.skills.map(toMetadata) })),
+      )) satisfies Skill["list"];
+
+  const read = ((skillId: string) =>
+    Effect.gen(function* () {
+      const id = yield* validateSkillId(skillId);
+
+      return yield* client
+        .text(HttpClientRequest.get(itemUrl(mount.workspace, id)))
+        .pipe(Effect.mapError((error) => toReadError(id, error)));
+    })) satisfies Skill["read"];
+
+  return Skill.of({ list, read });
+});
+
 /**
  * The skill service over the mount point of a workspace, discovered under its
  * `.agents/skills` directory.
  */
-export const layerForWorkspace = ({ workspace: _workspace }: { workspace: string }) =>
-  Layer.effect(Skill, Effect.die(new Error("not implemented")));
+export const layerForWorkspace = ({ workspace }: { workspace: string }) =>
+  Layer.effect(Skill, make({ workspace }));
 
 /** The skill service over the global mount point. */
-export const layer = Layer.effect(Skill, Effect.die(new Error("not implemented")));
+export const layer = Layer.effect(Skill, make());
