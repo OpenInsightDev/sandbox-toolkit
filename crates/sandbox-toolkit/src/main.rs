@@ -85,6 +85,7 @@ struct AppStateInner {
     root: PathBuf,
     agents_dir: PathBuf,
     workspaces: workspace::WorkspaceRegistry,
+    pty_sessions: process::PtySessions,
 }
 
 impl AppState {
@@ -98,6 +99,7 @@ impl AppState {
                 root: root.into(),
                 agents_dir: agents_dir.into(),
                 workspaces: workspace::WorkspaceRegistry::default(),
+                pty_sessions: process::PtySessions::default(),
             }),
         }
     }
@@ -112,6 +114,10 @@ impl AppState {
 
     fn workspaces(&self) -> &workspace::WorkspaceRegistry {
         &self.inner.workspaces
+    }
+
+    fn pty_sessions(&self) -> &process::PtySessions {
+        &self.inner.pty_sessions
     }
 
     /// Resolves a workspace id to its root. A derived workspace is not

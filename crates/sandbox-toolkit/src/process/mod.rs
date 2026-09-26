@@ -11,3 +11,4 @@ mod model;
 mod pty;
 
 pub(crate) use self::http::router;
+pub(crate) use self::pty::PtySessions;

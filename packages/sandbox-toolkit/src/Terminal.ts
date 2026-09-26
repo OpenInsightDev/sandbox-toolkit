@@ -143,7 +143,7 @@ export const make = Effect.fn("Terminal.make")(function* (
 
         if (Predicate.isTagged("Stdout")(decoded)) {
           yield* emit(decoder.decode(decoded.data, { stream: true }));
-        } else if (Predicate.isTagged("Exit")(decoded) || Predicate.isTagged("Close")(decoded)) {
+        } else if (Predicate.isTagged("Exit")(decoded)) {
           yield* finish();
         }
       }
@@ -155,8 +155,6 @@ export const make = Effect.fn("Terminal.make")(function* (
       Effect.catchCause(() => Effect.all([Queue.end(inputs), Queue.end(lines)], { discard: true })),
     ),
   );
-
-  yield* Effect.addFinalizer(() => writer.write(encodeFrame(Frame.Close())).pipe(Effect.ignore));
 
   const readInput: Terminal["readInput"] = Effect.succeed(inputs);
 

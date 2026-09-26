@@ -28,6 +28,9 @@ httpdate = "1.0.3"
 libc = "0.2"
 mime_guess = "2.0.5"
 percent-encoding = "2.3"
+# The pty backend for interactive sessions: spawn, resize and process-group
+# termination; the WebSocket session runtime is ours.
+pty = { path = "../pty" }
 rmcp = { version = "3.4.1", features = ["transport-streamable-http-server"] }
 schemars = "1.0.4"
 serde = { version = "1.0.229", features = ["derive"] }

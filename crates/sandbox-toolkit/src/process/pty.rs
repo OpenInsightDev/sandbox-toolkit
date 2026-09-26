@@ -4,16 +4,43 @@
 //! The channel set is closed, so a connection never creates channels. It has no
 //! stderr because a pty folds stderr into stdout.
 
-#![expect(
-    dead_code,
-    reason = "consumed by the pty session handlers, which are not written yet"
-)]
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 
+use axum::extract::ws::CloseFrame;
+use axum::extract::ws::Message;
+use axum::extract::ws::Utf8Bytes;
+use axum::extract::ws::WebSocket;
 use bytes::{BufMut, Bytes, BytesMut};
+use pty::ProcessExit;
+use pty::ProcessHandle;
+use pty::SpawnedProcess;
+use pty::TerminalSize as PtyTerminalSize;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio::time::Instant;
 use ts_rs::TS;
 
+use super::exec::CommandSpec;
+use super::exec::ExecError;
+use super::exec::WorkspaceContext;
+use super::model::PtyRequest;
+use super::model::PtySession;
 use super::model::Status;
+
+/// The largest WebSocket message a session accepts, matching the exec frame
+/// payload bound.
+pub(crate) const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
+
+/// A session nobody connects to within this window is reaped.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// After the connection is established, this much silence (counting ping/pong)
+/// reaps the session.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The discriminants are wire identifiers; reordering them changes the format.
 #[repr(u8)]
@@ -25,7 +52,6 @@ pub(crate) enum Channel {
     /// The process outcome, carrying the exit code or an error.
     Exit = 3,
     Resize = 4,
-    Close = 255,
 }
 
 impl Channel {
@@ -39,7 +65,6 @@ impl Channel {
             1 => Ok(Self::Stdout),
             3 => Ok(Self::Exit),
             4 => Ok(Self::Resize),
-            255 => Ok(Self::Close),
             other => Err(FrameError::UnknownChannel(other)),
         }
     }
@@ -48,7 +73,6 @@ impl Channel {
         match self {
             Self::Stdin | Self::Resize => Direction::ClientToServer,
             Self::Stdout | Self::Exit => Direction::ServerToClient,
-            Self::Close => Direction::Bidirectional,
         }
     }
 }
@@ -57,7 +81,6 @@ impl Channel {
 pub(crate) enum Direction {
     ClientToServer,
     ServerToClient,
-    Bidirectional,
 }
 
 /// Terminal geometry in character cells.
@@ -66,6 +89,15 @@ pub(crate) enum Direction {
 pub(crate) struct TerminalSize {
     pub(crate) rows: u16,
     pub(crate) cols: u16,
+}
+
+impl Default for TerminalSize {
+    fn default() -> Self {
+        Self {
+            rows: 24,
+            cols: 80,
+        }
+    }
 }
 
 impl TerminalSize {
@@ -99,7 +131,6 @@ pub(crate) enum Frame {
     /// Ends the output stream.
     Exit(Status),
     Resize(TerminalSize),
-    Close,
 }
 
 impl Frame {
@@ -109,7 +140,6 @@ impl Frame {
             Self::Stdout(_) => Channel::Stdout,
             Self::Exit(_) => Channel::Exit,
             Self::Resize(_) => Channel::Resize,
-            Self::Close => Channel::Close,
         }
     }
 
@@ -140,7 +170,6 @@ impl Frame {
                 .expect("a status frame always serializes to JSON")
                 .into(),
             Self::Resize(size) => Bytes::copy_from_slice(&size.to_wire()),
-            Self::Close => Bytes::new(),
         }
     }
 
@@ -158,35 +187,36 @@ impl Frame {
                     length: payload.len(),
                 },
             )?),
-            // A close signal carries no information, so any payload is ignored.
-            Channel::Close => Self::Close,
         };
 
         Ok(frame)
     }
 }
 
-/// [`Frame::Exit`] is terminal for output, leaving only [`Frame::Close`], and
-/// nothing follows [`Frame::Close`].
+/// [`Frame::Exit`] is terminal for output: nothing follows it.
 #[derive(Debug, Default)]
+#[allow(
+    dead_code,
+    reason = "the server-to-client sequence is produced directly by the session runtime; \
+              this validator is exercised only by tests"
+)]
 pub(crate) struct SessionFrames {
     exited: bool,
-    closed: bool,
 }
 
+#[allow(
+    dead_code,
+    reason = "exercised only by the session-frame validator tests"
+)]
 impl SessionFrames {
     pub(crate) fn decode(&mut self, message: &[u8]) -> Result<Frame, FrameError> {
-        if self.closed {
-            return Err(FrameError::FrameAfterClose);
+        if self.exited {
+            return Err(FrameError::FrameAfterExit);
         }
 
         let frame = Frame::decode(message)?;
-        match &frame {
-            Frame::Close => self.closed = true,
-            Frame::Exit(_) if self.exited => return Err(FrameError::FrameAfterExit),
-            Frame::Exit(_) => self.exited = true,
-            _ if self.exited => return Err(FrameError::FrameAfterExit),
-            _ => {}
+        if matches!(frame, Frame::Exit(_)) {
+            self.exited = true;
         }
 
         Ok(frame)
@@ -194,10 +224,6 @@ impl SessionFrames {
 
     pub(crate) const fn exited(&self) -> bool {
         self.exited
-    }
-
-    pub(crate) const fn is_closed(&self) -> bool {
-        self.closed
     }
 }
 
@@ -215,10 +241,289 @@ pub(crate) enum FrameError {
     },
     #[error("exit frame payload is not valid JSON")]
     InvalidStatus(#[source] serde_json::Error),
+    #[allow(
+        dead_code,
+        reason = "constructed only by the session-frame validator, which is test-only"
+    )]
     #[error("frame received after the terminal exit frame")]
     FrameAfterExit,
-    #[error("frame received after the close frame")]
-    FrameAfterClose,
+}
+
+/// Live pty sessions, keyed by id. Attaching removes a session, so exactly one
+/// connection can own a terminal and the creation-timeout reaper cannot race an
+/// attach.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PtySessions {
+    sessions: Arc<StdMutex<HashMap<String, Arc<Session>>>>,
+}
+
+impl PtySessions {
+    fn insert(&self, session: Arc<Session>) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(session.id.clone(), session);
+        }
+    }
+
+    /// Removes the session, handing ownership to the one caller that attaches.
+    pub(crate) fn take(&self, id: &str) -> Option<Arc<Session>> {
+        self.sessions.lock().ok()?.remove(id)
+    }
+
+    /// Ends the creation grace period. A session that was attached is already
+    /// gone from the map, so this only terminates one still awaiting a connection.
+    fn expire(&self, id: &str) {
+        let expired = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|mut sessions| sessions.remove(id));
+
+        if let Some(session) = expired {
+            session.handle.terminate();
+        }
+    }
+}
+
+/// A spawned pty process plus the channels its connection drains.
+#[derive(Debug)]
+pub(crate) struct Session {
+    id: String,
+    workspace_id: Option<String>,
+    handle: Arc<ProcessHandle>,
+    // Taken by [`Self::run`] on attach, so a session can never be attached twice.
+    stdout_rx: StdMutex<Option<mpsc::Receiver<Vec<u8>>>>,
+    exit_rx: StdMutex<Option<oneshot::Receiver<ProcessExit>>>,
+}
+
+impl Session {
+    pub(crate) fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
+    }
+
+    /// Terminates the process group, used when an attach is rejected after the
+    /// session was taken.
+    pub(crate) fn terminate(&self) {
+        self.handle.terminate();
+    }
+
+    /// Drives one attached WebSocket to completion: client stdin and resize in,
+    /// pty stdout out, then the terminal status and a close. Every exit path
+    /// terminates the process group, so no descendant outlives the connection.
+    pub(crate) async fn run(self: Arc<Self>, mut socket: WebSocket) {
+        let (Some(mut stdout_rx), Some(mut exit_rx)) = (
+            self.stdout_rx.lock().ok().and_then(|mut rx| rx.take()),
+            self.exit_rx.lock().ok().and_then(|mut rx| rx.take()),
+        ) else {
+            return;
+        };
+
+        let writer = self.handle.writer_sender();
+        let mut last_activity = Instant::now();
+        let mut status = None;
+        let mut stdout_open = true;
+        let mut exit_open = true;
+
+        loop {
+            // Both directions are finished: the exit status is known and the pty
+            // has no more output.
+            if !stdout_open && !exit_open {
+                break;
+            }
+
+            // Reading the socket and writing frames must not share a borrow, so
+            // the select only produces an event; the socket is used afterwards.
+            let idle_deadline = last_activity + IDLE_TIMEOUT;
+            let event = tokio::select! {
+                incoming = socket.recv() => ClientEvent::Message(incoming),
+                chunk = stdout_rx.recv(), if stdout_open => ClientEvent::Stdout(chunk),
+                result = &mut exit_rx, if exit_open => ClientEvent::Exit(result),
+                () = tokio::time::sleep_until(idle_deadline) => ClientEvent::Idle,
+            };
+
+            match event {
+                ClientEvent::Message(Some(Ok(Message::Binary(message)))) => {
+                    last_activity = Instant::now();
+                    let frame = match Frame::decode(&message) {
+                        Ok(frame) => frame,
+                        Err(_) => break,
+                    };
+
+                    match frame.direction() {
+                        Direction::ClientToServer => match frame {
+                            Frame::Stdin(bytes) => {
+                                let _ = writer.send(bytes.to_vec()).await;
+                            }
+                            Frame::Resize(size) => {
+                                let _ = self.handle.resize(PtyTerminalSize {
+                                    rows: size.rows,
+                                    cols: size.cols,
+                                });
+                            }
+                            // The direction is fixed by the channel, so this is
+                            // unreachable; closing keeps the connection bounded.
+                            _ => break,
+                        },
+                        // A server-only channel is a protocol error that ends the
+                        // session.
+                        Direction::ServerToClient => break,
+                    }
+                }
+                // Ping is answered by the transport; both count as activity.
+                ClientEvent::Message(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {
+                    last_activity = Instant::now();
+                }
+                ClientEvent::Message(Some(Ok(Message::Close(_)))) | ClientEvent::Idle => break,
+                ClientEvent::Message(Some(Ok(Message::Text(_)))) => {}
+                ClientEvent::Message(Some(Err(_)) | None) => break,
+                ClientEvent::Stdout(Some(bytes)) => {
+                    let frame = Frame::Stdout(Bytes::from(bytes));
+                    if socket.send(Message::Binary(frame.encode())).await.is_err() {
+                        break;
+                    }
+                }
+                ClientEvent::Stdout(None) => stdout_open = false,
+                ClientEvent::Exit(result) => {
+                    status = Some(result.unwrap_or_else(|_| ProcessExit::exited(-1)));
+                    exit_open = false;
+                }
+            }
+        }
+
+        if let Some(status) = status {
+            let frame = Frame::Exit(status_from_exit(&status));
+            let _ = socket.send(Message::Binary(frame.encode())).await;
+        }
+        let _ = socket
+            .send(Message::Close(Some(CloseFrame {
+                code: 1000,
+                reason: Utf8Bytes::from_static("session ended"),
+            })))
+            .await;
+
+        self.handle.terminate();
+    }
+}
+
+/// What one `select!` iteration produced, kept separate so the socket is never
+/// borrowed for both reading and writing in the same expression.
+enum ClientEvent {
+    Message(Option<Result<Message, axum::Error>>),
+    Stdout(Option<Vec<u8>>),
+    Exit(Result<ProcessExit, oneshot::error::RecvError>),
+    Idle,
+}
+
+/// Resolves the command like exec does, spawns it under a pty and registers the
+/// session for a later attach.
+pub(crate) async fn create(
+    sessions: &PtySessions,
+    request: PtyRequest,
+    context: WorkspaceContext,
+    workspace_id: Option<String>,
+) -> Result<PtySession, ExecError> {
+    let PtyRequest {
+        command,
+        args,
+        cwd,
+        env,
+        size,
+    } = request;
+
+    if command.trim().is_empty() {
+        return Err(ExecError::EmptyCommand);
+    }
+
+    let spec = CommandSpec::resolve(
+        command,
+        args,
+        cwd,
+        env,
+        context.workspace.as_ref(),
+        context.environment,
+    )
+    .await?;
+
+    let size = size.unwrap_or_default();
+    let environment = spec.environment();
+    let spawned = pty::spawn_pty_process(
+        &spec.program,
+        &spec.args,
+        &spec.cwd,
+        &environment,
+        &None,
+        PtyTerminalSize {
+            rows: size.rows,
+            cols: size.cols,
+        },
+    )
+    .await
+    .map_err(|error| ExecError::PtySpawn {
+        command: spec.program.clone(),
+        message: error.to_string(),
+    })?;
+
+    let SpawnedProcess {
+        session,
+        stdout_rx,
+        // The pty folds stderr into stdout, so only stdout crosses the socket.
+        stderr_rx: _,
+        exit_rx,
+    } = spawned;
+
+    let id = new_session_id();
+    let endpoint = match &workspace_id {
+        Some(workspace_id) => format!("/workspaces/{workspace_id}/pty/{id}"),
+        None => format!("/pty/{id}"),
+    };
+
+    let session = Arc::new(Session {
+        id: id.clone(),
+        workspace_id,
+        handle: Arc::new(session),
+        stdout_rx: StdMutex::new(Some(stdout_rx)),
+        exit_rx: StdMutex::new(Some(exit_rx)),
+    });
+
+    sessions.insert(Arc::clone(&session));
+
+    let expiry_sessions = sessions.clone();
+    let expiry_id = id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(CONNECT_TIMEOUT).await;
+        expiry_sessions.expire(&expiry_id);
+    });
+
+    Ok(PtySession { id, endpoint })
+}
+
+/// A signal-terminated process reports `failed`, so a client distinguishes it
+/// from a real exit code.
+fn status_from_exit(exit: &ProcessExit) -> Status {
+    match &exit.signal {
+        Some(signal) => Status::Failed {
+            message: format!("terminated by {signal}"),
+        },
+        None => Status::Exited {
+            exit_code: exit.exit_code,
+        },
+    }
+}
+
+/// Collision-resistant within a process, and unguessable enough that a session
+/// id is not an access token on its own.
+fn new_session_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let seed = format!("{}:{counter}:{nanos}", std::process::id());
+    let digest = blake3::hash(seed.as_bytes());
+
+    format!("pty_{}", &digest.to_hex()[..32])
 }
 
 #[cfg(test)]
@@ -231,7 +536,6 @@ mod tests {
             Frame::Stdout(Bytes::from_static(b"out")),
             Frame::Exit(Status::Exited { exit_code: 3 }),
             Frame::Resize(TerminalSize { rows: 24, cols: 80 }),
-            Frame::Close,
         ]
     }
 
@@ -241,7 +545,6 @@ mod tests {
         assert_eq!(Channel::Stdout.as_u8(), 1);
         assert_eq!(Channel::Exit.as_u8(), 3);
         assert_eq!(Channel::Resize.as_u8(), 4);
-        assert_eq!(Channel::Close.as_u8(), 255);
     }
 
     #[test]
@@ -250,7 +553,6 @@ mod tests {
         assert_eq!(Channel::Resize.direction(), Direction::ClientToServer);
         assert_eq!(Channel::Stdout.direction(), Direction::ServerToClient);
         assert_eq!(Channel::Exit.direction(), Direction::ServerToClient);
-        assert_eq!(Channel::Close.direction(), Direction::Bidirectional);
     }
 
     #[test]
@@ -282,7 +584,6 @@ mod tests {
             Frame::Stdin(Bytes::from_static(b"hi")).encode().as_ref(),
             b"\x00hi"
         );
-        assert_eq!(Frame::Close.encode().as_ref(), b"\xff");
     }
 
     #[test]
@@ -312,10 +613,13 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_channel() {
-        assert!(matches!(
-            Frame::decode(&[5]),
-            Err(FrameError::UnknownChannel(5))
-        ));
+        // 255 was the in-band close channel; closing is the WebSocket close frame.
+        for id in [5, 255] {
+            assert!(matches!(
+                Frame::decode(&[id]),
+                Err(FrameError::UnknownChannel(unknown)) if unknown == id
+            ));
+        }
     }
 
     #[test]
@@ -339,14 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn ignores_the_payload_of_a_close_signal() {
-        assert_eq!(
-            Frame::decode(&[Channel::Close.as_u8(), 1, 2]).unwrap(),
-            Frame::Close
-        );
-    }
-
-    #[test]
     fn rejects_a_malformed_exit_payload() {
         assert!(matches!(
             Frame::decode(&[Channel::Exit.as_u8(), b'n', b'/', b'a']),
@@ -355,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn only_close_follows_the_exit_frame() {
+    fn nothing_follows_the_exit_frame() {
         let mut frames = SessionFrames::default();
         frames
             .decode(&Frame::Exit(Status::Exited { exit_code: 0 }).encode())
@@ -370,27 +666,106 @@ mod tests {
             frames.decode(&Frame::Exit(Status::Exited { exit_code: 0 }).encode()),
             Err(FrameError::FrameAfterExit)
         ));
+    }
 
-        // The connection still closes normally after the exit frame.
-        frames.decode(&Frame::Close.encode()).unwrap();
-        assert!(frames.is_closed());
+    fn request(command: &str, args: &[&str], cwd: Option<&str>) -> PtyRequest {
+        PtyRequest {
+            command: command.to_owned(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            cwd: cwd.map(str::to_owned),
+            env: HashMap::new(),
+            size: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_spawns_and_registers_a_one_shot_session() {
+        let sessions = PtySessions::default();
+        let dto = create(
+            &sessions,
+            request("sh", &["-c", "true"], None),
+            WorkspaceContext::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(dto.id.starts_with("pty_"), "unexpected id: {}", dto.id);
+        assert_eq!(dto.endpoint, format!("/pty/{}", dto.id));
+
+        // Attaching removes the session, so it cannot be attached twice.
+        let session = sessions.take(&dto.id).expect("the session is registered");
+        assert!(sessions.take(&dto.id).is_none());
+
+        session.terminate();
+    }
+
+    #[tokio::test]
+    async fn create_scopes_the_endpoint_to_the_workspace() {
+        let sessions = PtySessions::default();
+        let dto = create(
+            &sessions,
+            request("sh", &["-c", "true"], None),
+            WorkspaceContext::default(),
+            Some("docs".to_owned()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(dto.endpoint, format!("/workspaces/docs/pty/{}", dto.id));
+        sessions.take(&dto.id).unwrap().terminate();
+    }
+
+    #[tokio::test]
+    async fn create_rejects_an_empty_or_unresolvable_command() {
+        let sessions = PtySessions::default();
+
+        assert!(matches!(
+            create(
+                &sessions,
+                request("  ", &[], None),
+                WorkspaceContext::default(),
+                None
+            )
+            .await,
+            Err(ExecError::EmptyCommand)
+        ));
+
+        assert!(matches!(
+            create(
+                &sessions,
+                request("definitely-not-a-real-command", &[], None),
+                WorkspaceContext::default(),
+                None
+            )
+            .await,
+            Err(ExecError::PtySpawn { .. })
+        ));
+
+        // A relative cwd is invalid in direct mode, exactly as for exec.
+        assert!(matches!(
+            create(
+                &sessions,
+                request("true", &[], Some("relative")),
+                WorkspaceContext::default(),
+                None
+            )
+            .await,
+            Err(ExecError::InvalidCwd { .. })
+        ));
     }
 
     #[test]
-    fn nothing_follows_the_close_frame() {
-        let mut frames = SessionFrames::default();
-        frames
-            .decode(&Frame::Stdout(Bytes::from_static(b"out")).encode())
-            .unwrap();
-        frames.decode(&Frame::Close.encode()).unwrap();
-
-        assert!(matches!(
-            frames.decode(&Frame::Stdin(Bytes::from_static(b"in")).encode()),
-            Err(FrameError::FrameAfterClose)
-        ));
-        assert!(matches!(
-            frames.decode(&Frame::Close.encode()),
-            Err(FrameError::FrameAfterClose)
-        ));
+    fn maps_the_terminal_outcome() {
+        assert_eq!(
+            status_from_exit(&ProcessExit::exited(3)),
+            Status::Exited { exit_code: 3 }
+        );
+        assert_eq!(
+            status_from_exit(&ProcessExit::signaled(143, "SIGTERM")),
+            Status::Failed {
+                message: "terminated by SIGTERM".to_owned()
+            }
+        );
     }
 }

@@ -77,10 +77,6 @@ pub(crate) struct ExecToolRequest {
 /// there is no `wait`: the server owns the session lifetime.
 #[derive(Debug, Deserialize, TS)]
 #[ts(export)]
-#[expect(
-    dead_code,
-    reason = "read by the pty session handlers, which are stubs"
-)]
 pub(crate) struct PtyRequest {
     pub(crate) command: String,
     #[serde(default)]

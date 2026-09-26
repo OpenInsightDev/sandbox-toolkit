@@ -93,18 +93,19 @@ exec 以 JSON body 执行一个可执行文件或一段脚本，`format` 区分�
 | `args`    | 可选，参数数组                                                |
 | `cwd`     | 可选，初始工作目录，缺省同 exec                               |
 | `env`     | 可选，环境变量，同 exec                                       |
-| `size`    | 可选，初始终端尺寸 `{ "width": …, "height": … }`；缺省由服务端定 |
+| `size`    | 可选，初始终端尺寸 `{ "rows": …, "cols": … }`；缺省 24 行 × 80 列 |
 
 成功返回 `201`：
 
 ```json
-{ "session_id": "…", "url": "/workspaces/{id}/pty/{session_id}" }
+{ "id": "…", "endpoint": "/workspaces/{id}/pty/{session_id}" }
 ```
 
-- `url` 是连接该 session 的 WebSocket 端点，由请求推导的外部基址拼成绝对地址，客户端用 HTTP/2 CONNECT（RFC 8441）建立；
+- `endpoint` 是连接该 session 的 WebSocket 端点，为服务器相对路径（直接模式下形如 `/pty/{session_id}`）；客户端在 HTTP 基址上把 scheme 换成 `ws`/`wss` 连接，服务端同时接受标准 WebSocket upgrade 与 HTTP/2 extended CONNECT（RFC 8441）；
 - 一个 session 对应一条 WebSocket，生命周期归服务端持有；
 - 创建后 30s 内未建立连接即回收；连接后按 WebSocket 活动（含 ping/pong）计时，空闲超过 5min 回收；
-- 客户端断开、发送 WebSocket close 或连接异常中断时，服务端终止整个 process group 并回收 session，避免容器内进程逃逸。
+- 一个 session 只能附着一次，路径中的 session id 不存在或已被附着返回 `404 not_found`；
+- 客户端断开、发送 close 或连接异常中断时，服务端终止整个 process group 并回收 session，避免容器内进程逃逸。
 
 ### 帧格式
 
@@ -119,15 +120,16 @@ exec 以 JSON body 执行一个可执行文件或一段脚本，`format` 区分�
 
 - pty 把 stderr 合并进 stdout（信道 `2` 不使用）；
 - stdout 为原始字节；error 为终态 `status` 的 JSON，字段同 exec；
-- resize 的 payload 是 2 字节大端宽度加 2 字节大端高度，共 4 字节；
-- 关闭使用 WebSocket close 帧与状态码，不设独立信道；
-- 单条消息上限 4 MiB。
+- resize 的 payload 是 2 字节大端行数加 2 字节大端列数，共 4 字节；
+- 关闭使用 WebSocket close 帧，不设独立信道；
+- 单条消息上限 4 MiB；
+- 信道编号沿用 k8s v5 的 stdin/stdout/error/resize（不设 stderr 与 close 信道）；resize 与 error 的 payload 编码为本协议自定义，与 k8s 的 `TerminalSize`/`metav1.Status` 不同。
 
 ### 双向交互
 
 - 客户端 → 服务端只发送 stdin 和 resize 两类消息，顺序即终端输入顺序；
 - 服务端 → 客户端发送 stdout 数据流，进程结束后追加一条 error 消息，随后关闭连接；
-- 任一端发送 WebSocket close 后连接关闭，session 进入回收流程。
+- 任一端的 WebSocket close 或连接中断都结束会话，session 进入回收流程。
 
 ## 错误协议
 

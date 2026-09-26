@@ -47,6 +47,8 @@ pub(crate) enum ExecError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to start a pty for `{command}`: {message}")]
+    PtySpawn { command: String, message: String },
 }
 
 pub(crate) struct CommandSpec {
@@ -110,7 +112,7 @@ pub(crate) async fn exec(
 }
 
 impl CommandSpec {
-    async fn resolve(
+    pub(crate) async fn resolve(
         program: String,
         args: Vec<String>,
         cwd: Option<String>,
@@ -139,6 +141,37 @@ impl CommandSpec {
             cwd,
             env,
         })
+    }
+
+    /// The child environment as strings, for the pty crate's string-only spawn
+    /// API. The inherited environment is the base, so a pty session sees what the
+    /// server does and then the request's overrides; `PATH` gets the materialized
+    /// binaries directory first, exactly as the pipe backend sets it.
+    pub(crate) fn environment(&self) -> HashMap<String, String> {
+        let path = self
+            .env
+            .get("PATH")
+            .cloned()
+            .or_else(|| std::env::var_os("PATH"));
+
+        let mut environment: HashMap<String, String> = std::env::vars_os()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+
+        environment.extend(self.env.iter().map(|(name, value)| {
+            (name.clone(), value.to_string_lossy().into_owned())
+        }));
+        environment.insert(
+            "PATH".to_owned(),
+            search_path(path).to_string_lossy().into_owned(),
+        );
+
+        environment
     }
 
     pub(crate) fn spawn(self) -> Result<ReceiverStream<Frame>, ExecError> {

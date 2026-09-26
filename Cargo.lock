@@ -1742,6 +1742,7 @@ dependencies = [
  "libc",
  "mime_guess",
  "percent-encoding",
+ "pty",
  "regex",
  "reqwest",
  "rmcp",

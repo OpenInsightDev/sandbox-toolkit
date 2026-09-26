@@ -12,8 +12,6 @@ const EXIT = 3;
 
 const RESIZE = 4;
 
-const CLOSE = 255;
-
 /**
  * One WebSocket message, which is itself a whole frame: the first byte selects
  * the channel and the rest is the payload.
@@ -23,7 +21,6 @@ export type Frame = Data.TaggedEnum<{
   Stdout: { readonly data: Uint8Array };
   Exit: { readonly status: Status };
   Resize: { readonly size: TerminalSize };
-  Close: {};
 }>;
 
 export const Frame = Data.taggedEnum<Frame>();
@@ -32,8 +29,7 @@ const encoder = new TextEncoder();
 
 const statusSchema = Schema.fromJsonString(
   Schema.Union([
-    Schema.Struct({ status: Schema.Literal("success") }),
-    Schema.Struct({ status: Schema.Literal("exited"), code: Schema.Number }),
+    Schema.Struct({ status: Schema.Literal("exited"), exit_code: Schema.Number }),
     Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
   ]),
 );
@@ -54,7 +50,6 @@ export const encodeFrame = Frame.$match({
   Stdout: ({ data }) => join(STDOUT, data),
   Exit: ({ status }) => join(EXIT, encoder.encode(JSON.stringify(status))),
   Resize: ({ size }) => join(RESIZE, resizeBytes(size)),
-  Close: () => join(CLOSE, new Uint8Array(0)),
 });
 
 const parseStatus = (payload: Uint8Array): Status | undefined =>
@@ -71,8 +66,6 @@ export const decodeFrame = (message: Uint8Array): Option.Option<Frame> => {
       return Option.some(Frame.Stdin({ data: payload }));
     case STDOUT:
       return Option.some(Frame.Stdout({ data: payload }));
-    case CLOSE:
-      return Option.some(Frame.Close());
     case RESIZE: {
       const [rowsHi, rowsLo, colsHi, colsLo] = payload;
 

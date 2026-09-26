@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{FromRequestParts, Path};
 use axum::http::header;
 use axum::http::request::Parts;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing;
 use bytes::Bytes;
@@ -23,7 +24,8 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::exec::{self, ExecError, WorkspaceContext};
 use super::frame::Frame;
-use super::model::{ExecRequest, ExecResult, PtyRequest, PtySession};
+use super::model::{ExecRequest, ExecResult, PtyRequest};
+use super::pty;
 use crate::{AppError, AppState};
 
 /// The most output buffered before the response upgrades to a stream; also the
@@ -53,7 +55,13 @@ pub(crate) fn router() -> Router<AppState> {
         )
 }
 
-struct ProcessTarget(WorkspaceContext);
+struct ProcessTarget {
+    context: WorkspaceContext,
+    /// The workspace of the addressed route, absent in direct mode; used to scope a
+    /// session's attach path to the same mode.
+    workspace_id: Option<String>,
+    pty_sessions: pty::PtySessions,
+}
 
 impl FromRequestParts<AppState> for ProcessTarget {
     type Rejection = AppError;
@@ -66,23 +74,28 @@ impl FromRequestParts<AppState> for ProcessTarget {
             .await
             .map_err(|_| AppError::BadRequest("invalid process path".to_owned()))?;
 
-        let workspace = match captures.get("workspace_id") {
+        let workspace_id = captures.get("workspace_id").cloned();
+        let workspace = match &workspace_id {
             Some(id) => Some(state.resolve_workspace(id).await?),
             None => None,
         };
 
-        Ok(Self(WorkspaceContext {
-            workspace,
-            // Every registered workspace, injected in both addressing modes.
-            environment: state.workspaces().env(),
-        }))
+        Ok(Self {
+            context: WorkspaceContext {
+                workspace,
+                // Every registered workspace, injected in both addressing modes.
+                environment: state.workspaces().env(),
+            },
+            workspace_id,
+            pty_sessions: state.pty_sessions().clone(),
+        })
     }
 }
 
 async fn exec_endpoint(target: ProcessTarget, body: Body) -> Result<Response, AppError> {
     let request = read_exec_request(body).await?;
     let wait = request.wait();
-    let stream = exec::exec(request, target.0).await?;
+    let stream = exec::exec(request, target.context).await?;
 
     respond(stream, wait).await
 }
@@ -118,24 +131,57 @@ async fn read_exec_request(body: Body) -> Result<ExecRequest, AppError> {
     serde_json::from_value(value).map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
-async fn create_pty(
-    _target: ProcessTarget,
-    Json(_request): Json<PtyRequest>,
-) -> Result<Json<PtySession>, AppError> {
-    Err(AppError::NotImplemented("POST pty"))
+/// The body is read by hand so a schema violation lands on the API's own envelope
+/// rather than axum's plain-text rejection. The target extractor runs first, so an
+/// unknown workspace is reported before the body is inspected.
+async fn create_pty(target: ProcessTarget, body: Body) -> Result<Response, AppError> {
+    let request = read_pty_request(body).await?;
+    let session = pty::create(
+        &target.pty_sessions,
+        request,
+        target.context,
+        target.workspace_id,
+    )
+    .await?;
+
+    Ok((StatusCode::CREATED, Json(session)).into_response())
+}
+
+async fn read_pty_request(body: Body) -> Result<PtyRequest, AppError> {
+    let bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY)
+        .await
+        .map_err(|error| AppError::BadRequest(format!("failed to read request body: {error}")))?;
+
+    serde_json::from_slice(&bytes).map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
 /// A rejection before the upgrade, such as a request that is not a WebSocket
 /// handshake, is answered by axum with its plain text body rather than the envelope.
 async fn attach_pty(
-    _target: ProcessTarget,
-    Path(_captures): Path<HashMap<String, String>>,
+    target: ProcessTarget,
+    Path(captures): Path<HashMap<String, String>>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
-    Ok(upgrade.on_upgrade(session_socket))
-}
+    let missing = || AppError::NotFound("pty session".to_owned());
+    let session_id = captures.get("session_id").ok_or_else(missing)?;
 
-async fn session_socket(_socket: WebSocket) {}
+    // Attaching takes the one-shot session, so a second connection sees `404`.
+    let session = target
+        .pty_sessions
+        .take(session_id)
+        .ok_or_else(|| AppError::NotFound(format!("pty session `{session_id}`")))?;
+
+    // A session is bound to the mode that created it, so a workspace path cannot
+    // reach a direct-mode session or vice versa.
+    if session.workspace_id() != target.workspace_id.as_deref() {
+        session.terminate();
+        return Err(AppError::NotFound(format!("pty session `{session_id}`")));
+    }
+
+    Ok(upgrade
+        .max_message_size(pty::MAX_MESSAGE_LEN)
+        .on_upgrade(move |socket| session.run(socket)))
+}
 
 /// Every variant is the caller's doing: an empty command, an unusable `cwd`, or an
 /// executable that does not exist.
@@ -669,24 +715,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pty_routes_are_wired() {
-        let app = app();
-
-        let create = send(
-            &app,
-            json_request("POST", "/pty", &json!({ "command": "sh" })),
+    async fn pty_create_returns_a_session_with_its_attach_path() {
+        let response = send(
+            &app(),
+            json_request(
+                "POST",
+                "/pty",
+                &json!({ "command": "sh", "args": ["-c", "true"] }),
+            ),
         )
         .await;
-        assert_eq!(create.status(), StatusCode::NOT_IMPLEMENTED);
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = json_body(response).await;
+        let id = body["id"].as_str().expect("the session id is a string");
+        assert!(id.starts_with("pty_"), "unexpected session id: {id}");
+        assert_eq!(body["endpoint"], json!(format!("/pty/{id}")));
+    }
+
+    #[tokio::test]
+    async fn pty_create_scopes_the_attach_path_to_the_workspace() {
+        let dir = TempDir::new();
+        let state = AppState::new(".");
+        state
+            .workspaces()
+            .register("docs", &dir.root(), WorkspaceProperties::default())
+            .await
+            .unwrap();
+        let app = router().with_state(state);
+
+        let response = send(
+            &app,
+            json_request(
+                "POST",
+                "/workspaces/docs/pty",
+                &json!({ "command": "sh", "args": ["-c", "true"], "cwd": "." }),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = json_body(response).await;
+        let id = body["id"].as_str().expect("the session id is a string");
         assert_eq!(
-            json_body(create).await["error"]["code"],
-            json!("not_implemented")
+            body["endpoint"],
+            json!(format!("/workspaces/docs/pty/{id}"))
+        );
+    }
+
+    #[tokio::test]
+    async fn pty_create_rejects_an_unusable_command() {
+        let app = app();
+
+        // An empty command is a bad request; a missing one fails the schema.
+        let empty = send(
+            &app,
+            json_request("POST", "/pty", &json!({ "command": "  " })),
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(empty).await["error"]["code"],
+            json!("bad_request")
         );
 
+        let missing = send(&app, json_request("POST", "/pty", &json!({}))).await;
+        assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(missing).await["error"]["code"],
+            json!("invalid_request")
+        );
+
+        let missing_binary = send(
+            &app,
+            json_request(
+                "POST",
+                "/pty",
+                &json!({ "command": "definitely-not-a-real-command" }),
+            ),
+        )
+        .await;
+        assert_eq!(missing_binary.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(missing_binary).await["error"]["code"],
+            json!("bad_request")
+        );
+    }
+
+    #[tokio::test]
+    async fn pty_attach_rejects_a_non_handshake_before_the_session() {
         // The attach route is a WebSocket endpoint, so a request that is not a
         // handshake is rejected before any session is reached.
-        let attach = send(
-            &app,
+        let response = send(
+            &app(),
             Request::builder()
                 .method("GET")
                 .uri("/pty/session-1")
@@ -694,7 +815,8 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(attach.status(), StatusCode::BAD_REQUEST);
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

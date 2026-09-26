@@ -674,11 +674,17 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec and pt
       expect(body.stdout).toBe(realpathSync(workspaceRoot));
     });
 
-    test("wires the pty create route to the not-implemented result", async () => {
-      const response = await postJson("/pty", { command: "sh" });
+    test("creates a pty session and returns its attach path", async () => {
+      const response = await postJson("/pty", {
+        command: "sh",
+        args: ["-c", "true"],
+      });
 
-      expect(response.status).toBe(501);
-      expect(await errorCode(response)).toBe("not_implemented");
+      expect(response.status).toBe(201);
+
+      const body = (await response.json()) as { id: string; endpoint: string };
+      expect(body.id).toMatch(/^pty_/);
+      expect(body.endpoint).toBe(`/pty/${body.id}`);
     });
 
     test("rejects a pty create on an unknown workspace before the handler", async () => {

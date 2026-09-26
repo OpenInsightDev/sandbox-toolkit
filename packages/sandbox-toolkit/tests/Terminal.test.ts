@@ -209,10 +209,7 @@ test("displays text as a stdin frame", async () => {
     socket,
   );
 
-  expect(socket.frames()).toEqual([
-    Frame.Stdin({ data: new TextEncoder().encode("ls\n") }),
-    Frame.Close(),
-  ]);
+  expect(socket.frames()).toEqual([Frame.Stdin({ data: new TextEncoder().encode("ls\n") })]);
 });
 
 test("reads lines from the stdout frames and ends on exit", async () => {
@@ -223,7 +220,7 @@ test("reads lines from the stdout frames and ends on exit", async () => {
 
     yield* Effect.sync(() => {
       socket.receive(encodeFrame(Frame.Stdout({ data: new TextEncoder().encode("a\nb\n") })));
-      socket.receive(encodeFrame(Frame.Exit({ status: { status: "success" } })));
+      socket.receive(encodeFrame(Frame.Exit({ status: { status: "exited", exit_code: 0 } })));
     });
 
     const first = yield* terminal.readLine;
@@ -249,7 +246,7 @@ test("surfaces each stdout chunk as one input event", async () => {
 
     yield* Effect.sync(() => {
       socket.receive(encodeFrame(Frame.Stdout({ data: new TextEncoder().encode("hi") })));
-      socket.receive(encodeFrame(Frame.Close()));
+      socket.receive(encodeFrame(Frame.Exit({ status: { status: "exited", exit_code: 0 } })));
     });
 
     return yield* Queue.take(inputs);
@@ -264,9 +261,8 @@ test("encodes and decodes every frame", () => {
   const frames = [
     Frame.Stdin({ data: new Uint8Array([1, 2]) }),
     Frame.Stdout({ data: new Uint8Array([3]) }),
-    Frame.Exit({ status: { status: "exited", code: 3 } }),
+    Frame.Exit({ status: { status: "exited", exit_code: 3 } }),
     Frame.Resize({ size: { rows: 24, cols: 80 } }),
-    Frame.Close(),
   ];
 
   for (const frame of frames) {
@@ -278,4 +274,6 @@ test("rejects an unknown channel and a short resize", () => {
   expect(Option.isNone(decodeFrame(new Uint8Array([2])))).toBe(true);
   expect(Option.isNone(decodeFrame(new Uint8Array([4, 0, 0])))).toBe(true);
   expect(Option.isNone(decodeFrame(new Uint8Array([])))).toBe(true);
+  // 255 was the in-band close channel; closing is the WebSocket close frame.
+  expect(Option.isNone(decodeFrame(new Uint8Array([255])))).toBe(true);
 });
