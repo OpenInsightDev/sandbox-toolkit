@@ -16,7 +16,7 @@ Workspace 是对远程文件系统中可操作目录的抽象，解决两类问�
 | 工作区模式 | `/workspaces/{id}` | 工作区相对路径 |
 | 直接模式   | 无                 | 远程绝对路径   |
 
-工作区模式下，功能各占一个子路由：`/workspaces/{id}/fs` 与 `/workspaces/{id}/upload`（[FileSystem.md](./FileSystem.md)）、`/workspaces/{id}/exec`、`/workspaces/{id}/shell` 与 `/workspaces/{id}/pty`（[Process.md](./Process.md)）、`/workspaces/{id}/mcps`（[MCP.md](./MCP.md)）、`/workspaces/{id}/skills`（[Skill.md](./Skill.md)）、`/workspaces/{id}/plugins`（[Plugin.md](./Plugin.md)）。两种模式不得混用；路径参数的缺省值由各功能自行规定。
+工作区模式下，功能各占一个子路由：`/workspaces/{id}/fs` 与 `/workspaces/{id}/upload`（[FileSystem.md](./FileSystem.md)）、`/workspaces/{id}/exec` 与 `/workspaces/{id}/pty`（[Process.md](./Process.md)）、`/workspaces/{id}/mcps`（[MCP.md](./MCP.md)）、`/workspaces/{id}/skills`（[Skill.md](./Skill.md)）、`/workspaces/{id}/plugins`（[Plugin.md](./Plugin.md)）。两种模式不得混用；路径参数的缺省值由各功能自行规定。
 
 ## 路径规则
 
@@ -78,7 +78,7 @@ DELETE /workspaces/{workspace_id}
 | 取值 | 工作区根目录的规范化绝对路径                                               |
 
 - 名称由 `id` 唯一决定：`id` 不含 `_`，`-` 与 `_` 的映射可逆，不同 `id` 不会得到同名变量；
-- 工作区模式下运行命令时注入当前工作区的变量，exec、shell 与 pty session 见 [Process.md](./Process.md)，MCP stdio 子进程见 [MCP.md](./MCP.md)；直接模式没有工作区，不注入；
+- 工作区模式下运行命令时注入当前工作区的变量，exec 与 pty session 见 [Process.md](./Process.md)，MCP stdio 子进程见 [MCP.md](./MCP.md)；直接模式没有工作区，不注入；
 - 请求的 `env` 与注入变量同名时，`env` 覆盖生效。
 
 ## 解析与解析失败
