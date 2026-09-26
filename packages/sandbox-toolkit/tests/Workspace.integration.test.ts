@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -136,6 +136,12 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Workspace ↔ workspace
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), "sbx-workspace-root-"));
     directory = mkdtempSync(join(tmpdir(), "sbx-workspace-dir-"));
+    // One skill under the registered root, so listing resolves `skill-docs-demo`.
+    mkdirSync(join(directory, ".agents", "skills", "demo"), { recursive: true });
+    writeFileSync(
+      join(directory, ".agents", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: A demo skill.\n---\n\nBody.\n",
+    );
     server = await startServer(root);
     baseUrl = server.baseUrl;
   }, 600_000);
@@ -271,5 +277,45 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Workspace ↔ workspace
     );
 
     expect(after).toBeInstanceOf(Workspace.WorkspaceNotFound);
+  });
+
+  test("resolves a skill-derived workspace and refuses to remove it", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const service = yield* workspace;
+
+        yield* service.create({ id: "docs", root: directory });
+
+        const derived = yield* service.get("skill-docs-demo");
+        const error = yield* Effect.flip(service.remove("skill-docs-demo"));
+
+        yield* service.remove("docs");
+
+        return { derived, error };
+      }),
+    );
+
+    expect(result.derived).toEqual({
+      id: "skill-docs-demo",
+      properties: { access: "read-only" },
+    });
+    expect(result.error).toBeInstanceOf(Workspace.ManagedWorkspace);
+  });
+
+  test("createScoped tolerates a workspace removed before the scope closes", async () => {
+    const id = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* workspace;
+
+          const handle = yield* service.createScoped({ id: "scoped", root: directory });
+          yield* service.remove("scoped");
+
+          return handle.id;
+        }),
+      ),
+    );
+
+    expect(id).toBe("scoped");
   });
 });
