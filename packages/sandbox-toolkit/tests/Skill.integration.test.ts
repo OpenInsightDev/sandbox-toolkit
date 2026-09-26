@@ -20,8 +20,6 @@ import * as Skill from "../src/Skill.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
-const manifest = "crates/sandbox-toolkit/Cargo.toml";
-
 const serverBinary = join(repoRoot, "target", "debug", "sbxtkt");
 
 const hasCargo = ((): boolean => {
@@ -162,13 +160,6 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Skill ↔ skills", () =
   let workspaceSkills = "";
 
   beforeAll(async () => {
-    if (hasCargo) {
-      execFileSync("cargo", ["build", "--manifest-path", manifest], {
-        cwd: repoRoot,
-        stdio: "inherit",
-      });
-    }
-
     root = mkdtempSync(join(tmpdir(), "sbx-skill-root-"));
     home = mkdtempSync(join(tmpdir(), "sbx-skill-home-"));
     workspaceRoot = mkdtempSync(join(tmpdir(), "sbx-skill-ws-"));

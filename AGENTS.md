@@ -26,6 +26,10 @@ release. Add a tool name to select part of the graph. For example, run
 
 <!--VITE PLUS END-->
 
+# Tasks
+
+@vite.config.ts
+
 # Platform
 
 The project only needs to run inside Linux containers.

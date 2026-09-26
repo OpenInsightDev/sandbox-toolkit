@@ -15,6 +15,7 @@ export default defineConfig({
   },
   test: {
     include: ["tests/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    globalSetup: ["./tests/setup.ts"],
   },
   fmt: {},
 });

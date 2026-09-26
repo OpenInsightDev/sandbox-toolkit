@@ -21,8 +21,6 @@ import * as Process from "../src/Process.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
-const manifest = "crates/sandbox-toolkit/Cargo.toml";
-
 const serverBinary = join(repoRoot, "target", "debug", "sbxtkt");
 
 const hasCargo = ((): boolean => {
@@ -193,13 +191,6 @@ describe.skipIf(!hasCargo && !existsSync(serverBinary))("Process ↔ exec and pt
   let workspaceRoot = "";
 
   beforeAll(async () => {
-    if (hasCargo) {
-      execFileSync("cargo", ["build", "--manifest-path", manifest], {
-        cwd: repoRoot,
-        stdio: "inherit",
-      });
-    }
-
     root = mkdtempSync(join(tmpdir(), "sbx-root-"));
     workspaceRoot = mkdtempSync(join(tmpdir(), "sbx-ws-"));
     mkdirSync(join(workspaceRoot, "sub"));

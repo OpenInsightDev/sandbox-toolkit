@@ -58,6 +58,32 @@ export default defineConfig({
   staged: {
     "*": "vp check --fix",
   },
+  // Cargo-backed tasks give the TypeScript side one place to depend on the
+  // server build. `rust:build` is cached on the Rust sources and restores only
+  // the final binary, which is what the integration tests spawn.
+  run: {
+    tasks: {
+      "rust:build": {
+        command: "cargo build --manifest-path crates/sandbox-toolkit/Cargo.toml",
+        input: ["Cargo.toml", "Cargo.lock", ".cargo/**", "crates/**", "!crates/**/target/**"],
+        output: ["target/debug/sbxtkt"],
+      },
+      "rust:bindings": {
+        command:
+          "cargo test --manifest-path crates/sandbox-toolkit/Cargo.toml export_bindings",
+        input: ["Cargo.toml", "Cargo.lock", ".cargo/**", "crates/**", "!crates/**/target/**"],
+        output: ["packages/sandbox-toolkit/src/generated/**"],
+      },
+      "rust:check": {
+        command: "cargo clippy --workspace --all-targets",
+        cache: false,
+      },
+      "rust:test": {
+        command: "cargo test --workspace",
+        cache: false,
+      },
+    },
+  },
   lint: {
     options: {
       typeAware: true,

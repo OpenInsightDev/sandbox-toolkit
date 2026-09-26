@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bindings": "cargo test --manifest-path crates/sandbox-toolkit/Cargo.toml export_bindings",
-    "build": "vp run -r build",
+    "bindings": "vp run rust:bindings",
+    "build": "vp run rust:build && vp run -r build",
     "dev": "vp run sandbox-toolkit#dev",
-    "test": "vp run -r test",
-    "check": "vp check",
+    "test": "vp run rust:test && vp run -r test",
+    "check": "vp run rust:check && vp check",
     "prepare": "vp config"
   },
   "devDependencies": {
