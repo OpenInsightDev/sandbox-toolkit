@@ -13,3 +13,6 @@ dist
 
 /references
 src/generated
+
+# Cargo workspace build output, which now lives at the repository root.
+/target

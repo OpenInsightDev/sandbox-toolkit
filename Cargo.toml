@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["crates/pty", "crates/sandbox-toolkit"]
+# The vendored axum submodule is its own upstream workspace; the toolkit pulls it
+# in as a path dependency only.
+exclude = ["crates/axum"]
