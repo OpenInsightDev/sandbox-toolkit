@@ -1,0 +1,119 @@
+import { Context, Data, Effect, Layer } from "effect";
+import { HttpClientRequest } from "effect/unstable/http";
+
+import type { SkillList as SkillListResponse } from "./generated/SkillList.ts";
+import { Client, layer as clientLayer, type ClientError } from "./internal/client.ts";
+import { itemUrl, listUrl, toMetadata, toReadError, validateSkillId } from "./internal/skill.ts";
+import type { WorkspaceHandle } from "./Workspace.ts";
+
+/**
+ * A skill id outside the Agent Skills charset: `[a-z0-9-]`, at most 64
+ * characters, with no leading or trailing `-` and no `--`.
+ */
+export class InvalidSkillId extends Data.TaggedError("InvalidSkillId")<{
+  readonly skillId: string;
+  readonly reason: string;
+}> {}
+
+/** No skill is discovered under the id at the mount point. */
+export class SkillNotFound extends Data.TaggedError("SkillNotFound")<{
+  readonly skillId: string;
+}> {}
+
+export type SkillError = ClientError | InvalidSkillId | SkillNotFound;
+
+/**
+ * The metadata layer of a skill's progressive disclosure: its `SKILL.md`
+ * frontmatter plus the addressing the service derives, without the body.
+ */
+export interface SkillMetadata {
+  /** Directory name, which must equal the frontmatter `name`. */
+  readonly id: string;
+  /** Discovered skill directory, and the root of the derived workspace. */
+  readonly root: string;
+  readonly name: string;
+  readonly description: string;
+  readonly license?: string;
+  readonly compatibility?: string;
+  readonly metadata?: Readonly<Record<string, string>>;
+  /** Address of the skill's body at this mount point. */
+  readonly uri: string;
+  /**
+   * Id of the read-only workspace holding the skill's other files; resolve it
+   * with the workspace service before opening it with
+   * `FileSystem.layerForWorkspace`.
+   */
+  readonly workspace: string;
+}
+
+export interface SkillList {
+  readonly skills: ReadonlyArray<SkillMetadata>;
+}
+
+export interface ListSkillsOptions {
+  /** Zero-based index of the first skill to return, in discovery order. */
+  readonly offset?: number;
+  /** Maximum number of skills to return. */
+  readonly limit?: number;
+}
+
+export interface Skill {
+  /**
+   * Metadata of every skill discovered at the mount point.
+   *
+   * The mount point is rescanned per call, so directory changes are visible
+   * immediately, and subdirectories without a valid `SKILL.md` are skipped
+   * instead of reported.
+   */
+  readonly list: (options?: ListSkillsOptions) => Effect.Effect<SkillList, SkillError>;
+
+  /**
+   * The body of the skill's `SKILL.md` with the frontmatter removed; the
+   * frontmatter fields are carried by {@link SkillMetadata}.
+   */
+  readonly read: (skillId: string) => Effect.Effect<string, SkillError>;
+}
+
+export const Skill: Context.Service<Skill, Skill> = Context.Service("skill");
+
+export const make = Effect.fn("Skill.make")(function* (
+  mount: { workspace?: string | undefined } = {},
+) {
+  const client = yield* Client;
+
+  const list = ((options?: ListSkillsOptions) =>
+    client
+      .json<SkillListResponse>(HttpClientRequest.get(listUrl(mount.workspace, options)))
+      .pipe(
+        Effect.map((response) => ({ skills: response.skills.map(toMetadata) })),
+      )) satisfies Skill["list"];
+
+  const read = Effect.fn("Skill.read")(function* (skillId: string) {
+    const id = yield* validateSkillId(skillId);
+
+    return yield* client
+      .text(HttpClientRequest.get(itemUrl(mount.workspace, id)))
+      .pipe(Effect.mapError((error) => toReadError(id, error)));
+  }) satisfies Skill["read"];
+
+  return Skill.of({ list, read });
+});
+
+/**
+ * The skill service over the mount point of a workspace, discovered under its
+ * `.agents/skills` directory.
+ */
+export const layerForWorkspace = ({
+  workspace,
+  baseUrl,
+}: {
+  workspace: WorkspaceHandle;
+  baseUrl?: string | URL | undefined;
+}) =>
+  Layer.effect(Skill, make({ workspace: workspace.id })).pipe(
+    Layer.provide(clientLayer({ baseUrl })),
+  );
+
+/** The skill service over the global mount point. */
+export const layer = (config: { readonly baseUrl?: string | URL | undefined } = {}) =>
+  Layer.effect(Skill, make()).pipe(Layer.provide(clientLayer(config)));

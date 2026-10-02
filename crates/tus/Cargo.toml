@@ -1,0 +1,37 @@
+[package]
+name = "tus"
+version = "0.0.1"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Vendored as the git submodule at `crates/axum` (tokio-rs/axum @ 7c3c6787), matching
+# the workspace-wide pin.
+axum = { path = "../axum/axum", features = ["http2"] }
+base64 = "0.22"
+bytes = "1.12.1"
+# Polls the request body stream as an `AsyncRead` without pulling in `tokio-util`.
+futures-core = "0.3"
+http = "1"
+# `filelocker` releases locks automatically on process death via `flock(2)`.
+libc = "0.2"
+# `filestore` persists the upload descriptor as JSON next to the binary.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+    "sync",
+    "time",
+] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives the router in the end-to-end tests.
+tower = { version = "0.5.3", features = ["util"] }

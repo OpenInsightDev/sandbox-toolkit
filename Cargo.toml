@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The vendored axum submodule is its own upstream workspace; the toolkit pulls it
+# in as a path dependency only.
+exclude = ["crates/axum"]
+
+[workspace.lints.clippy]
+# Allow-by-default pedantic lint; its threshold lives in `clippy.toml`.
+fn_params_excessive_bools = "warn"
+
+[workspace.dependencies]
+tokio = { version = "1.53.1", features = ["full"] }
+thiserror = "2.0.21"

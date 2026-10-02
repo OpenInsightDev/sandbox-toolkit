@@ -1,0 +1,78 @@
+[package]
+name = "sandbox-toolkit"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+# The project is `sandbox-toolkit`; only the installed command is `sbxtkt`.
+[[bin]]
+name = "sbxtkt"
+path = "src/main.rs"
+
+[dependencies]
+agent-plugins = "0.1.1"
+anyhow = "1.0.104"
+blake3 = "1.8"
+bytes = { version = "1.12.1", features = ["serde"] }
+chrono = "0.4"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dirs = "7"
+globset = "0.4.20"
+httpdate = "1.0.3"
+libc = "0.2"
+mime_guess = "2.0.5"
+notify = "8.2.0"
+rmcp = { version = "3.4.1", features = [
+    "client",
+    "reqwest",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "transport-streamable-http-server",
+] }
+schemars = "1.0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha1 = "0.10"
+ropey = "1.6"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tokio-util = { version = "0.7.19", features = ["codec", "io-util", "rt"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ts-rs = "12.0.1"
+url = "2.5"
+strum = { version = "0.28.0", features = ["derive"] }
+regex = "1.13.1"
+zstd = "0.13"
+
+pty = { path = "../pty" }
+axum = { path = "../axum/axum", features = ["http2", "ws"] }
+sandbox-toolkit-utils = { path = "../utils" }
+
+[dev-dependencies]
+# Plain HTTP for the end-to-end tests; already in the tree through `rmcp`.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[build-dependencies]
+blake3 = "1.8"
+flate2 = "1.1"
+# The build needs HTTPS to fetch the pinned release assets.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tar = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "fs", "io-util"] }
+# Only deflate entries need to be read.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zstd = "0.13"
+
+[features]
+default = []
+binaries = ["jaq", "jq", "uv", "deno"]
+jaq = []
+jq = []
+uv = []
+deno = []

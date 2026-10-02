@@ -1,0 +1,20 @@
+packages:
+  - packages/*
+catalog:
+  "@effect/platform-node": 4.0.0-rc.117
+  "@modelcontextprotocol/client": ^2.1.0
+  "@oxlint/plugins": 1.79.0
+  "@types/node": ^26.1.1
+  bumpp: ^11.1.0
+  effect: 4.0.0-rc.117
+  tus-js-client: 5.0.0-pre2
+  typescript: ^7.0.2
+  vite: npm:@voidzero-dev/vite-plus-core@0.3.0
+  vite-plus: 0.3.0
+overrides:
+  vite@*: "catalog:"
+peerDependencyRules:
+  allowAny:
+    - vite
+  allowedVersions:
+    vite: "*"

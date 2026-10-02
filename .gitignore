@@ -1,0 +1,18 @@
+node_modules
+dist
+*.log
+.DS_Store
+!.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
+/references
+packages/sandbox-toolkit/src/generated
+
+# Cargo workspace build output, which now lives at the repository root.
+/target
