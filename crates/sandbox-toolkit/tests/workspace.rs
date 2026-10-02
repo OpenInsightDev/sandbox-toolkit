@@ -233,17 +233,23 @@ mod register {
         assert_eq!(not_dir.status(), reqwest::StatusCode::BAD_REQUEST);
     }
 
-    /// An `id` whose text needs URL escaping is rejected.
+    /// An `id` outside the allowed character set is rejected.
     #[tokio::test]
-    async fn escaped_id() {
-        let home = TempDir::new("register-escaped-id");
+    async fn invalid_id() {
+        let home = TempDir::new("register-invalid-id");
         let server = Server::start(home.path()).await;
         let root = dir(&home.path().join("work"));
 
-        let response = server
-            .post("/workspaces", json!({ "id": "a b", "root": root }))
-            .await;
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        for id in ["", "a b", "team@eu"] {
+            let response = server
+                .post("/workspaces", json!({ "id": id, "root": root.clone() }))
+                .await;
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "id {id:?}"
+            );
+        }
     }
 
     /// A root the service process cannot write fails the permission probe.

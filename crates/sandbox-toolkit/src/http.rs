@@ -72,6 +72,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/mcps", mcp::http::routes())
         .nest("/workspaces/{workspace_id}/mcps", mcp::http::routes())
+        .nest("/workspaces", crate::workspace::http::routes())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

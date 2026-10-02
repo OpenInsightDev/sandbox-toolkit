@@ -10,7 +10,7 @@ Workspace 以 `id` 标识，绑定一个规范化的绝对目录 `root`，并带
 
 `root` 必须是绝对路径并指向已存在的目录，注册前被规范化为规范绝对路径。注册时由服务进程实地探测该目录的读、写权限，缺任一项即失败。
 
-`id` 只需是不含需 URL 转义字符的字符串。
+`id` 是非空字符串，且只由 ASCII 字母、数字与 `-`、`_`、`.`、`~` 组成。
 
 ### 端点
 
@@ -19,7 +19,7 @@ Workspace 以 `id` 标识，绑定一个规范化的绝对目录 `root`，并带
 | 状态码 | 语义 | 触发条件 |
 | --- | --- | --- |
 | 201 | 已创建 | 注册成功，返回该 workspace 对象 |
-| 400 | 请求无效 | `id` 需要 URL 转义；`root` 非绝对、不存在或不是目录 |
+| 400 | 请求无效 | `id` 为空或含不允许的字符；`root` 非绝对、不存在或不是目录 |
 | 403 | 无权限 | 服务进程对 `root` 不具备读或写权限 |
 | 409 | 冲突 | `id` 已被占用（含 `global`） |
 
@@ -28,7 +28,7 @@ Workspace 以 `id` 标识，绑定一个规范化的绝对目录 `root`，并带
 - `register::creates`：注册后 `GET /workspaces/{id}` 返回该 workspace，`root` 为规范化绝对路径，`access` 默认为 `read-write`。
 - `register::conflict`：同一 `id` 注册两次，第二次返回 `409`。
 - `register::invalid_root`：`root` 非绝对、不存在或为文件时返回 `400`。
-- `register::escaped_id`：`id` 需要 URL 转义时返回 `400`。
+- `register::invalid_id`：`id` 为空或含不允许的字符时返回 `400`。
 - `register::denied`：服务进程对 `root` 无写权限时返回 `403`。
 
 ## 查询

@@ -9,6 +9,7 @@ use crate::path::AGENTS_DIR;
 use crate::workspace::model::CreateWorkspaceRequest;
 
 use super::model::Metadata;
+use super::model::WorkspaceAccess;
 use super::resources::Resources;
 
 use std::collections::HashMap;
@@ -17,6 +18,8 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 const ENV_PREFIX: &str = "WORKSPACE_";
 pub const GLOBAL_WORKSPACE_ID: &str = "global";
@@ -31,6 +34,10 @@ pub enum WorkspaceError {
     AlreadyExists { id: String },
     #[error("workspace `{id}` does not exist")]
     NotFound { id: String },
+    #[error("workspace `{id}` is immutable")]
+    Immutable { id: String },
+    #[error("insufficient permission on workspace root `{root}`")]
+    PermissionDenied { root: String },
     #[error("workspace `{id}` is read-only")]
     ReadOnly { id: String },
     #[error(transparent)]
@@ -41,11 +48,14 @@ impl Metadata {
     pub async fn new(
         CreateWorkspaceRequest { id, root, access }: CreateWorkspaceRequest,
     ) -> Result<Self, WorkspaceError> {
-        Ok(Metadata {
-            id,
-            root: canonical_root(root).await?,
-            access,
-        })
+        if !is_url_safe(&id) {
+            return Err(WorkspaceError::InvalidId { id });
+        }
+
+        let root = canonical_root(root).await?;
+        probe_access(&root).await?;
+
+        Ok(Metadata { id, root, access })
     }
 
     pub async fn new_global() -> Result<Self, WorkspaceError> {
@@ -75,7 +85,7 @@ impl Metadata {
 }
 
 pub struct Workspace {
-    metadata: Metadata,
+    metadata: RwLock<Metadata>,
     resources: Arc<RwLock<Option<Resources>>>,
     watch: Watch,
     handle: JoinHandle<()>,
@@ -83,19 +93,20 @@ pub struct Workspace {
 
 impl Workspace {
     pub async fn new(metadata: Metadata) -> Result<Self, WorkspaceError> {
-        let watch = Watch::new(metadata.root.join(AGENTS_DIR)).await?;
+        let root = metadata.root.clone();
+        let watch = Watch::new(root.join(AGENTS_DIR)).await?;
         let mut events = watch.subscribe();
 
         let resources = Arc::new(RwLock::new(None));
-        sync_resources(&metadata.root, &resources).await;
+        sync_resources(&root, &resources).await;
 
         let task_resources = Arc::clone(&resources);
-        let root = metadata.root.clone();
+        let task_root = root.clone();
         let handle = tokio::spawn(async move {
             while let Ok(Ok(event)) = events.recv().await {
                 match event.kind {
                     EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                        sync_resources(&root, &task_resources).await;
+                        sync_resources(&task_root, &task_resources).await;
                     }
                     EventKind::Access(_) | EventKind::Any | EventKind::Other => {}
                 }
@@ -103,7 +114,7 @@ impl Workspace {
         });
 
         Ok(Self {
-            metadata,
+            metadata: RwLock::new(metadata),
             resources,
             watch,
             handle,
@@ -112,6 +123,15 @@ impl Workspace {
 
     pub async fn new_global() -> Result<Self, WorkspaceError> {
         Self::new(Metadata::new_global().await?).await
+    }
+
+    pub async fn metadata(&self) -> Metadata {
+        self.metadata.read().await.clone()
+    }
+
+    /// `access` is declarative, so it changes without re-probing the root.
+    pub async fn set_access(&self, access: WorkspaceAccess) {
+        self.metadata.write().await.access = access;
     }
 
     /// Cloned out so callers can hold a handle independent of the workspace registry lock.
@@ -157,7 +177,7 @@ impl Registry {
     }
 
     pub async fn register(&self, workspace: Workspace) -> Result<(), WorkspaceError> {
-        let id = workspace.metadata.id.to_owned();
+        let id = workspace.metadata().await.id;
 
         let mut workspaces = self.workspaces.write().await;
         if workspaces.contains_key(&id) {
@@ -176,21 +196,49 @@ impl Registry {
     }
 
     pub async fn list(&self) -> Vec<Metadata> {
-        self.workspaces
-            .read()
-            .await
-            .values()
-            .map(|v| v.metadata.to_owned())
-            .collect()
+        let workspaces = self.workspaces.read().await;
+        let mut list = Vec::with_capacity(workspaces.len());
+        for workspace in workspaces.values() {
+            list.push(workspace.metadata().await);
+        }
+        list
     }
 
     pub async fn envs(&self) -> Vec<(String, OsString)> {
-        self.workspaces
-            .read()
+        let workspaces = self.workspaces.read().await;
+        let mut envs = Vec::with_capacity(workspaces.len());
+        for workspace in workspaces.values() {
+            envs.push(workspace.metadata().await.env());
+        }
+        envs
+    }
+
+    pub async fn update_access(
+        &self,
+        id: &str,
+        access: WorkspaceAccess,
+    ) -> Result<Metadata, WorkspaceError> {
+        let workspace = self.mutable(id).await?;
+        workspace.set_access(access).await;
+        Ok(workspace.metadata().await)
+    }
+
+    pub async fn remove(&self, id: &str) -> Result<(), WorkspaceError> {
+        self.mutable(id).await?;
+
+        self.workspaces.write().await.remove(id);
+        Ok(())
+    }
+
+    /// Resolves a workspace the caller may mutate, rejecting the preset `global`.
+    async fn mutable(&self, id: &str) -> Result<Arc<Workspace>, WorkspaceError> {
+        if id == GLOBAL_WORKSPACE_ID {
+            return Err(WorkspaceError::Immutable { id: id.to_owned() });
+        }
+
+        self.get(id)
             .await
-            .values()
-            .map(|workspace| workspace.metadata.env())
-            .collect()
+            .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
     }
 }
 
@@ -226,4 +274,38 @@ async fn canonical_root(root: impl AsRef<OsStr>) -> Result<PathBuf, WorkspaceErr
             root: root.to_owned(),
             reason: error.to_string(),
         })
+}
+
+/// An `id` is captured verbatim from `/workspaces/{id}`, so only unreserved
+/// ASCII is allowed, which the router reproduces without escaping.
+fn is_url_safe(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~')
+}
+
+/// Probes read and write as the service process rather than reading mode bits,
+/// which cannot see e.g. a read-only mount owned by the same uid.
+async fn probe_access(root: &Path) -> Result<(), WorkspaceError> {
+    let denied = || WorkspaceError::PermissionDenied {
+        root: root.to_string_lossy().into_owned(),
+    };
+
+    let mut entries = tokio::fs::read_dir(root).await.map_err(|_| denied())?;
+    entries.next_entry().await.map_err(|_| denied())?;
+
+    let probe = root.join(probe_name());
+    tokio::fs::write(&probe, []).await.map_err(|_| denied())?;
+    tokio::fs::remove_file(&probe).await.map_err(|_| denied())?;
+
+    Ok(())
+}
+
+fn probe_name() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(".sbxtkt-probe-{}-{serial}", std::process::id())
 }

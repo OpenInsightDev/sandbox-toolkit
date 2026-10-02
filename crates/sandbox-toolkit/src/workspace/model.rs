@@ -32,6 +32,12 @@ pub struct CreateWorkspaceRequest {
     pub access: WorkspaceAccess,
 }
 
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct UpdateWorkspaceRequest {
+    pub access: WorkspaceAccess,
+}
+
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct WorkspaceList(pub Vec<Metadata>);
