@@ -61,10 +61,19 @@ impl FromRequestParts<AppState> for mcp::http::ExtractRuntime {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let workspace = ExtractWorkspace::from_request_parts(parts, state).await?;
-        workspace
-            .mcps()
-            .await
-            .ok_or_else(|| StatusCode::NOT_FOUND.into_response())
+
+        let global = state.registry.get(GLOBAL_WORKSPACE_ID).await;
+        let global = match global {
+            Some(global) => global.mcps().await,
+            None => None,
+        };
+        let scoped = workspace.mcps().await;
+
+        if global.is_none() && scoped.is_none() {
+            return Err(StatusCode::NOT_FOUND.into_response());
+        }
+
+        Ok(Self::new(global, scoped))
     }
 }
 
