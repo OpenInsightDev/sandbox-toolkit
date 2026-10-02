@@ -8,12 +8,24 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 
 ## 加载
 
-从 `.agents/mcp.json` 自动加载外部 MCP server，并监听 `.agents/mcp.json` 与 plugin `mcp.json` 的变动并重载。
+监听 `.agents/mcp.json` 与 plugin `mcp.json` 的变动并重载。
 
 ### 测试
 
 - `load::discovers`：`.agents/mcp.json` 中的每个条目都出现在 `GET /mcps` 中。
 - `load::reloads`：改写 `.agents/mcp.json` 后，`GET /mcps` 随之反映新的条目集合。
+
+## 合并
+
+工作区对外呈现的 MCP 集合是 global 与工作区自身的并集，按 id 合并，同名时工作区条目胜出；`/mcps`（无前缀）解析到 global。
+
+工作区自身资源缺失不影响合并结果，仅当 global 与工作区都无资源时，工作区挂载回答 `404`。
+
+### 测试
+
+- `merge::includes_global`：global 与工作区各自的条目都出现在 `/workspaces/{id}/mcps` 文档中。
+- `merge::workspace_wins`：同名 id 经 `/workspaces/{id}/mcps/{mcp_id}` 接入到工作区自身的上游。
+- `merge::absent_workspace`：工作区自身无 `.agents` 而 global 有资源时，`/workspaces/{id}/mcps` 返回 global 的条目而非 `404`。
 
 ## 代理
 
@@ -23,7 +35,7 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
   - stdio 子进程提供保留变量 `PLUGIN_ROOT`、`PLUGIN_DATA`；
 - streamable-http 条目经远程代理；
 
-对外统一为 Streamable HTTP，接入路径为 `/mcps/{mcp_id}`；其应答遵循 MCP 规范，本项目只定义进入代理前的边界错误。
+对外统一为 Streamable HTTP，接入路径为 `/mcps/{mcp_id}`；其应答遵循 MCP 规范，本项目只定义进入代理前的边界错误。`{mcp_id}` 按 [合并](#合并) 规则解析。
 
 ### 端点
 
@@ -31,7 +43,7 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 
 | 状态码 | 语义 | 触发条件 |
 | --- | --- | --- |
-| 404 | 未找到 | `{mcp_id}` 未注册；或 workspace 挂载下 `{workspace_id}` 不存在 |
+| 404 | 未找到 | `{mcp_id}` 不在合并集合中；或 workspace 挂载下 `{workspace_id}` 不存在 |
 
 ### 测试
 
@@ -41,7 +53,7 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 
 ## 查询
 
-`GET /mcps` 返回全部条目均为 `streamable-http` 的 mcp.json 文档。
+`GET /mcps` 返回全部条目均为 `streamable-http` 的 mcp.json 文档；工作区挂载返回 [合并](#合并) 后的文档。
 
 ### 端点
 
@@ -50,7 +62,7 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 | 状态码 | 语义 | 触发条件 |
 | --- | --- | --- |
 | 200 | 成功 | 返回 mcp.json 文档 |
-| 404 | 未找到 | workspace 挂载下 `{workspace_id}` 不存在；`/mcps` 固定解析到 global，因而不会返回 `404` |
+| 404 | 未找到 | workspace 挂载下 `{workspace_id}` 不存在 |
 
 ### 测试
 

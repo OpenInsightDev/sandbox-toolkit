@@ -99,7 +99,7 @@ Workspace 监听 `root/.agents` 目录的存在性，并据此决定是否持有
 
 `root/.agents` 存在时构造资源集合，不存在时为 `None`；运行期 `.agents` 出现或消失时同样构造或丢弃。
 
-资源缺失时，其挂载一律回答 `404`：`GET /mcps` 与 `/mcps/{id}` 均如此。
+资源缺失时，global 的挂载回答 `404`：`GET /mcps` 与 `/mcps/{id}` 均如此。工作区挂载的 `404` 判定另见 [MCP 设计](./MCP.md) 的合并规则。
 
 ### 测试
 

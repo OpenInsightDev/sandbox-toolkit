@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::routing::any_service;
+use rmcp::ServerHandler;
 use rmcp::ServiceExt;
-use rmcp::model::ServerConfig;
+use rmcp::model::{ErrorData, ListToolsResult, PaginatedRequestParams, ServerConfig, Tool};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::{
     StreamableHttpClientTransport, StreamableHttpServerConfig, StreamableHttpService,
 };
-use rmcp::{ServerHandler, model::ListToolsResult};
 use serde_json::{Value, json};
 
 const SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
@@ -82,6 +83,22 @@ impl Server {
         reqwest::get(self.url(path)).await.expect("GET request")
     }
 
+    async fn post(&self, path: &str, body: Value) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(self.url(path))
+            .json(&body)
+            .send()
+            .await
+            .expect("POST request")
+    }
+
+    /// The decoded JSON body of a `GET`, asserting it succeeded.
+    async fn get_json(&self, path: &str) -> Value {
+        let response = self.get(path).await;
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
+        response.json().await.expect("decode GET body")
+    }
+
     /// The decoded `/mcps` document, the mount's primary observable.
     async fn list(&self) -> Value {
         let response = self.get("/mcps").await;
@@ -137,6 +154,66 @@ fn ids(document: &Value) -> BTreeSet<String> {
         .as_object()
         .map(|servers| servers.keys().cloned().collect())
         .unwrap_or_default()
+}
+
+/// Registers a workspace rooted at `root`, asserting the server accepted it.
+async fn register(server: &Server, id: &str, root: &Path) {
+    let body = json!({ "id": id, "root": root.to_string_lossy() });
+    let response = server.post("/workspaces", body).await;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::CREATED,
+        "register workspace {id}"
+    );
+}
+
+#[derive(Clone)]
+struct Upstream {
+    tools: Vec<Tool>,
+}
+
+#[allow(clippy::manual_async_fn)]
+impl ServerHandler for Upstream {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::default()
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(self.tools.clone()))
+    }
+}
+
+/// A minimal in-process MCP server exposing `names` as tools, for the proxy to
+/// reverse-proxy to.
+async fn start_upstream(names: &[&'static str]) -> String {
+    let tools: Vec<Tool> = names
+        .iter()
+        .map(|name| Tool::new(*name, "", serde_json::Map::<String, Value>::new()))
+        .collect();
+    let service = StreamableHttpService::new(
+        move || {
+            Ok(Upstream {
+                tools: tools.clone(),
+            })
+        },
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default().disable_allowed_hosts(),
+    );
+    let router = Router::new().route("/mcp", any_service(service));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind the upstream");
+
+    let address = listener.local_addr().expect("read the upstream address");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    format!("http://{address}/mcp")
 }
 
 mod load {
@@ -220,7 +297,7 @@ mod proxy {
     /// its upstream.
     #[tokio::test]
     async fn remote() {
-        let upstream = start_upstream().await;
+        let upstream = start_upstream(&[]).await;
         let home = TempDir::new("proxy-remote");
         write_mcp_json(
             home.path(),
@@ -282,35 +359,6 @@ mod proxy {
 
         assert!(env.contains("PLUGIN_ROOT="), "{env}");
         assert!(env.contains("PLUGIN_DATA="), "{env}");
-    }
-
-    #[derive(Clone)]
-    struct Upstream;
-
-    impl ServerHandler for Upstream {
-        fn get_info(&self) -> ServerConfig {
-            ServerConfig::default()
-        }
-    }
-
-    /// A minimal in-process MCP server the proxy can reverse-proxy to.
-    async fn start_upstream() -> String {
-        let service = StreamableHttpService::new(
-            || Ok(Upstream),
-            Arc::new(LocalSessionManager::default()),
-            StreamableHttpServerConfig::default().disable_allowed_hosts(),
-        );
-        let router = Router::new().route("/mcp", any_service(service));
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind the upstream");
-
-        let address = listener.local_addr().expect("read the upstream address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
-
-        format!("http://{address}/mcp")
     }
 }
 
@@ -375,5 +423,100 @@ mod query {
 
         let response = server.get("/workspaces/missing/mcps").await;
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+}
+
+mod merge {
+    use super::*;
+
+    /// A workspace's view adds global's entries to its own.
+    #[tokio::test]
+    async fn includes_global() {
+        let home = TempDir::new("merge-includes");
+        write_mcp_json(
+            home.path(),
+            json!({ "global-only": { "type": "stdio", "command": "global" } }),
+        );
+        let root = workspace_root(&home);
+        write_mcp_json(
+            &root,
+            json!({ "workspace-only": { "type": "stdio", "command": "workspace" } }),
+        );
+
+        let server = Server::start(home.path()).await;
+        register(&server, "ws", &root).await;
+
+        assert_eq!(
+            ids(&server.get_json("/workspaces/ws/mcps").await),
+            BTreeSet::from(["global-only".to_owned(), "workspace-only".to_owned()])
+        );
+    }
+
+    /// A name defined by both scopes resolves to the workspace's entry.
+    #[tokio::test]
+    async fn workspace_wins() {
+        let global = start_upstream(&["global-tool"]).await;
+        let local = start_upstream(&["workspace-tool"]).await;
+
+        let home = TempDir::new("merge-wins");
+        write_mcp_json(
+            home.path(),
+            json!({ "echo": { "type": "streamable-http", "url": global } }),
+        );
+        let root = workspace_root(&home);
+        write_mcp_json(
+            &root,
+            json!({ "echo": { "type": "streamable-http", "url": local } }),
+        );
+
+        let server = Server::start(home.path()).await;
+        register(&server, "ws", &root).await;
+
+        let client = ()
+            .serve(StreamableHttpClientTransport::from_uri(
+                server.url("/workspaces/ws/mcps/echo"),
+            ))
+            .await
+            .expect("initialize the proxy");
+
+        let tools = client
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("list tools through the proxy");
+        let names: BTreeSet<String> = tools
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert_eq!(names, BTreeSet::from(["workspace-tool".to_owned()]));
+
+        let _ = client.cancel().await;
+    }
+
+    /// A workspace without its own `.agents` still answers with global's entries.
+    #[tokio::test]
+    async fn absent_workspace() {
+        let home = TempDir::new("merge-absent");
+        write_mcp_json(
+            home.path(),
+            json!({ "global-only": { "type": "stdio", "command": "global" } }),
+        );
+        let root = workspace_root(&home);
+
+        let server = Server::start(home.path()).await;
+        register(&server, "ws", &root).await;
+
+        assert_eq!(
+            ids(&server.get_json("/workspaces/ws/mcps").await),
+            BTreeSet::from(["global-only".to_owned()])
+        );
+    }
+
+    /// A workspace root directory under `home`, created without `.agents`.
+    fn workspace_root(home: &TempDir) -> PathBuf {
+        let root = home.path().join("ws");
+        std::fs::create_dir_all(&root).expect("create the workspace root");
+        root
     }
 }
