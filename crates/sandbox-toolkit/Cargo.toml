@@ -57,6 +57,13 @@ sandbox-toolkit-utils = { path = "../utils" }
 [dev-dependencies]
 # Plain HTTP for the end-to-end tests; already in the tree through `rmcp`.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# The pty end-to-end tests dial WebSockets over HTTP/2 extended CONNECT; all of
+# these are already in the tree through `axum`.
+futures-util = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-tungstenite = "0.29"
 
 [build-dependencies]
 blake3 = "1.8"
