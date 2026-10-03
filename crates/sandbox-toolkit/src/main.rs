@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod exec;
 mod http;
 mod mcp;
 mod path;

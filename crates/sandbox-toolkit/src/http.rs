@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 
+use crate::exec;
 use crate::mcp;
 use crate::workspace::{GLOBAL_WORKSPACE_ID, Registry, Workspace};
 
@@ -79,8 +80,10 @@ impl FromRequestParts<AppState> for mcp::http::ExtractRuntime {
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .nest("/exec", exec::http::routes())
         .nest("/mcps", mcp::http::routes())
         .nest("/workspaces/{workspace_id}/mcps", mcp::http::routes())
+        .nest("/workspaces/{workspace_id}/exec", exec::http::routes())
         .nest("/workspaces", crate::workspace::http::routes())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

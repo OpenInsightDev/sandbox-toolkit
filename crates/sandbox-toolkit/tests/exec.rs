@@ -361,7 +361,7 @@ mod direct {
             .await;
 
         assert_eq!(result["status"], "signaled");
-        assert_eq!(result["signal"], "SIGTERM");
+        assert_eq!(result["signal"], libc::SIGTERM);
         assert!(result.get("exit_code").is_none());
     }
 

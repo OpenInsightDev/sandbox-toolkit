@@ -71,7 +71,7 @@ exec 挂载在 `/exec`；无前缀解析到 global 工作区，`/workspaces/{wor
 | `status` | 含义 | 终态字段 |
 | --- | --- | --- |
 | `exited` | 进程正常退出，有退出码 | `exit_code`，整数 |
-| `signaled` | 进程被信号终止，无退出码 | `signal`，信号名（如 `SIGKILL`） |
+| `signaled` | 进程被信号终止，无退出码 | `signal`，信号编号，整数 |
 
 正常退出：
 
@@ -82,7 +82,7 @@ exec 挂载在 `/exec`；无前缀解析到 global 工作区，`/workspaces/{wor
 异常退出：
 
 ```json
-{ "status": "signaled", "signal": "SIGKILL", "stdout": "out", "stderr": "err" }
+{ "status": "signaled", "signal": 9, "stdout": "out", "stderr": "err" }
 ```
 
 终态字段（`exit_code` 或 `signal`）二者互斥，只随对应的 `status` 出现。
