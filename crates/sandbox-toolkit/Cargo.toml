@@ -75,11 +75,3 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "fs", "io
 # Only deflate entries need to be read.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 zstd = "0.13"
-
-[features]
-default = []
-binaries = ["jaq", "jq", "uv", "deno"]
-jaq = []
-jq = []
-uv = []
-deno = []

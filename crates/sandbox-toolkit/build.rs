@@ -10,8 +10,6 @@ use tokio::io::AsyncWriteExt;
 
 const FD: (&str, &str) = ("10.5.0", "fd");
 const RG: (&str, &str) = ("15.2.0", "rg");
-const JAQ: (&str, &str) = ("3.1.1", "jaq");
-const JQ: (&str, &str) = ("1.8.2", "jq");
 const UV: (&str, &str) = ("0.12.16", "uv");
 const DENO: (&str, &str) = ("2.9.7", "deno");
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,7 +33,6 @@ struct Source {
     url: String,
     asset: String,
     names: &'static [&'static str],
-    binary: Option<&'static str>,
 }
 
 impl Source {
@@ -44,27 +41,13 @@ impl Source {
             url: format!("{base}/{asset}"),
             asset,
             names,
-            binary: None,
-        }
-    }
-
-    fn binary(base: String, asset: String, name: &'static str) -> Self {
-        Self {
-            url: format!("{base}/{asset}"),
-            asset,
-            names: &[],
-            binary: Some(name),
         }
     }
 
     fn embed(&self, out: &Path, cache: &Path) {
         let archive = cache.join(&self.asset);
-        for name in self.names.iter().copied().chain(self.binary) {
-            let bytes = if self.binary.is_some() {
-                fs::read(&archive).unwrap_or_else(|error| panic!("{}: {error}", archive.display()))
-            } else {
-                extract(&archive, name)
-            };
+        for name in self.names.iter().copied() {
+            let bytes = extract(&archive, name);
             let hash = blake3::hash(&bytes);
             let compressed = zstd::stream::encode_all(bytes.as_slice(), 19)
                 .unwrap_or_else(|error| panic!("failed to compress {name}: {error}"));
@@ -78,7 +61,7 @@ impl Source {
 }
 
 fn sources(target: &str) -> Vec<Source> {
-    let mut sources = vec![
+    vec![
         Source::archive(
             format!("https://github.com/sharkdp/fd/releases/download/v{}", FD.0),
             format!("fd-v{}-{target}.tar.gz", FD.0),
@@ -92,50 +75,20 @@ fn sources(target: &str) -> Vec<Source> {
             format!("ripgrep-{}-{target}.tar.gz", RG.0),
             &[RG.1],
         ),
-    ];
-
-    if env::var_os("CARGO_FEATURE_JAQ").is_some() {
-        sources.push(Source::binary(
-            format!("https://github.com/01mf02/jaq/releases/download/v{}", JAQ.0),
-            format!("jaq-{target}"),
-            JAQ.1,
-        ));
-    }
-    if env::var_os("CARGO_FEATURE_JQ").is_some() {
-        sources.push(Source::binary(
-            format!("https://github.com/jqlang/jq/releases/download/jq-{}", JQ.0),
-            jq_asset(target).into(),
-            JQ.1,
-        ));
-    }
-    if env::var_os("CARGO_FEATURE_UV").is_some() {
-        sources.push(Source::archive(
+        Source::archive(
             format!("https://github.com/astral-sh/uv/releases/download/{}", UV.0),
             format!("uv-{target}.tar.gz"),
             &["uv", "uvx"],
-        ));
-    }
-    if env::var_os("CARGO_FEATURE_DENO").is_some() {
-        sources.push(Source::archive(
+        ),
+        Source::archive(
             format!(
                 "https://github.com/denoland/deno/releases/download/v{}",
                 DENO.0
             ),
             format!("deno-{target}.zip"),
             &[DENO.1],
-        ));
-    }
-    sources
-}
-
-fn jq_asset(target: &str) -> &'static str {
-    match target {
-        "aarch64-apple-darwin" => "jq-macos-arm64",
-        "x86_64-apple-darwin" => "jq-macos-amd64",
-        "aarch64-unknown-linux-gnu" | "aarch64-unknown-linux-musl" => "jq-linux-arm64",
-        "x86_64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => "jq-linux-amd64",
-        _ => panic!("jq has no prebuilt asset for target `{target}`"),
-    }
+        ),
+    ]
 }
 
 fn download_all(sources: &[Source], cache: &Path) {

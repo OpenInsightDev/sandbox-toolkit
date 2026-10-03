@@ -5,10 +5,10 @@ One HTTP API that gives programs and AI agents safe access to a directory: read 
 ## Install
 
 ```bash
-cargo install --path crates/sandbox-toolkit --features binaries
+cargo install --path crates/sandbox-toolkit
 ```
 
-The build fetches pinned tool binaries and embeds them into the server. `fd` and `rg` are always included; `jaq`, `jq`, `uv`/`uvx` and `deno` come with the `binaries` feature. They materialize on startup, so anything the server spawns can call them by name with no host install and no network.
+The build fetches pinned tool binaries and embeds them into the server: `fd`, `rg`, `uv`/`uvx` and `deno`. They materialize on startup, so anything the server spawns can call them by name with no host install and no network.
 
 ## Usage
 
