@@ -4,6 +4,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -19,7 +20,11 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/", post(exec))
 }
 
-async fn exec(workspace: ExtractWorkspace, Json(request): Json<ExecRequest>) -> Response {
+async fn exec(
+    State(state): State<AppState>,
+    workspace: ExtractWorkspace,
+    Json(request): Json<ExecRequest>,
+) -> Response {
     let metadata = workspace.metadata().await;
 
     let (program, args) = match request.resolve() {
@@ -27,7 +32,7 @@ async fn exec(workspace: ExtractWorkspace, Json(request): Json<ExecRequest>) -> 
         Err(error) => return error.into_response(),
     };
     let cwd = request.cwd.clone().unwrap_or_else(|| metadata.root.clone());
-    let env = request.environment(&metadata);
+    let env = request.environment(&metadata, &state.bin);
 
     let mut execution = match Execution::spawn(&program, &args, &cwd, &env) {
         Ok(execution) => execution,

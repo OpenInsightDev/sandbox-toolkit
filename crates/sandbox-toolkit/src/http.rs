@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
@@ -16,12 +17,16 @@ use crate::workspace::{GLOBAL_WORKSPACE_ID, Registry, Workspace};
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Arc<Registry>,
+    /// Where the embedded tools were materialized, the directory `exec` puts on
+    /// the `PATH` of the commands it deploys.
+    pub bin: PathBuf,
 }
 
 impl AppState {
-    pub fn new(registry: Registry) -> Self {
+    pub fn new(registry: Registry, bin: PathBuf) -> Self {
         Self {
             registry: Arc::new(registry),
+            bin,
         }
     }
 }

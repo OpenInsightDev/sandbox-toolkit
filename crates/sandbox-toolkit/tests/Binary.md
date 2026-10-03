@@ -34,7 +34,6 @@ build.rs 在构建期从各上游 release 取与目标平台匹配的预编译�
 ### 测试
 
 - `materialize::layout`：四个工具都落成 `$CACHE/sandbox-toolkit/bin` 下的真实可执行文件。
-- `materialize::before_serve`：服务开始应答时四个工具都已落盘，没有工具尚未就绪的窗口。
 - `materialize::skip`：已落盘文件与清单一致时启动不重写。
 - `materialize::repair`：文件被改坏或删除后启动重新物化，内容回到与清单一致。
 

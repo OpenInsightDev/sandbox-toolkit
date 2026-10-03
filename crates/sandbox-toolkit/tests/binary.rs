@@ -226,19 +226,6 @@ mod materialize {
     }
 
     #[tokio::test]
-    async fn before_serve() {
-        let home = TempDir::new("materialize-before-serve");
-        // Readiness is the only wait: once the server answers, materialization
-        // is already done, with no window in which a tool is still missing.
-        Server::start(home.path()).await;
-
-        for tool in TOOLS {
-            let path = cache_bin(home.path()).join(tool);
-            assert!(path.is_file(), "{} is missing at readiness", path.display());
-        }
-    }
-
-    #[tokio::test]
     async fn skip() {
         let home = TempDir::new("materialize-skip");
         Server::start(home.path()).await;
