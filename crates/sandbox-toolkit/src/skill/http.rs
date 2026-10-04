@@ -39,7 +39,7 @@ impl ExtractSkills {
         {
             for skill in skills.list().await {
                 merged.insert(
-                    skill.id().to_owned(),
+                    skill.id.clone(),
                     Scoped {
                         scope: skills.scope().to_owned(),
                         skill,

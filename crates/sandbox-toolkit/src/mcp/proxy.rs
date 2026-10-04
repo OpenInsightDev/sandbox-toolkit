@@ -86,6 +86,12 @@ impl ProxyHandler {
                             .map_err(internal)?;
 
                         let mut command = tokio::process::Command::from(plan.to_command());
+                        // The §9.1 variables belong to a plugin's entry; a scope's
+                        // own `mcp.json` is launched without them.
+                        if !self.entry.reserved {
+                            command.env_remove("PLUGIN_ROOT");
+                            command.env_remove("PLUGIN_DATA");
+                        }
                         command.envs(&self.env);
                         let transport = TokioChildProcess::new(command).map_err(internal)?;
                         config.serve(transport).await.map_err(client_error)

@@ -12,6 +12,7 @@ use salvo::Extractible;
 use crate::exec;
 use crate::fs;
 use crate::mcp;
+use crate::plugin;
 use crate::pty;
 use crate::skill;
 use crate::tus;
@@ -124,6 +125,43 @@ impl<'ex> Extractible<'ex> for mcp::http::ExtractRuntime {
     }
 }
 
+impl<'ex> Extractible<'ex> for plugin::http::ExtractPlugins {
+    fn metadata() -> &'static Metadata {
+        static METADATA: Metadata = Metadata::new("ExtractPlugins");
+        &METADATA
+    }
+
+    #[allow(refining_impl_trait)]
+    async fn extract(req: &'ex mut Request, depot: &'ex mut Depot) -> Result<Self, StatusError> {
+        let resources = ExtractResources::extract(req, depot).await?;
+
+        Ok(Self::new(
+            rescanned(resources.global.as_ref()).map_err(unloadable)?,
+            rescanned(resources.scoped.as_ref()).map_err(unloadable)?,
+        ))
+    }
+}
+
+/// A scope's plugin directory as this request finds it: `Ok(None)` when the
+/// scope holds no resources, and an error when its plugins no longer load. The
+/// plugin mount reads the directory per request, so a plugin that was added,
+/// removed, or broken on disk is answered from the directory itself.
+fn rescanned(
+    resources: Option<&Arc<Resources>>,
+) -> Result<Option<plugin::Plugins>, plugin::Error> {
+    match resources {
+        Some(resources) => resources.plugins.rescan().map(Some),
+        None => Ok(None),
+    }
+}
+
+/// A plugin directory that stopped loading answers `404`, exactly as a load
+/// failure at construction does.
+fn unloadable(error: plugin::Error) -> StatusError {
+    tracing::warn!(%error, "failed to rediscover plugins");
+    StatusError::not_found()
+}
+
 impl<'ex> Extractible<'ex> for skill::http::ExtractSkills {
     fn metadata() -> &'static Metadata {
         static METADATA: Metadata = Metadata::new("ExtractSkills");
@@ -157,6 +195,7 @@ pub fn router(state: AppState) -> Router {
         .push(Router::with_path("pty").push(pty::http::routes()))
         .push(Router::with_path("mcps").push(mcp::http::routes()))
         .push(Router::with_path("skills").push(skill::http::routes()))
+        .push(Router::with_path("plugins").push(plugin::http::routes()))
         .push(Router::with_path("workspaces").push(crate::workspace::http::routes()))
         .push(
             Router::with_path("workspaces/{workspace_id}/fs").push(fs::http::routes()),
@@ -168,6 +207,10 @@ pub fn router(state: AppState) -> Router {
         .push(Router::with_path("workspaces/{workspace_id}/mcps").push(mcp::http::routes()))
         .push(
             Router::with_path("workspaces/{workspace_id}/skills").push(skill::http::routes()),
+        )
+        .push(
+            Router::with_path("workspaces/{workspace_id}/plugins")
+                .push(plugin::http::routes()),
         )
 }
 

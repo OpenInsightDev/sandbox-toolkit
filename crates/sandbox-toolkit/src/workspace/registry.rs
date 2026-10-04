@@ -6,7 +6,8 @@ use tokio::task::JoinHandle;
 
 use crate::binary::path;
 use crate::path::AGENTS_DIR;
-use crate::skill::{Skills, split_derived_workspace_id};
+use crate::plugin::extension_workspace_id;
+use crate::skill::derived_workspace_id;
 use crate::workspace::model::CreateWorkspaceRequest;
 
 use super::model::Metadata;
@@ -161,7 +162,7 @@ impl Workspace {
 
 pub enum Resolved {
     Registered(Arc<Workspace>),
-    /// The view a skill discovered in a scope derives.
+    /// The view a skill or a plugin extension a scope holds derives.
     Derived(Metadata),
 }
 
@@ -197,6 +198,16 @@ async fn sync_resources(metadata: &Metadata, resources: &RwLock<Option<Arc<Resou
         (false, true) => *guard = None,
         _ => {}
     }
+}
+
+/// A derived workspace: its own id, the directory it points at, and the access
+/// of the scope that derives it.
+fn derived(id: &str, root: PathBuf, scope: &Metadata) -> Resolved {
+    Resolved::Derived(Metadata {
+        id: id.to_owned(),
+        root,
+        access: scope.access,
+    })
 }
 
 pub struct Registry {
@@ -241,23 +252,49 @@ impl Registry {
         self.derive(id).await
     }
 
-    /// The workspace `skill.{scope}.{skill_id}` derives. It resolves while its
-    /// `{scope}` is `global` or a registered workspace, and `{skill_id}` is a
-    /// skill that scope discovers right now.
+    /// A workspace a scope derives: `skill.{scope}.{skill_id}` for a skill it
+    /// discovers, or `plugin.{scope}.{plugin_id}.{extension_id}` for a namespace
+    /// one of its plugins declares.
+    ///
+    /// A skill id and a plugin name may both carry `.`, so the id is never split
+    /// apart: it is looked up in what the scopes discover right now.
     async fn derive(&self, id: &str) -> Option<Resolved> {
-        let (scope_id, skill_id) = split_derived_workspace_id(id)?;
-        let scope = self.get(scope_id).await?;
-        let metadata = scope.metadata().await;
+        for (scope, workspace) in self.scopes().await {
+            let metadata = workspace.metadata().await;
+            let Some(resources) = workspace.resources().await else {
+                continue;
+            };
 
-        let skill = Skills::new(&metadata.id, &metadata.root)
-            .get(skill_id)
-            .await?;
+            for skill in resources.skills.list().await {
+                if derived_workspace_id(&scope, &skill.id) == id {
+                    return Some(derived(id, skill.root, &metadata));
+                }
+            }
 
-        Some(Resolved::Derived(Metadata {
-            id: id.to_owned(),
-            root: skill.root,
-            access: metadata.access,
-        }))
+            for plugin in resources.plugins.list() {
+                for namespace in plugin.namespaces() {
+                    if extension_workspace_id(&scope, &plugin.id, namespace) == id {
+                        return Some(derived(id, plugin.namespace_root(namespace), &metadata));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// The registered workspaces, id-ordered and cloned out so a lookup holds
+    /// no registry lock while it reads them.
+    async fn scopes(&self) -> Vec<(String, Arc<Workspace>)> {
+        let registered: Vec<Arc<Workspace>> = self.workspaces.read().await.values().cloned().collect();
+
+        let mut scopes = Vec::with_capacity(registered.len());
+        for workspace in registered {
+            scopes.push((workspace.metadata().await.id, workspace));
+        }
+        scopes.sort_by(|left, right| left.0.cmp(&right.0));
+
+        scopes
     }
 
     pub async fn list(&self) -> Vec<Metadata> {

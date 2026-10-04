@@ -36,7 +36,7 @@ pub struct SkillMetadata {
 
 impl SkillMetadata {
     pub fn new(scope: &str, skill: &Skill, base: &str) -> Self {
-        let id = skill.id();
+        let id = &skill.id;
         Self {
             id: id.to_owned(),
             root: skill.root.clone(),

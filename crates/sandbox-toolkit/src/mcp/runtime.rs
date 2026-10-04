@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::path::{AGENTS_DIR, MCP_JSON};
+use crate::plugin::Plugins;
 
 use super::config::{self};
 use super::proxy::{Proxies, Proxy, Service};
@@ -34,8 +35,12 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    async fn load(root: &Path, env: &HashMap<String, OsString>) -> Result<Proxies, Error> {
-        let proxies = config::entries(root)
+    async fn load(
+        root: &Path,
+        plugins: &Plugins,
+        env: &HashMap<String, OsString>,
+    ) -> Result<Proxies, Error> {
+        let proxies = config::entries(root, plugins)
             .await?
             .into_iter()
             .map(|entry| (entry.id.clone(), Proxy::new(entry, env.clone())))
@@ -44,8 +49,8 @@ impl Runtime {
         Ok(proxies)
     }
 
-    pub async fn new(path: impl Into<PathBuf>) -> Result<Self, Error> {
-        let root = path.into();
+    pub async fn new(root: impl Into<PathBuf>, plugins: Plugins) -> Result<Self, Error> {
+        let root = root.into();
         let agents_dir = root.join(AGENTS_DIR);
 
         let watch = Watch::new(&agents_dir.join(MCP_JSON)).await?;
@@ -53,14 +58,18 @@ impl Runtime {
         let mut events = watch.subscribe();
 
         let env = HashMap::<String, OsString>::new();
-        let state = Arc::new(RwLock::new(State::Ready(Self::load(&root, &env).await?)));
+        let state = Arc::new(RwLock::new(State::Ready(
+            Self::load(&root, &plugins, &env).await?,
+        )));
 
+        let task_root = root.clone();
+        let task_plugins = plugins.clone();
         let task_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
             while let Ok(Ok(event)) = events.recv().await {
                 match event.kind {
                     EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                        let next = match Self::load(&root, &env).await {
+                        let next = match Self::load(&task_root, &task_plugins, &env).await {
                             Ok(proxies) => State::Ready(proxies),
                             Err(error) => {
                                 tracing::warn!(%error, "failed to reload mcp.json");

@@ -8,6 +8,7 @@ mod fs;
 mod http;
 mod mcp;
 mod path;
+mod plugin;
 mod pty;
 mod skill;
 mod tus;

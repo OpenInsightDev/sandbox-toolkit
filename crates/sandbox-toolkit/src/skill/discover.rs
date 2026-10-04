@@ -4,8 +4,13 @@ use std::path::PathBuf;
 use agent_plugins::{SkillMeta, parse_skill_md};
 
 use crate::path::{AGENTS_DIR, SKILL_MD, SKILLS_DIR};
+use crate::plugin::Plugins;
 
+#[derive(Clone)]
 pub struct Skill {
+    /// The id the scope presents it under: the directory name, or
+    /// `{plugin_id}.{directory}` for a skill shipped by a plugin.
+    pub id: String,
     /// The skill directory, canonical.
     pub root: PathBuf,
     /// The validated `SKILL.md` frontmatter.
@@ -14,25 +19,19 @@ pub struct Skill {
     pub body: String,
 }
 
-impl Skill {
-    /// The skill id: the directory name, which the specification requires
-    /// `name` to match.
-    pub fn id(&self) -> &str {
-        &self.meta.name
-    }
-}
-
 #[derive(Clone)]
 pub struct Skills {
     scope: String,
     root: PathBuf,
+    plugins: Plugins,
 }
 
 impl Skills {
-    pub fn new(scope: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+    pub fn new(scope: impl Into<String>, root: impl Into<PathBuf>, plugins: Plugins) -> Self {
         Self {
             scope: scope.into(),
             root: root.into(),
+            plugins,
         }
     }
 
@@ -40,24 +39,31 @@ impl Skills {
         &self.scope
     }
 
-    /// The scope's skills in id order, as the directory is right now.
+    /// The scope's skills in id order, as the directories are right now.
     ///
     /// Discovery runs per request, so a directory that appears or disappears
     /// shows up in the next answer. A child directory the specification
     /// rejects is skipped, and a scope without a discovery directory holds
     /// nothing.
     pub async fn list(&self) -> Vec<Skill> {
+        let mut skills: BTreeMap<String, Skill> = self
+            .plugins
+            .list()
+            .iter()
+            .flat_map(|plugin| &plugin.skills)
+            .map(|skill| (skill.id.clone(), skill.clone()))
+            .collect();
+
         let Ok(mut entries) = tokio::fs::read_dir(self.directory()).await else {
-            return Vec::new();
+            return skills.into_values().collect();
         };
 
-        let mut skills = BTreeMap::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
             if let Some(skill) = discover(entry.path(), &id).await {
-                skills.insert(skill.id().to_owned(), skill);
+                skills.insert(skill.id.clone(), skill);
             }
         }
 
@@ -69,7 +75,7 @@ impl Skills {
     /// Resolved through [`Skills::list`], so a caller-supplied id reaches the
     /// skill directory of a skill this scope discovers and nothing else.
     pub async fn get(&self, id: &str) -> Option<Skill> {
-        self.list().await.into_iter().find(|skill| skill.id() == id)
+        self.list().await.into_iter().find(|skill| skill.id == id)
     }
 
     fn directory(&self) -> PathBuf {
@@ -84,6 +90,7 @@ async fn discover(directory: PathBuf, id: &str) -> Option<Skill> {
     let root = tokio::fs::canonicalize(&directory).await.ok()?;
 
     Some(Skill {
+        id: id.to_owned(),
         root,
         meta,
         body: body.source().to_owned(),
