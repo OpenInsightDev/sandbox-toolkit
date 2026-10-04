@@ -8,9 +8,6 @@
   - 现状生命周期：随 `.agents` 发现目录变化自动增减，不订阅 `workspace_registered`/`workspace_removed`，也不进注册表的目录 watch。
   - 现状客户端：`validateWorkspaceId`（create）保持严格 `[a-z0-9-]`，`validateWorkspaceRef`（get/remove）允许 `.`。
   - 待定：`global` 段是否保留、注册名为 `global` 时的冲突；两套分隔符是否统一；派生 id 目前不能作为 skill/plugin/mcp 挂载前缀（这些端点先做严格 `validate_id`），与 `agents_root` 注释「scope 可命名派生工作区」矛盾；`Workspace::env()` 未覆盖 `.`；按需重扫的代价与缓存策略。
-- [ ] P1：把 tus crate 对接到 fs 上
-  - 阻塞：tus 的 `Config.base_path` 是单个静态挂载前缀，同时用于注册路由、从 `request.uri()` 反推 upload id、生成 `Location`/`Upload-Concat` URL，一份 handler 无法同时服务 `/upload` 与动态的 `/workspaces/{id}/upload`。根因是 `Handler` 声称「independent of routing」（`handler.rs:40`）却自己解析路径；应让路由层解析 `{upload_id}`、把 `base` 显式传给 handler。
-  - 规避：取消 workspace 路由，只保留静态 `/upload`，tus crate 零改动，但偏离 [FileSystem.md](./docs/design/FileSystem.md) 的两种寻址模式、丢掉工作区边界/只读校验，并使 `TUSClient.layerForWorkspace` 失效；且工作区身份最终仍需由 `Upload-Metadata` 承载（即 FileSystem.md 的「待定」项）。
 - [ ] P2：探索 h2 only 的可行性
 - [ ] P2：支持 Programmable Tool Calling / Code Mode
 - [ ] P2：支持 Tool Search
