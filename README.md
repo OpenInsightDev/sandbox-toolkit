@@ -27,7 +27,7 @@ curl -sS -X QUERY 'http://127.0.0.1:3000/workspaces/docs/fs?type=content' \
   -H 'content-type: application/json' \
   -d '{"path":"notes.md"}'
 
-curl -sS -X PUT 'http://127.0.0.1:3000/workspaces/docs/fs?type=file' \
+curl -sS -X PUT 'http://127.0.0.1:3000/workspaces/docs/fs?type=content' \
   -H 'content-type: application/json' \
   -d '{"path":"notes.md","content":"hello\n"}'
 ```

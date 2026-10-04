@@ -134,16 +134,6 @@ impl Server {
             .expect("send request")
     }
 
-    pub async fn send_raw(&self, method: Method, path: &str, bytes: &[u8]) -> reqwest::Response {
-        reqwest::Client::new()
-            .request(method, self.url(path))
-            .header("content-type", "application/octet-stream")
-            .body(bytes.to_vec())
-            .send()
-            .await
-            .expect("send request")
-    }
-
     pub async fn get_json(&self, path: &str) -> Value {
         let response = self.get(path).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");

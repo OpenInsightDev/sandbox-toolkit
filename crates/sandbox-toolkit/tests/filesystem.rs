@@ -1,5 +1,7 @@
 mod harness;
 
+use std::time::Duration;
+
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -9,39 +11,100 @@ fn query_method() -> Method {
     Method::from_bytes(b"QUERY").expect("QUERY is a valid method")
 }
 
-/// A path as an RFC 3986 query value: bytes outside the unreserved set are
-/// percent-encoded, `+` excepted, since a literal `+` in a query is a sub-delim
-/// and never a space.
-fn encode_query_value(value: &str) -> String {
-    let mut encoded = String::new();
-
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'+' => {
-                encoded.push(char::from(byte));
-            }
-            byte => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-
-    encoded
+/// One endpoint call: the `type` in the query, the parameters in the JSON body.
+async fn request(
+    server: &Server,
+    method: Method,
+    endpoint: &str,
+    typing: &str,
+    body: Value,
+) -> reqwest::Response {
+    server
+        .send_json(method, &format!("{endpoint}?type={typing}"), body)
+        .await
 }
 
-/// `QUERY` with the `type` in the query and the parameters in the JSON body.
+/// `QUERY`, the read half of the endpoint set.
 async fn query(server: &Server, endpoint: &str, typing: &str, body: Value) -> reqwest::Response {
-    let path = format!("{endpoint}?type={typing}");
-    server.send_json(query_method(), &path, body).await
+    request(server, query_method(), endpoint, typing, body).await
 }
 
-/// `PUT type=stream`, where `path` travels in the query because the body is the content.
-async fn put_stream(
+/// A write on the `w` workspace's mount, whose URL carries the `type`.
+async fn write(server: &Server, method: Method, typing: &str, body: Value) -> reqwest::Response {
+    request(server, method, "/workspaces/w/fs", typing, body).await
+}
+
+/// `DELETE` is identified by its method alone, so only the body names the target.
+async fn delete(server: &Server, body: Value) -> reqwest::Response {
+    server
+        .send_json(Method::DELETE, "/workspaces/w/fs", body)
+        .await
+}
+
+/// A workspace holding the tree the read endpoints share: a text file, a text
+/// file without a trailing newline, and a subdirectory holding one file.
+async fn seeded(home: &Dir, root: &Dir) -> Server {
+    let server = Server::start(home).await;
+    server.register("w", root.path()).await;
+
+    std::fs::write(root.path().join("notes.txt"), "hello\nworld\n").expect("seed notes.txt");
+    std::fs::write(root.path().join("readme.md"), "line one\nline two")
+        .expect("seed readme.md");
+    std::fs::create_dir(root.path().join("sub")).expect("seed the subdirectory");
+    std::fs::write(root.path().join("sub/deep.txt"), "deep").expect("seed deep.txt");
+
+    server
+}
+
+/// The `path` of every entry a `list` or `glob` response carries.
+fn entry_paths(body: &Value) -> Vec<String> {
+    body["entries"]
+        .as_array()
+        .expect("entries is an array")
+        .iter()
+        .map(|entry| entry["path"].as_str().expect("an entry path").to_owned())
+        .collect()
+}
+
+fn sorted(mut paths: Vec<String>) -> Vec<String> {
+    paths.sort();
+    paths
+}
+
+/// Runs a `list` or a `glob` on the `w` workspace and returns its entry paths.
+async fn entries(server: &Server, typing: &str, body: Value) -> Vec<String> {
+    let response = query(server, "/workspaces/w/fs", typing, body).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK, "QUERY {typing}");
+
+    entry_paths(&response.json::<Value>().await.expect("decode the entries"))
+}
+
+/// Opens a `watch` stream, runs `mutate`, and returns the first event reported.
+async fn watch_event(
     server: &Server,
     endpoint: &str,
-    path: &str,
-    bytes: &[u8],
-) -> reqwest::Response {
-    let url = format!("{endpoint}?type=stream&path={}", encode_query_value(path));
-    server.send_raw(Method::PUT, &url, bytes).await
+    body: Value,
+    mutate: impl FnOnce(),
+) -> Value {
+    let mut response = query(server, endpoint, "watch", body).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK, "QUERY watch");
+
+    mutate();
+
+    let mut pending = Vec::new();
+    loop {
+        let chunk = tokio::time::timeout(Duration::from_secs(30), response.chunk())
+            .await
+            .expect("a watch event arrives")
+            .expect("read the watch stream")
+            .expect("the watch stream stays open");
+        pending.extend_from_slice(&chunk);
+
+        // One event per line, so the first newline ends the first event.
+        if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            return serde_json::from_slice(&pending[..end]).expect("decode a watch event");
+        }
+    }
 }
 
 mod mount {
@@ -53,7 +116,8 @@ mod mount {
         let server = Server::start(&home).await;
         let target = home.path().join("notes.txt");
 
-        let response = put_stream(&server, "/fs", &target.to_string_lossy(), b"hello\n").await;
+        let body = json!({ "path": target.to_string_lossy(), "content": "hello\n" });
+        let response = request(&server, Method::PUT, "/fs", "content", body).await;
 
         assert!(response.status().is_success(), "PUT /fs");
         assert_eq!(
@@ -69,7 +133,8 @@ mod mount {
         let server = Server::start(&home).await;
         server.register("w", root.path()).await;
 
-        let response = put_stream(&server, "/workspaces/w/fs", "notes.txt", b"hello\n").await;
+        let body = json!({ "path": "notes.txt", "content": "hello\n" });
+        let response = request(&server, Method::PUT, "/workspaces/w/fs", "content", body).await;
 
         assert!(response.status().is_success(), "PUT /workspaces/w/fs");
         assert_eq!(
@@ -83,7 +148,15 @@ mod mount {
         let home = Dir::new("mount-unknown");
         let server = Server::start(&home).await;
 
-        let response = put_stream(&server, "/workspaces/missing/fs", "notes.txt", b"hello\n").await;
+        let body = json!({ "path": "notes.txt", "content": "hello\n" });
+        let response = request(
+            &server,
+            Method::PUT,
+            "/workspaces/missing/fs",
+            "content",
+            body,
+        )
+        .await;
 
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     }
@@ -124,25 +197,78 @@ mod request {
     }
 }
 
-mod stream {
+mod content {
     use super::*;
 
     #[tokio::test]
-    async fn write() {
-        let home = Dir::new("stream-write-home");
-        let root = Dir::new("stream-write-root");
+    async fn text() {
+        let home = Dir::new("content-text-home");
+        let root = Dir::new("content-text-root");
         let server = Server::start(&home).await;
         server.register("w", root.path()).await;
-        let bytes = b"\x00\xff\xfe binary\n";
+        std::fs::write(root.path().join("notes.txt"), "hello\nworld\n").expect("seed the file");
 
-        let response = put_stream(&server, "/workspaces/w/fs", "notes.bin", bytes).await;
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "content",
+            json!({ "path": "notes.txt" }),
+        )
+        .await;
 
-        assert!(response.status().is_success(), "PUT type=stream");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
         assert_eq!(
-            std::fs::read(root.path().join("notes.bin")).expect("read the written file"),
-            bytes
+            response.json::<Value>().await.expect("decode the content"),
+            json!({ "path": "notes.txt", "content": "hello\nworld\n", "size": 12 })
         );
     }
+
+    #[tokio::test]
+    async fn not_utf8() {
+        let home = Dir::new("content-not-utf8-home");
+        let root = Dir::new("content-not-utf8-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.bin"), b"\xff\xfe").expect("seed the file");
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "content",
+            json!({ "path": "notes.bin" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn writes() {
+        let home = Dir::new("content-writes-home");
+        let root = Dir::new("content-writes-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let target = root.path().join("notes.txt");
+        std::fs::write(&target, "before").expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::PUT,
+            "content",
+            json!({ "path": "notes.txt", "content": "after" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(
+            std::fs::read(&target).expect("read the written file"),
+            b"after"
+        );
+    }
+}
+
+mod stream {
+    use super::*;
 
     #[tokio::test]
     async fn read() {
@@ -162,22 +288,664 @@ mod stream {
             bytes
         );
     }
+}
+
+mod metadata {
+    use super::*;
 
     #[tokio::test]
-    async fn path_encoding() {
-        let home = Dir::new("stream-encoding-home");
-        let root = Dir::new("stream-encoding-root");
+    async fn file() {
+        let home = Dir::new("metadata-file-home");
+        let root = Dir::new("metadata-file-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\nworld\n").expect("seed the file");
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "metadata",
+            json!({ "path": "notes.txt" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let metadata = response.json::<Value>().await.expect("decode the metadata");
+        assert_eq!(metadata["kind"], "file");
+        assert_eq!(metadata["size"], 12);
+        assert!(
+            metadata["modified_at"].is_string(),
+            "modified_at is a timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn directory() {
+        let home = Dir::new("metadata-directory-home");
+        let root = Dir::new("metadata-directory-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::create_dir(root.path().join("sub")).expect("seed the directory");
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "metadata",
+            json!({ "path": "sub" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let metadata = response.json::<Value>().await.expect("decode the metadata");
+        assert_eq!(metadata["kind"], "directory");
+    }
+
+    #[tokio::test]
+    async fn patched() {
+        let home = Dir::new("metadata-patched-home");
+        let root = Dir::new("metadata-patched-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\nworld\n").expect("seed the file");
+
+        let patched = write(
+            &server,
+            Method::PATCH,
+            "metadata",
+            json!({ "path": "notes.txt", "mode": "600" }),
+        )
+        .await;
+        assert_eq!(patched.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let metadata = query(
+            &server,
+            "/workspaces/w/fs",
+            "metadata",
+            json!({ "path": "notes.txt" }),
+        )
+        .await
+        .json::<Value>()
+        .await
+        .expect("decode the metadata");
+
+        assert_eq!(metadata["mode"], "600");
+    }
+}
+
+mod list {
+    use super::*;
+
+    #[tokio::test]
+    async fn children() {
+        let home = Dir::new("list-children-home");
+        let root = Dir::new("list-children-root");
+        let server = seeded(&home, &root).await;
+
+        let body = json!({ "path": "", "depth": null, "offset": 0, "limit": null });
+        let listed = entries(&server, "list", body).await;
+
+        assert_eq!(sorted(listed), ["notes.txt", "readme.md", "sub"]);
+    }
+
+    #[tokio::test]
+    async fn recursive() {
+        let home = Dir::new("list-recursive-home");
+        let root = Dir::new("list-recursive-root");
+        let server = seeded(&home, &root).await;
+
+        let body = json!({ "path": "", "depth": "infinity", "offset": 0, "limit": null });
+        let listed = entries(&server, "list", body).await;
+
+        assert_eq!(
+            sorted(listed),
+            ["notes.txt", "readme.md", "sub", "sub/deep.txt"]
+        );
+    }
+}
+
+mod glob {
+    use super::*;
+
+    #[tokio::test]
+    async fn recursive() {
+        let home = Dir::new("glob-recursive-home");
+        let root = Dir::new("glob-recursive-root");
+        let server = seeded(&home, &root).await;
+
+        let body = json!({
+            "path": "",
+            "pattern": "**/*.txt",
+            "exclude": [],
+            "offset": 0,
+            "limit": null,
+        });
+        let matched = entries(&server, "glob", body).await;
+
+        assert_eq!(sorted(matched), ["notes.txt", "sub/deep.txt"]);
+    }
+
+    #[tokio::test]
+    async fn single_component() {
+        let home = Dir::new("glob-single-home");
+        let root = Dir::new("glob-single-root");
+        let server = seeded(&home, &root).await;
+
+        let body = json!({
+            "path": "",
+            "pattern": "*.md",
+            "exclude": [],
+            "offset": 0,
+            "limit": null,
+        });
+        let matched = entries(&server, "glob", body).await;
+
+        assert_eq!(sorted(matched), ["readme.md"]);
+    }
+
+    #[tokio::test]
+    async fn exclude() {
+        let home = Dir::new("glob-exclude-home");
+        let root = Dir::new("glob-exclude-root");
+        let server = seeded(&home, &root).await;
+
+        let body = json!({
+            "path": "",
+            "pattern": "**/*",
+            "exclude": ["sub"],
+            "offset": 0,
+            "limit": null,
+        });
+        let matched = entries(&server, "glob", body).await;
+
+        assert_eq!(sorted(matched), ["notes.txt", "readme.md"]);
+    }
+}
+
+mod realpath {
+    use super::*;
+
+    #[tokio::test]
+    async fn resolves() {
+        let home = Dir::new("realpath-resolves-home");
+        let root = Dir::new("realpath-resolves-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+        std::os::unix::fs::symlink("notes.txt", root.path().join("link.txt"))
+            .expect("seed the symlink");
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "realpath",
+            json!({ "path": "link.txt" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let resolved = response.json::<Value>().await.expect("decode the path");
+        let resolved = resolved["path"].as_str().expect("a path string");
+        assert_eq!(resolved, root.path().join("notes.txt").to_string_lossy());
+    }
+}
+
+mod access {
+    use super::*;
+
+    #[tokio::test]
+    async fn probes() {
+        let home = Dir::new("access-probes-home");
+        let root = Dir::new("access-probes-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "access",
+            json!({ "path": "notes.txt", "ok": true, "readable": true, "writable": true }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+    }
+}
+
+mod lines {
+    use super::*;
+
+    #[tokio::test]
+    async fn reads() {
+        let home = Dir::new("lines-reads-home");
+        let root = Dir::new("lines-reads-root");
+        let server = seeded(&home, &root).await;
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "lines",
+            json!({ "path": "notes.txt", "offset": 0, "limit": null }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.expect("decode the lines"),
+            json!({ "lines": ["hello", "world"], "truncated": false })
+        );
+    }
+
+    #[tokio::test]
+    async fn trailing() {
+        let home = Dir::new("lines-trailing-home");
+        let root = Dir::new("lines-trailing-root");
+        let server = seeded(&home, &root).await;
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "lines",
+            json!({ "path": "readme.md", "offset": 0, "limit": null }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.expect("decode the lines"),
+            json!({ "lines": ["line one", "line two"], "truncated": false })
+        );
+    }
+
+    #[tokio::test]
+    async fn pages() {
+        let home = Dir::new("lines-pages-home");
+        let root = Dir::new("lines-pages-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let content = (0..1500)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(root.path().join("many.txt"), content).expect("seed the file");
+
+        let page = query(
+            &server,
+            "/workspaces/w/fs",
+            "lines",
+            json!({ "path": "many.txt", "offset": 0, "limit": null }),
+        )
+        .await;
+        assert_eq!(page.status(), reqwest::StatusCode::OK);
+        let page = page.json::<Value>().await.expect("decode the first page");
+        let read = page["lines"].as_array().expect("lines is an array").len();
+        assert_eq!(page["lines"][0], "line 0");
+        assert_eq!(page["lines"][999], "line 999");
+        assert_eq!(read, 1000);
+        assert_eq!(page["truncated"], true);
+
+        let rest = query(
+            &server,
+            "/workspaces/w/fs",
+            "lines",
+            json!({ "path": "many.txt", "offset": read, "limit": null }),
+        )
+        .await;
+        let rest = rest.json::<Value>().await.expect("decode the second page");
+        assert_eq!(rest["lines"][0], "line 1000");
+        assert_eq!(rest["lines"].as_array().expect("lines is an array").len(), 500);
+        assert_eq!(rest["truncated"], false);
+    }
+}
+
+mod watch {
+    use super::*;
+
+    #[tokio::test]
+    async fn create() {
+        let home = Dir::new("watch-create-home");
+        let root = Dir::new("watch-create-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let target = root.path().join("created.txt");
+
+        let event = watch_event(
+            &server,
+            "/workspaces/w/fs",
+            json!({ "path": "", "recursive": null }),
+            move || std::fs::write(&target, "hi").expect("create the watched file"),
+        )
+        .await;
+
+        assert_eq!(event, json!({ "event": "create", "path": "created.txt" }));
+    }
+
+    #[tokio::test]
+    async fn update() {
+        let home = Dir::new("watch-update-home");
+        let root = Dir::new("watch-update-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let target = root.path().join("notes.txt");
+        std::fs::write(&target, "one").expect("seed the watched file");
+
+        let event = watch_event(
+            &server,
+            "/workspaces/w/fs",
+            json!({ "path": "", "recursive": null }),
+            move || std::fs::write(&target, "two").expect("update the watched file"),
+        )
+        .await;
+
+        assert_eq!(event, json!({ "event": "update", "path": "notes.txt" }));
+    }
+
+    #[tokio::test]
+    async fn remove() {
+        let home = Dir::new("watch-remove-home");
+        let root = Dir::new("watch-remove-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let target = root.path().join("doomed.txt");
+        std::fs::write(&target, "x").expect("seed the watched file");
+
+        let event = watch_event(
+            &server,
+            "/workspaces/w/fs",
+            json!({ "path": "", "recursive": null }),
+            move || std::fs::remove_file(&target).expect("remove the watched file"),
+        )
+        .await;
+
+        assert_eq!(event, json!({ "event": "remove", "path": "doomed.txt" }));
+    }
+
+    #[tokio::test]
+    async fn recursive() {
+        let home = Dir::new("watch-recursive-home");
+        let root = Dir::new("watch-recursive-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let target = root.path().join("tree/a/deep.txt");
+        std::fs::create_dir_all(target.parent().expect("a parent")).expect("seed the tree");
+
+        let event = watch_event(
+            &server,
+            "/workspaces/w/fs",
+            json!({ "path": "", "recursive": true }),
+            move || std::fs::write(&target, "deep").expect("create the watched file"),
+        )
+        .await;
+
+        assert_eq!(
+            event,
+            json!({ "event": "create", "path": "tree/a/deep.txt" })
+        );
+    }
+
+    #[tokio::test]
+    async fn subdirectory() {
+        let home = Dir::new("watch-subdirectory-home");
+        let root = Dir::new("watch-subdirectory-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let directory = root.path().join("sub");
+        std::fs::create_dir(&directory).expect("seed the watched directory");
+        let target = directory.join("here.txt");
+
+        let event = watch_event(
+            &server,
+            "/workspaces/w/fs",
+            json!({ "path": "sub", "recursive": null }),
+            move || std::fs::write(&target, "hi").expect("create the watched file"),
+        )
+        .await;
+
+        assert_eq!(event, json!({ "event": "create", "path": "sub/here.txt" }));
+    }
+}
+
+mod directory {
+    use super::*;
+
+    #[tokio::test]
+    async fn creates() {
+        let home = Dir::new("directory-creates-home");
+        let root = Dir::new("directory-creates-root");
         let server = Server::start(&home).await;
         server.register("w", root.path()).await;
 
-        for name in ["a+b 100%.txt", "笔记.md"] {
-            let response =
-                put_stream(&server, "/workspaces/w/fs", name, b"hello\n").await;
-            assert!(response.status().is_success(), "PUT {name}");
-            assert_eq!(
-                std::fs::read(root.path().join(name)).expect("read the written file"),
-                b"hello\n"
-            );
+        let response = write(
+            &server,
+            Method::PUT,
+            "directory",
+            json!({ "path": "made", "recursive": null }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert!(root.path().join("made").is_dir(), "the directory is on disk");
+    }
+
+    #[tokio::test]
+    async fn recursive() {
+        let home = Dir::new("directory-recursive-home");
+        let root = Dir::new("directory-recursive-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+
+        let response = write(
+            &server,
+            Method::PUT,
+            "directory",
+            json!({ "path": "a/b/c", "recursive": true }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert!(root.path().join("a/b/c").is_dir(), "the parents are created");
+    }
+}
+
+mod symlink {
+    use super::*;
+
+    #[tokio::test]
+    async fn creates() {
+        let home = Dir::new("symlink-creates-home");
+        let root = Dir::new("symlink-creates-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::PUT,
+            "symlink",
+            json!({ "path": "link.txt", "target": "notes.txt" }),
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let metadata = query(
+            &server,
+            "/workspaces/w/fs",
+            "metadata",
+            json!({ "path": "link.txt" }),
+        )
+        .await
+        .json::<Value>()
+        .await
+        .expect("decode the metadata");
+
+        assert_eq!(metadata["kind"], "symlink");
+    }
+}
+
+mod patch {
+    use super::*;
+
+    #[tokio::test]
+    async fn applies() {
+        let home = Dir::new("patch-applies-home");
+        let root = Dir::new("patch-applies-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "one\ntwo\n").expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::PATCH,
+            "patch",
+            json!({
+                "path": "notes.txt",
+                "format": "unified",
+                "patch": "@@ -1,2 +1,2 @@\n-one\n-two\n+ONE\n+TWO\n",
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        let content =
+            std::fs::read_to_string(root.path().join("notes.txt")).expect("read the patched file");
+        assert_eq!(content, "ONE\nTWO\n");
+    }
+}
+
+mod truncate {
+    use super::*;
+
+    #[tokio::test]
+    async fn extends() {
+        let home = Dir::new("truncate-extends-home");
+        let root = Dir::new("truncate-extends-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::PATCH,
+            "truncate",
+            json!({ "path": "notes.txt", "length": 12 }),
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let metadata = query(
+            &server,
+            "/workspaces/w/fs",
+            "metadata",
+            json!({ "path": "notes.txt" }),
+        )
+        .await
+        .json::<Value>()
+        .await
+        .expect("decode the metadata");
+
+        assert_eq!(metadata["size"], 12);
+    }
+}
+
+mod copy {
+    use super::*;
+
+    #[tokio::test]
+    async fn copies() {
+        let home = Dir::new("copy-copies-home");
+        let root = Dir::new("copy-copies-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+        std::fs::write(root.path().join("readme.md"), "old\n").expect("seed the target");
+
+        let copied = write(
+            &server,
+            Method::POST,
+            "copy",
+            json!({ "path": "notes.txt", "destination": "copied.txt" }),
+        )
+        .await;
+        assert_eq!(copied.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let overwritten = write(
+            &server,
+            Method::POST,
+            "copy",
+            json!({ "path": "notes.txt", "destination": "readme.md" }),
+        )
+        .await;
+        assert_eq!(overwritten.status(), reqwest::StatusCode::NO_CONTENT);
+
+        for name in ["copied.txt", "readme.md"] {
+            let content =
+                std::fs::read_to_string(root.path().join(name)).expect("read the target");
+            assert_eq!(content, "hello\n", "{name}");
         }
+    }
+}
+
+mod r#move {
+    use super::*;
+
+    #[tokio::test]
+    async fn renames() {
+        let home = Dir::new("move-renames-home");
+        let root = Dir::new("move-renames-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::POST,
+            "move",
+            json!({ "path": "notes.txt", "destination": "moved.txt" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert!(!root.path().join("notes.txt").exists(), "the source is gone");
+        let content =
+            std::fs::read_to_string(root.path().join("moved.txt")).expect("read the target");
+        assert_eq!(content, "hello\n");
+    }
+}
+
+mod delete {
+    use super::*;
+
+    #[tokio::test]
+    async fn removes() {
+        let home = Dir::new("delete-removes-home");
+        let root = Dir::new("delete-removes-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = delete(
+            &server,
+            json!({ "path": "notes.txt", "recursive": null, "force": null }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert!(!root.path().join("notes.txt").exists(), "the file is gone");
+    }
+
+    #[tokio::test]
+    async fn recursive() {
+        let home = Dir::new("delete-recursive-home");
+        let root = Dir::new("delete-recursive-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::create_dir_all(root.path().join("tree/nested")).expect("seed the tree");
+        std::fs::write(root.path().join("tree/nested/deep.txt"), "deep").expect("seed the file");
+
+        let response =
+            delete(&server, json!({ "path": "tree", "recursive": true, "force": null })).await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        assert!(!root.path().join("tree").exists(), "the tree is gone");
     }
 }
