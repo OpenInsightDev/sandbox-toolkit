@@ -23,8 +23,6 @@ impl StreamableHttpMcpServer {
     }
 }
 
-/// The manifest a mount serves: an Agent Plugins `mcp.json` document whose
-/// entries are all presented as Streamable HTTP at their own endpoint.
 #[derive(Debug, Clone, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct StreamableHttpServerMcpConfig {

@@ -26,7 +26,6 @@ const PENDING: Duration = Duration::from_secs(30);
 /// How long an attached session may go without WebSocket activity.
 const IDLE: Duration = Duration::from_secs(5 * 60);
 
-/// Where a session is in its life, and the deadline that ends that stage.
 #[derive(Clone, Copy)]
 enum Stage {
     Pending { deadline: Instant },
@@ -34,14 +33,11 @@ enum Stage {
     Reclaimed,
 }
 
-/// What the one attached client reads and writes: the process's output, and how
-/// it ended.
 pub struct Attachment {
     output: mpsc::Receiver<Vec<u8>>,
     exit: oneshot::Receiver<ProcessExit>,
 }
 
-/// A process running under a PTY, from creation until the deadline that ends it.
 pub struct Session {
     scope: String,
     process: ProcessHandle,
@@ -53,8 +49,6 @@ pub struct Session {
 }
 
 impl Session {
-    /// Spawns the process the session runs, which waits for its one attach from
-    /// here on.
     pub async fn spawn(scope: &str, process: &PtyProcess) -> anyhow::Result<Self> {
         let spawned = pty::spawn_pty_process(
             &process.program,
@@ -85,7 +79,6 @@ impl Session {
         })
     }
 
-    /// Claims the session for the one client that may attach from `scope`.
     pub fn claim(&self, scope: &str) -> Option<Attachment> {
         if self.scope != scope {
             return None;
@@ -103,7 +96,6 @@ impl Session {
         self.attachment.lock().ok()?.take()
     }
 
-    /// Records WebSocket activity, which pushes the idle deadline out.
     fn touch(&self) {
         let Ok(mut stage) = self.stage.lock() else {
             return;
@@ -113,7 +105,6 @@ impl Session {
         }
     }
 
-    /// Whether the stage the session is in has run out.
     pub fn expired(&self) -> bool {
         let Ok(stage) = self.stage.lock() else {
             return false;
@@ -127,7 +118,6 @@ impl Session {
         }
     }
 
-    /// Whether the session has already been reclaimed.
     pub fn reclaimed(&self) -> bool {
         self.stage
             .lock()
@@ -135,8 +125,6 @@ impl Session {
             .unwrap_or(false)
     }
 
-    /// Ends the session, once: the process group is terminated and an attached
-    /// client is told to stop.
     pub fn reclaim(&self) {
         {
             let Ok(mut stage) = self.stage.lock() else {
@@ -157,8 +145,6 @@ impl Session {
         self.process.terminate();
     }
 
-    /// The attached life of the session: output and input flow between the
-    /// client and the process until either side ends it.
     pub async fn run(&self, socket: WebSocket, attachment: Attachment) {
         let (mut sink, mut stream) = socket.split();
         let Attachment {
@@ -215,8 +201,6 @@ impl Session {
         let _ = sink.close().await;
     }
 
-    /// Applies one client message, reporting whether it kept to the channel
-    /// contract.
     async fn apply(&self, bytes: &[u8]) -> bool {
         self.touch();
 
@@ -236,7 +220,6 @@ impl Session {
     }
 }
 
-/// How the process ended, as the `error` channel reports it.
 fn status(exit: ProcessExit) -> Status {
     match exit.signal {
         Some(signal) => Status::Signaled { signal },

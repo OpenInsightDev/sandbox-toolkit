@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-/// A directory removed when the test ends.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -34,7 +33,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The `sbxtkt` server under test, running on a private port with a throwaway home.
 struct Server {
     child: Child,
     base_url: String,
@@ -98,7 +96,6 @@ impl Server {
             .expect("DELETE request")
     }
 
-    /// The decoded JSON body of a `GET`, asserting it succeeded.
     async fn get_json(&self, path: &str) -> Value {
         let response = self.get(path).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
@@ -141,12 +138,10 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// The scope's discovery directory, as the service addresses it.
 fn skills_dir(root: &Path) -> PathBuf {
     root.join(".agents/skills")
 }
 
-/// Writes `<skills>/<id>/SKILL.md`, returning the skill directory.
 fn write_skill(skills: &Path, id: &str, frontmatter: &str, body: &str) -> PathBuf {
     let dir = skills.join(id);
     std::fs::create_dir_all(&dir).expect("create the skill directory");
@@ -155,12 +150,10 @@ fn write_skill(skills: &Path, id: &str, frontmatter: &str, body: &str) -> PathBu
     dir
 }
 
-/// Registers a workspace rooted at `root`, asserting the server accepted it.
 async fn register(server: &Server, id: &str, root: &Path) {
     register_as(server, id, root, "read-write").await;
 }
 
-/// Registers with an explicit `access`, which a derived workspace inherits.
 async fn register_as(server: &Server, id: &str, root: &Path, access: &str) {
     let body = json!({ "id": id, "root": root.to_string_lossy(), "access": access });
     let response = server.post("/workspaces", body).await;
@@ -171,7 +164,6 @@ async fn register_as(server: &Server, id: &str, root: &Path, access: &str) {
     );
 }
 
-/// The skill ids a `/skills` document carries, in order.
 fn ids(document: &Value) -> Vec<String> {
     document["skills"]
         .as_array()
@@ -181,7 +173,6 @@ fn ids(document: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The entry of `id`, asserting the document carries it.
 fn entry<'a>(document: &'a Value, id: &str) -> &'a Value {
     document["skills"]
         .as_array()
@@ -194,7 +185,6 @@ fn entry<'a>(document: &'a Value, id: &str) -> &'a Value {
 mod load {
     use super::*;
 
-    /// Every valid child directory of `.agents/skills` is a skill named after it.
     #[tokio::test]
     async fn discovers() {
         let home = TempDir::new("load-discovers");
@@ -217,7 +207,6 @@ mod load {
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy", "other"]);
     }
 
-    /// A child directory the specification rejects is skipped rather than reported.
     #[tokio::test]
     async fn skips() {
         let home = TempDir::new("load-skips");
@@ -250,7 +239,6 @@ mod load {
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy"]);
     }
 
-    /// Discovery runs per request, so a change on disk shows up in the next answer.
     #[tokio::test]
     async fn rescans() {
         let home = TempDir::new("load-rescans");
@@ -280,7 +268,6 @@ mod load {
 mod merge {
     use super::*;
 
-    /// A workspace's view adds global's skills to its own.
     #[tokio::test]
     async fn includes_global() {
         let home = TempDir::new("merge-includes-home");
@@ -307,7 +294,6 @@ mod merge {
         );
     }
 
-    /// A name defined by both scopes resolves to the workspace's skill.
     #[tokio::test]
     async fn workspace_wins() {
         let home = TempDir::new("merge-wins-home");
@@ -342,7 +328,6 @@ mod merge {
         );
     }
 
-    /// A workspace without its own `.agents` still answers with global's skills.
     #[tokio::test]
     async fn absent_workspace() {
         let home = TempDir::new("merge-absent-home");
@@ -367,7 +352,6 @@ mod merge {
 mod list {
     use super::*;
 
-    /// Every valid skill is listed once, in id order.
     #[tokio::test]
     async fn skills() {
         let home = TempDir::new("list-skills");
@@ -390,7 +374,6 @@ mod list {
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy", "gamma"]);
     }
 
-    /// An entry carries the frontmatter fields that were written, and no others.
     #[tokio::test]
     async fn fields() {
         let home = TempDir::new("list-fields");
@@ -435,7 +418,6 @@ mod list {
         assert!(other.get("metadata").is_none(), "{other}");
     }
 
-    /// `uri` addresses the body at the mount point that answered.
     #[tokio::test]
     async fn uri() {
         let home = TempDir::new("list-uri-home");
@@ -469,7 +451,6 @@ mod list {
         );
     }
 
-    /// A workspace mount answers the merged document.
     #[tokio::test]
     async fn workspace() {
         let home = TempDir::new("list-workspace-home");
@@ -502,7 +483,6 @@ mod list {
         );
     }
 
-    /// An unknown workspace answers 404.
     #[tokio::test]
     async fn unknown_workspace() {
         let home = TempDir::new("list-unknown");
@@ -525,7 +505,6 @@ mod list {
 mod read {
     use super::*;
 
-    /// `GET /skills/{id}` returns the text after the frontmatter as markdown.
     #[tokio::test]
     async fn body() {
         let home = TempDir::new("read-body");
@@ -548,7 +527,6 @@ mod read {
         assert_eq!(response.text().await.expect("read body"), "Ship it.\n");
     }
 
-    /// A mount reads a skill that only global discovered.
     #[tokio::test]
     async fn merged() {
         let home = TempDir::new("read-merged-home");
@@ -568,7 +546,6 @@ mod read {
         assert_eq!(response.text().await.expect("read body"), "Global body.\n");
     }
 
-    /// A skill that was not discovered answers 404.
     #[tokio::test]
     async fn not_found() {
         let home = TempDir::new("read-missing");
@@ -591,7 +568,6 @@ mod read {
 mod workspace {
     use super::*;
 
-    /// A skill derives a workspace rooted at its own directory.
     #[tokio::test]
     async fn resolves() {
         let home = TempDir::new("workspace-resolves-home");
@@ -616,7 +592,6 @@ mod workspace {
         );
     }
 
-    /// The derived id works at a workspace mount, reaching the skill's own files.
     #[tokio::test]
     async fn usable() {
         let home = TempDir::new("workspace-usable-home");
@@ -659,7 +634,6 @@ mod workspace {
         assert_eq!(bundled["exit_code"], 0);
     }
 
-    /// The derived workspace reports the access of the scope it came from.
     #[tokio::test]
     async fn access() {
         let home = TempDir::new("workspace-access-home");
@@ -680,7 +654,6 @@ mod workspace {
         );
     }
 
-    /// A derived workspace stays out of the registry listing.
     #[tokio::test]
     async fn not_listed() {
         let home = TempDir::new("workspace-not-listed-home");
@@ -709,7 +682,6 @@ mod workspace {
         );
     }
 
-    /// An undiscovered skill, and a scope that is not registered, have no workspace.
     #[tokio::test]
     async fn unknown() {
         let home = TempDir::new("workspace-unknown-home");
@@ -737,7 +709,6 @@ mod workspace {
         );
     }
 
-    /// A derived workspace is neither updatable nor removable.
     #[tokio::test]
     async fn mutate_denied() {
         let home = TempDir::new("workspace-mutate-home");

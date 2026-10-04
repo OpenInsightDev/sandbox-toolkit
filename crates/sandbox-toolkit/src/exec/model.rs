@@ -9,7 +9,6 @@ use ts_rs::TS;
 
 use crate::exec::frame::Status;
 
-/// The payload kind a request carries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -41,8 +40,6 @@ pub struct ExecRequest {
 }
 
 impl ExecRequest {
-    /// The program and the arguments that follow it; `shell` runs `script`
-    /// through an interpreter.
     pub fn resolve(&self) -> Result<(String, Vec<String>), ExecError> {
         match self.format {
             ExecFormat::Exec => {
@@ -58,8 +55,6 @@ impl ExecRequest {
     }
 }
 
-/// The direct answer to a command that finished within `wait`: its terminal
-/// state plus the output captured up to that point.
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 #[ts(export)]

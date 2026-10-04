@@ -11,7 +11,6 @@ use ts_rs::TS;
 
 use crate::workspace::Metadata;
 
-/// The terminal size a session starts at or is resized to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct PtySize {
@@ -20,7 +19,6 @@ pub struct PtySize {
 }
 
 impl Default for PtySize {
-    /// A request that omits `size` starts at the crate's default terminal.
     fn default() -> Self {
         TerminalSize::default().into()
     }
@@ -60,8 +58,6 @@ pub struct PtyRequest {
 }
 
 impl PtyRequest {
-    /// The process the session runs: exec's command and arguments, working
-    /// directory and environment, with the size its terminal starts at.
     pub fn resolve(&self, workspace: &Metadata, bin: &Path) -> Result<PtyProcess, PtyError> {
         let program = self.command.clone().ok_or(PtyError::Missing("command"))?;
 
@@ -75,7 +71,6 @@ impl PtyRequest {
     }
 }
 
-/// What a session runs, resolved from its request.
 pub struct PtyProcess {
     pub program: String,
     pub args: Vec<String>,
@@ -84,7 +79,6 @@ pub struct PtyProcess {
     pub size: TerminalSize,
 }
 
-/// The create answer: the session's id, and the endpoint that attaches to it.
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct PtySession {

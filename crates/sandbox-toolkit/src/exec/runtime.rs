@@ -21,14 +21,12 @@ const READ_LEN: usize = 8 * 1024;
 /// Frames buffered between the readers and the response body.
 const BUFFER: usize = 16;
 
-/// What a command is observed to do: its output, then how it ended.
 pub enum Event {
     Stdout(Bytes),
     Stderr(Bytes),
     Status(Status),
 }
 
-/// A running command whose output arrives as [`Event`]s.
 pub struct Execution {
     events: mpsc::Receiver<Event>,
 }
@@ -81,14 +79,11 @@ impl Execution {
         self.events.recv().await
     }
 
-    /// The events still to come.
     pub fn into_stream(self) -> impl Stream<Item = Event> {
         ReceiverStream::new(self.events)
     }
 }
 
-/// Forwards everything one of the child's streams produces as the events it
-/// makes.
 fn pump<R>(mut reader: R, event: fn(Bytes) -> Event, events: mpsc::Sender<Event>) -> JoinHandle<()>
 where
     R: AsyncRead + Unpin + Send + 'static,

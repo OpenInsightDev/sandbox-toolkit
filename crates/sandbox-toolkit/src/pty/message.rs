@@ -4,14 +4,11 @@ use pty::TerminalSize;
 
 use crate::exec::frame::{ERROR, MAX_PAYLOAD_LEN, RESIZE, STDIN, STDOUT, Status};
 
-/// What the client sends: the session's input, and the terminal size.
 pub enum Client {
     Stdin(Vec<u8>),
     Resize(TerminalSize),
 }
 
-/// Decodes one client message; `None` when the message breaks the channel
-/// contract, which the session ends over.
 pub fn decode(message: &[u8]) -> Option<Client> {
     let (channel, payload) = message.split_first()?;
     if payload.len() > MAX_PAYLOAD_LEN {
@@ -25,15 +22,12 @@ pub fn decode(message: &[u8]) -> Option<Client> {
     }
 }
 
-/// The process's output as the messages that carry it.
 pub fn stdout(bytes: &[u8]) -> impl Iterator<Item = Message> + '_ {
     bytes
         .chunks(MAX_PAYLOAD_LEN)
         .map(|chunk| carried(STDOUT, chunk))
 }
 
-/// The message that closes the session: the terminal status on the `error`
-/// channel.
 pub fn terminal(status: &Status) -> Message {
     carried(ERROR, &status.payload())
 }
@@ -63,7 +57,6 @@ fn size(payload: &[u8]) -> Option<TerminalSize> {
 mod tests {
     use super::*;
 
-    /// The channel byte and payload one message carries.
     fn split(message: Message) -> (u8, Vec<u8>) {
         let Message::Binary(bytes) = message else {
             panic!("not a binary message");

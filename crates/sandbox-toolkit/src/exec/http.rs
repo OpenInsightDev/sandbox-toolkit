@@ -82,8 +82,6 @@ async fn collect(execution: &mut Execution, wait: Duration) -> (Vec<Event>, Opti
     (consumed, result)
 }
 
-/// The direct result of the events consumed so far, `None` while the terminal
-/// status is missing.
 fn direct(events: &[Event]) -> Option<ExecResult> {
     let mut stdout = BytesMut::new();
     let mut stderr = BytesMut::new();
@@ -100,8 +98,6 @@ fn direct(events: &[Event]) -> Option<ExecResult> {
     Some(ExecResult::new(status?, text(&stdout), text(&stderr)))
 }
 
-/// The upgraded answer: the events consumed while waiting, then the rest as
-/// they arrive.
 fn stream(consumed: Vec<Event>, execution: Execution) -> Response {
     let frames = tokio_stream::iter(consumed)
         .chain(execution.into_stream())

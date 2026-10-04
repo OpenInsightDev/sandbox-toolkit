@@ -5,8 +5,6 @@ use ts_rs::TS;
 
 use crate::exec::runtime::Event;
 
-/// The media type of an upgraded response, which carries frames rather than
-/// JSON.
 pub const CONTENT_TYPE: &str = "application/vnd.sandbox-toolkit.exec-stream";
 
 // The channel numbering exec's frame stream and pty's messages share: 0 stdin,
@@ -24,7 +22,6 @@ pub const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 /// One channel byte and a four-byte big-endian payload length.
 const HEADER_LEN: usize = 5;
 
-/// How a process ended, the JSON the `error` channel carries in both streams.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 #[ts(export)]
@@ -34,13 +31,11 @@ pub enum Status {
 }
 
 impl Status {
-    /// The payload the `error` channel carries.
     pub fn payload(&self) -> Bytes {
         Bytes::from(serde_json::to_vec(self).expect("the terminal status encodes to JSON"))
     }
 }
 
-/// Encodes an event as the frames that carry it.
 pub fn encode(event: Event) -> Bytes {
     let (channel, payload) = match event {
         Event::Stdout(bytes) => (STDOUT, bytes),

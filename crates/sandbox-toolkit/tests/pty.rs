@@ -25,7 +25,6 @@ const RESIZE: u8 = 4;
 
 const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 
-/// A directory removed when the test ends.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -49,7 +48,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The `sbxtkt` server under test, running on a private port with a throwaway home.
 struct Server {
     child: Child,
     base_url: String,
@@ -132,7 +130,6 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// The bytes carried on `channel`, concatenated across messages.
 fn channel_bytes(frames: &[(u8, Vec<u8>)], channel: u8) -> Vec<u8> {
     frames
         .iter()
@@ -141,14 +138,12 @@ fn channel_bytes(frames: &[(u8, Vec<u8>)], channel: u8) -> Vec<u8> {
         .collect()
 }
 
-/// Whether the bytes carried on `channel` contain `needle`.
 fn channel_contains(frames: &[(u8, Vec<u8>)], channel: u8, needle: &[u8]) -> bool {
     channel_bytes(frames, channel)
         .windows(needle.len())
         .any(|window| window == needle)
 }
 
-/// The terminal status JSON, asserting the session ends with exactly one.
 fn terminal_status(frames: &[(u8, Vec<u8>)]) -> Value {
     let statuses = frames.iter().filter(|(id, _)| *id == ERROR).count();
     assert_eq!(statuses, 1, "exactly one terminal frame");
@@ -160,8 +155,6 @@ fn terminal_status(frames: &[(u8, Vec<u8>)]) -> Value {
 /// A pty session's WebSocket, tunneled over HTTP/2 extended CONNECT (RFC 8441).
 type Pty = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 
-/// Attaches to `endpoint` with an HTTP/2 extended CONNECT, returning the response
-/// status and the socket when the server upgraded the request.
 async fn attach_pty(server: &Server, endpoint: &str) -> (StatusCode, Option<Pty>) {
     let authority = server.authority();
     let io = TokioIo::new(
@@ -211,7 +204,6 @@ fn stdin_message(text: &str) -> Message {
     Message::Binary(message.into())
 }
 
-/// Reads messages until the session reports its terminal status, ending the stream.
 async fn drain(socket: &mut Pty) -> Vec<(u8, Vec<u8>)> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut frames = Vec::new();
@@ -237,14 +229,12 @@ async fn drain(socket: &mut Pty) -> Vec<(u8, Vec<u8>)> {
 mod pty {
     use super::*;
 
-    /// Creates a session running `sh` and returns its decoded body.
     async fn create_session(server: &Server) -> Value {
         let response = server.post("/pty", json!({ "command": "sh" })).await;
         assert_eq!(response.status(), reqwest::StatusCode::CREATED, "POST /pty");
         response.json().await.expect("decode the pty session")
     }
 
-    /// Creates a session and attaches to it, asserting the attach succeeded.
     async fn attach_session(server: &Server) -> Pty {
         let session = create_session(server).await;
         let endpoint = session["endpoint"].as_str().expect("session endpoint");

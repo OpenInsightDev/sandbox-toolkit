@@ -13,7 +13,6 @@ use crate::pty::session::Session;
 /// deadlines.
 const TICK: Duration = Duration::from_secs(1);
 
-/// The sessions the server holds, each with the deadline that reclaims it.
 #[derive(Clone)]
 pub struct Sessions {
     sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>,
@@ -27,7 +26,6 @@ impl Sessions {
         Self { sessions }
     }
 
-    /// Registers a session, returning the id its endpoint carries.
     pub async fn create(&self, session: Session) -> String {
         let id = new_id();
         self.sessions
@@ -38,7 +36,6 @@ impl Sessions {
         id
     }
 
-    /// Claims the session `id` for the one client that attaches from `scope`.
     pub async fn attach(&self, scope: &str, id: &str) -> Option<(Arc<Session>, Attachment)> {
         let session = self.sessions.lock().await.get(id).cloned()?;
         let attachment = session.claim(scope)?;
@@ -53,8 +50,6 @@ impl Default for Sessions {
     }
 }
 
-/// Ends the sessions whose deadline has passed, and forgets the ones that have
-/// already been reclaimed.
 async fn reap(sessions: Arc<Mutex<HashMap<String, Arc<Session>>>>) {
     let mut ticker = tokio::time::interval(TICK);
 

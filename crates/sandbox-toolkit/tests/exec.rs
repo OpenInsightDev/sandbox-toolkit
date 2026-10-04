@@ -13,7 +13,6 @@ const ERROR: u8 = 3;
 
 const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 
-/// A directory removed when the test ends.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -37,7 +36,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The `sbxtkt` server under test, running on a private port with a throwaway home.
 struct Server {
     child: Child,
     base_url: String,
@@ -84,14 +82,12 @@ impl Server {
         self.post("/exec", body).await
     }
 
-    /// The decoded direct result of a command, asserting it succeeded.
     async fn exec_json(&self, body: Value) -> Value {
         let response = self.exec(body).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "POST /exec");
         response.json().await.expect("decode exec result")
     }
 
-    /// The raw body of a command the server answered with the frame stream.
     async fn exec_bytes(&self, body: Value) -> Vec<u8> {
         let response = self.exec(body).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "POST /exec");
@@ -134,7 +130,6 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Registers a workspace rooted at `root`, asserting the server accepted it.
 async fn register(server: &Server, id: &str, root: &Path) {
     let body = json!({ "id": id, "root": root.to_string_lossy() });
     let response = server.post("/workspaces", body).await;
@@ -145,7 +140,6 @@ async fn register(server: &Server, id: &str, root: &Path) {
     );
 }
 
-/// Splits a length-prefixed frame stream, asserting every frame is well formed.
 fn decode_frames(mut bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
     let mut frames = Vec::new();
 
@@ -165,7 +159,6 @@ fn decode_frames(mut bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
     frames
 }
 
-/// The bytes carried on `channel`, concatenated across frames.
 fn channel_bytes(frames: &[(u8, Vec<u8>)], channel: u8) -> Vec<u8> {
     frames
         .iter()
@@ -174,7 +167,6 @@ fn channel_bytes(frames: &[(u8, Vec<u8>)], channel: u8) -> Vec<u8> {
         .collect()
 }
 
-/// The terminal status JSON, asserting the stream ends with exactly one.
 fn terminal_status(frames: &[(u8, Vec<u8>)]) -> Value {
     let statuses = frames.iter().filter(|(id, _)| *id == ERROR).count();
     assert_eq!(statuses, 1, "exactly one terminal frame");

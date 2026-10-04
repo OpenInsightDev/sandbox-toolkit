@@ -87,7 +87,6 @@ async fn attach(
         .on_upgrade(move |socket| async move { session.run(socket, attachment).await })
 }
 
-/// The mount the create request reached, without any trailing separator.
 fn mount(uri: &Uri) -> &str {
     uri.path().trim_end_matches('/')
 }

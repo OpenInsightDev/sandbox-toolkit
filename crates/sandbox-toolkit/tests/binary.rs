@@ -8,14 +8,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-/// The tools the build embeds, named as the design names them.
 const TOOLS: [&str; 4] = ["fd", "rg", "uv", "deno"];
 
 /// A directory the server's own `PATH` keeps, so `path::keeps` can tell an added
 /// entry from a `PATH` that was replaced.
 const SENTINEL: &str = "/sbxtkt-test-sentinel-bin";
 
-/// A directory removed when the test ends.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -41,8 +39,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The `sbxtkt` server under test, running on a private port with a throwaway
-/// home.
 struct Server {
     child: Child,
     base_url: String,
@@ -89,7 +85,6 @@ impl Server {
             .expect("POST request")
     }
 
-    /// The decoded direct result of a command, asserting it succeeded.
     async fn exec_json(&self, body: Value) -> Value {
         let response = self.post("/exec", body).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "POST /exec");
@@ -132,7 +127,6 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Where the tools materialize: the system cache dir of `home`.
 fn cache_bin(home: &Path) -> PathBuf {
     home.join(".cache/sandbox-toolkit/bin")
 }
@@ -168,7 +162,6 @@ fn modified(home: &Path) -> Vec<(String, std::time::SystemTime)> {
         .collect()
 }
 
-/// Asserts a command that ran to completion succeeded.
 fn assert_ran(result: &Value, what: &str) {
     assert_eq!(result["status"], "exited", "{what}");
     assert_eq!(result["exit_code"], 0, "{what}");
