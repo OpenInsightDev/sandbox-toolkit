@@ -1,12 +1,8 @@
 use std::io;
 
-/// A prebuilt executable the build downloads, stores compressed, and records
-/// the digest of.
 pub struct Tool {
-    /// The name it materializes under.
     pub name: &'static str,
     pub payload: &'static [u8],
-    /// The digest of the bytes `payload` expands to, computed at build time.
     pub digest: &'static [u8; 32],
 }
 

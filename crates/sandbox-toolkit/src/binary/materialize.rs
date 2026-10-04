@@ -8,7 +8,6 @@ use tokio::task::{JoinError, JoinSet};
 
 use super::embed;
 
-/// The directory the tools are released into, under the system cache.
 const SUBDIR: &str = "sandbox-toolkit/bin";
 
 #[derive(Debug, Error)]
@@ -25,9 +24,8 @@ pub enum Error {
     Task(#[from] JoinError),
 }
 
-/// Releases every embedded tool into the system cache and returns the directory
-/// they are in, once all of them are on disk. A tool already holding exactly the
-/// embedded bytes is left as it is, so a restart touches no file.
+/// A tool already holding exactly the embedded bytes is left alone, so a restart
+/// touches no file.
 pub async fn materialize() -> Result<PathBuf, Error> {
     let dir = dir()?;
     tokio::fs::create_dir_all(&dir).await?;
@@ -69,8 +67,6 @@ fn release(dir: &Path, tool: &embed::Tool) -> Result<(), Error> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).map_err(named)
 }
 
-/// The digest of the file at `path`, `None` when there is no readable file
-/// there to compare against the embedded one.
 fn digest(path: &Path) -> Option<[u8; 32]> {
     let mut file = fs::File::open(path).ok()?;
     let mut hasher = blake3::Hasher::new();
