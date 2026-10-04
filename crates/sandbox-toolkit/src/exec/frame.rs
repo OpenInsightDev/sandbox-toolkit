@@ -1,29 +1,51 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use schemars::JsonSchema;
+use serde::Serialize;
+use ts_rs::TS;
 
-use crate::exec::model::ExecStatus;
 use crate::exec::runtime::Event;
 
 /// The media type of an upgraded response, which carries frames rather than
 /// JSON.
 pub const CONTENT_TYPE: &str = "application/vnd.sandbox-toolkit.exec-stream";
 
-/// stdin is reserved on the same numbering; exec never uses it.
-const STDOUT: u8 = 1;
-const STDERR: u8 = 2;
-const ERROR: u8 = 3;
+// The channel numbering exec's frame stream and pty's messages share: 0 stdin,
+// 1 stdout, 2 stderr, 3 error, 4 resize.
+pub const STDIN: u8 = 0;
+pub const STDOUT: u8 = 1;
+pub const STDERR: u8 = 2;
+pub const ERROR: u8 = 3;
+pub const RESIZE: u8 = 4;
+
+/// The most bytes one payload carries; longer output is split, and a payload
+/// beyond it is a protocol error.
+pub const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 
 /// One channel byte and a four-byte big-endian payload length.
 const HEADER_LEN: usize = 5;
 
-/// The most one frame carries; a larger payload is split across frames.
-const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
+/// How a process ended, the JSON the `error` channel carries in both streams.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+#[ts(export)]
+pub enum Status {
+    Exited { exit_code: i32 },
+    Signaled { signal: i32 },
+}
+
+impl Status {
+    /// The payload the `error` channel carries.
+    pub fn payload(&self) -> Bytes {
+        Bytes::from(serde_json::to_vec(self).expect("the terminal status encodes to JSON"))
+    }
+}
 
 /// Encodes an event as the frames that carry it.
 pub fn encode(event: Event) -> Bytes {
     let (channel, payload) = match event {
         Event::Stdout(bytes) => (STDOUT, bytes),
         Event::Stderr(bytes) => (STDERR, bytes),
-        Event::Status(status) => (ERROR, status_bytes(status)),
+        Event::Status(status) => (ERROR, status.payload()),
     };
 
     let mut frames = BytesMut::with_capacity(payload.len() + HEADER_LEN);
@@ -34,8 +56,4 @@ pub fn encode(event: Event) -> Bytes {
     }
 
     frames.freeze()
-}
-
-fn status_bytes(status: ExecStatus) -> Bytes {
-    Bytes::from(serde_json::to_vec(&status).expect("the terminal status encodes to JSON"))
 }

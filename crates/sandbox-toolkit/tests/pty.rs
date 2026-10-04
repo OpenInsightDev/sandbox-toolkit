@@ -141,6 +141,13 @@ fn channel_bytes(frames: &[(u8, Vec<u8>)], channel: u8) -> Vec<u8> {
         .collect()
 }
 
+/// Whether the bytes carried on `channel` contain `needle`.
+fn channel_contains(frames: &[(u8, Vec<u8>)], channel: u8, needle: &[u8]) -> bool {
+    channel_bytes(frames, channel)
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 /// The terminal status JSON, asserting the session ends with exactly one.
 fn terminal_status(frames: &[(u8, Vec<u8>)]) -> Value {
     let statuses = frames.iter().filter(|(id, _)| *id == ERROR).count();
@@ -175,6 +182,9 @@ async fn attach_pty(server: &Server, endpoint: &str) -> (StatusCode, Option<Pty>
         .extension(hyper::ext::Protocol::from_static("websocket"))
         .uri(endpoint)
         .header("host", &authority)
+        // RFC 8441 keeps the RFC 6455 handshake fields that HTTP/1.1 does not
+        // already carry, `Sec-WebSocket-Version` among them.
+        .header("sec-websocket-version", "13")
         .body(Empty::<Bytes>::new())
         .expect("build the attach request");
 
@@ -286,13 +296,19 @@ mod pty {
         let server = Server::start(home.path()).await;
         let mut socket = attach_session(&server).await;
 
+        // The session runs an interactive shell, whose output carries the echo
+        // of this line; a value the shell computes is the part that shows it
+        // ran.
         socket
-            .send(stdin_message("printf hi\nexit\n"))
+            .send(stdin_message("echo $((40 + 2))\nexit\n"))
             .await
             .expect("send stdin");
         let frames = drain(&mut socket).await;
 
-        assert_eq!(channel_bytes(&frames, STDOUT), b"hi");
+        assert!(
+            channel_contains(&frames, STDOUT, b"42"),
+            "the shell's output arrives on channel 1"
+        );
         assert_eq!(terminal_status(&frames)["status"], "exited");
     }
 
@@ -339,15 +355,19 @@ mod pty {
         let server = Server::start(home.path()).await;
         let mut socket = attach_session(&server).await;
 
+        // 40 rows and 120 columns, which the session then reports.
         let resize = Message::Binary(vec![RESIZE, 0, 40, 0, 120].into());
         socket.send(resize).await.expect("send resize");
         socket
-            .send(stdin_message("printf hi\nexit\n"))
+            .send(stdin_message("stty size\nexit\n"))
             .await
             .expect("send stdin");
         let frames = drain(&mut socket).await;
 
-        assert_eq!(channel_bytes(&frames, STDOUT), b"hi");
+        assert!(
+            channel_contains(&frames, STDOUT, b"40 120"),
+            "the session resized to the requested size"
+        );
     }
 
     #[tokio::test]
@@ -363,10 +383,19 @@ mod pty {
         let mut socket = socket.expect("attached socket");
 
         socket.send(Message::Close(None)).await.expect("send close");
-        let closed = tokio::time::timeout(Duration::from_secs(10), socket.next())
-            .await
-            .expect("the session closes");
-        assert!(matches!(closed, Some(Ok(Message::Close(_))) | None));
+
+        // Output the shell already produced may still arrive before the close.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let closed = tokio::time::timeout_at(deadline, socket.next())
+                .await
+                .expect("the session closes");
+            match closed {
+                Some(Ok(Message::Binary(_))) => {}
+                Some(Ok(Message::Close(_))) | None => break,
+                other => panic!("unexpected message after close: {other:?}"),
+            }
+        }
 
         let (reclaimed, _) = attach_pty(&server, &endpoint).await;
         assert_eq!(reclaimed, StatusCode::NOT_FOUND);

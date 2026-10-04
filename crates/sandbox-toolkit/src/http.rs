@@ -12,6 +12,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::exec;
 use crate::mcp;
+use crate::pty;
 use crate::workspace::{GLOBAL_WORKSPACE_ID, Registry, Workspace};
 
 #[derive(Clone)]
@@ -20,6 +21,7 @@ pub struct AppState {
     /// Where the embedded tools were materialized, the directory `exec` puts on
     /// the `PATH` of the commands it deploys.
     pub bin: PathBuf,
+    pub pty: pty::Sessions,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         Self {
             registry: Arc::new(registry),
             bin,
+            pty: pty::Sessions::new(),
         }
     }
 }
@@ -86,9 +89,11 @@ impl FromRequestParts<AppState> for mcp::http::ExtractRuntime {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/exec", exec::http::routes())
+        .nest("/pty", pty::http::routes())
         .nest("/mcps", mcp::http::routes())
-        .nest("/workspaces/{workspace_id}/mcps", mcp::http::routes())
         .nest("/workspaces/{workspace_id}/exec", exec::http::routes())
+        .nest("/workspaces/{workspace_id}/pty", pty::http::routes())
+        .nest("/workspaces/{workspace_id}/mcps", mcp::http::routes())
         .nest("/workspaces", crate::workspace::http::routes())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -7,6 +7,7 @@ mod exec;
 mod http;
 mod mcp;
 mod path;
+mod pty;
 mod skill;
 mod workspace;
 
