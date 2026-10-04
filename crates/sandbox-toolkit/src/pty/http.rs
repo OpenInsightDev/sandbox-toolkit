@@ -10,8 +10,7 @@ use axum::http::StatusCode;
 use axum::http::Uri;
 use axum::response::IntoResponse;
 use axum::response::Response;
-use axum::routing::MethodFilter;
-use axum::routing::on;
+use axum::routing::connect;
 use axum::routing::post;
 use serde::Deserialize;
 
@@ -34,7 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/", post(create))
         // Attaching is an HTTP/2 extended CONNECT (RFC 8441), so only that
         // method routes here; the upgrade extractor runs its handshake.
-        .route("/{session_id}", on(MethodFilter::CONNECT, attach))
+        .route("/{session_id}", connect(attach))
 }
 
 async fn create(
