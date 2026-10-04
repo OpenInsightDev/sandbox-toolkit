@@ -12,3 +12,15 @@ fn_params_excessive_bools = "warn"
 [workspace.dependencies]
 tokio = { version = "1.53.1", features = ["full"] }
 thiserror = "2.0.21"
+
+# The build script inflates the upstream archives, hashes their payloads and
+# compresses them for embedding; at the dev profile's `opt-level = 0` the crates doing
+# that work run several times slower, which dominated every build.
+[profile.dev.package.zstd-sys]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
