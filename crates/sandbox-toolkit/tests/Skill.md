@@ -2,19 +2,22 @@
 
 ## 概览
 
-从 `.agents/skills` 发现 [Agent Skills](https://agentskills.io/specification)，格式严格遵循该规范：skill 目录的 `SKILL.md` 携带 frontmatter 与正文，正文按需读取，附带的文件经派生工作区读取。
+从 `.agents/skills` 与所在工作区持有的 plugin 的 `skills/` 发现 [Agent Skills](https://agentskills.io/specification)，格式严格遵循该规范：skill 目录的 `SKILL.md` 携带 frontmatter 与正文，正文按需读取，附带的文件经派生工作区读取。
 
-Skill 是 Workspace 持有的资源之一，其门控与合并沿用 [Workspace 设计](./Workspace.md) 与 [MCP 设计](./MCP.md) 的规则。
+Skill 是 Workspace 持有的资源之一，其门控与合并沿用 [Workspace 设计](./Workspace.md) 与 [MCP 设计](./MCP.md) 的规则；plugin 一侧的构成见 [Plugin 设计](./Plugin.md)。
 
 ## 加载
 
 在 `<root>/.agents/skills` 的直接子目录中，`SKILL.md` 通过规范校验的即为一个 skill。规范要求 frontmatter 的 `name` 与目录名一致，因此目录名即 skill id。更深的 `SKILL.md` 不计入。未通过校验的子目录被跳过，不影响其他 skill。
+
+plugin 的 `skills/` 下每个直接子目录同样是一个 skill，id 为 `{plugin_id}.{skill_id}`，其余规则相同；plugin 一侧的加载失败由资源集合整体承担。
 
 每次请求重新发现，目录的变化立即反映在应答中。
 
 ### 测试
 
 - `load::discovers`：`.agents/skills` 下每个合法子目录都出现在 `GET /skills` 中，id 为目录名。
+- `load::plugin`：plugin 的 `skills/` 下每个合法子目录也出现在 `GET /skills` 中，id 为 `{plugin_id}.{skill_id}`。
 - `load::skips`：缺 `SKILL.md`、frontmatter 不合法、`name` 与目录名不一致的子目录，以及嵌套目录下的 `SKILL.md`，都不出现。
 - `load::rescans`：新增或删除 skill 目录后，下一次 `GET /skills` 反映新的集合。
 
@@ -22,12 +25,15 @@ Skill 是 Workspace 持有的资源之一，其门控与合并沿用 [Workspace 
 
 工作区对外呈现的 skill 集合是 global 与工作区自身的并集，按 id 合并，同名时工作区条目胜出；`/skills`（无前缀）解析到 global。
 
+plugin 提供的 skill id 带 `{plugin_id}.` 前缀，而工作区自身的 skill id 取目录名、不含 `.`，两者不会同名；前缀相同的两份只在工作区与 global 持有同名 plugin 时出现，此时工作区条目胜出。
+
 工作区自身资源缺失不影响合并结果，仅当 global 与工作区都无资源时，工作区挂载回答 `404`；资源门控与资源集合的构成见 [Workspace 设计](./Workspace.md)。
 
 ### 测试
 
 - `merge::includes_global`：global 与工作区各自的 skill 都出现在 `/workspaces/{id}/skills` 文档中。
 - `merge::workspace_wins`：同名 id 经 `/workspaces/{id}/skills/{skill_id}` 读到的正文来自工作区自身。
+- `merge::plugin_prefix`：plugin 提供的 skill 以 `{plugin_id}.` 为前缀出现。
 - `merge::absent_workspace`：工作区自身无 `.agents` 而 global 有 skill 时，`/workspaces/{id}/skills` 返回 global 的条目而非 `404`。
 
 ## 列表
@@ -53,7 +59,7 @@ Skill 是 Workspace 持有的资源之一，其门控与合并沿用 [Workspace 
 
 | 字段 | 来源 |
 | --- | --- |
-| `id` | skill 目录名 |
+| `id` | skill 目录名；plugin 提供的 skill 为 `{plugin_id}.{skill_id}` |
 | `root` | skill 目录的规范绝对路径 |
 | `name`、`description` | frontmatter 的必填字段 |
 | `license`、`compatibility`、`metadata` | frontmatter 写了的才出现 |
@@ -115,6 +121,8 @@ Skill 是 Workspace 持有的资源之一，其门控与合并沿用 [Workspace 
 - 出现在 `GET /workspaces/{workspace_id}`，不出现在 `GET /workspaces`；
 - `PATCH` 与 `DELETE` 回答 `403`。
 
+plugin 提供的 skill 其 id 含 `.`，因此这些 id 不按分隔符切分，而是按已知 `scope` 与当前发现结果查表解析。
+
 ### 测试
 
 - `workspace::resolves`：`GET /workspaces/skill.{scope}.{id}` 返回以该 skill 目录为 `root` 的工作区。
@@ -123,3 +131,4 @@ Skill 是 Workspace 持有的资源之一，其门控与合并沿用 [Workspace 
 - `workspace::not_listed`：`GET /workspaces` 不含派生工作区。
 - `workspace::unknown`：未被发现的 `skill.{scope}.{id}` 与未注册的 `scope` 都回答 `404`。
 - `workspace::mutate_denied`：对派生工作区的 `PATCH` 与 `DELETE` 回答 `403`。
+- `workspace::plugin_skill`：plugin 提供的 skill 其 id 含 `.`，派生工作区 id 仍解析到该 skill 目录。

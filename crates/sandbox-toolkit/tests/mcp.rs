@@ -17,7 +17,7 @@ use rmcp::transport::{
 };
 use serde_json::{Value, json};
 
-use harness::{Dir, SCHEMA, Server, write_mcp_json};
+use harness::{Dir, SCHEMA, Server, manifest, write_mcp_json, write_plugin, write_plugin_mcp};
 
 fn ids(document: &Value) -> BTreeSet<String> {
     document["mcpServers"]
@@ -91,6 +91,23 @@ mod load {
         assert_eq!(
             ids(&server.get_json("/mcps").await),
             BTreeSet::from(["deployment-api".to_owned(), "validator".to_owned()])
+        );
+    }
+
+    /// A plugin the scope discovers contributes its `mcp.json` entries.
+    #[tokio::test]
+    async fn plugin() {
+        let home = Dir::new("load-plugin");
+        let plugin = write_plugin(home.path(), "deploy-kit", manifest("deploy-kit"));
+        write_plugin_mcp(
+            &plugin,
+            json!({ "validator": { "type": "stdio", "command": "./bin/validator" } }),
+        );
+        let server = Server::start(&home).await;
+
+        assert_eq!(
+            ids(&server.get_json("/mcps").await),
+            BTreeSet::from(["deploy-kit.validator".to_owned()])
         );
     }
 
@@ -211,30 +228,32 @@ mod proxy {
         let _ = client.cancel().await;
     }
 
+    /// `.agents/mcp.json` is not a plugin, so its stdio entries are launched
+    /// without the reserved plugin variables.
     #[tokio::test]
     async fn stdio() {
         let home = Dir::new("proxy-stdio");
+        let probe = home.path().join("probe");
         write_mcp_json(
             home.path(),
             json!({
                 "env-probe": {
                     "type": "stdio",
                     "command": "sh",
-                    "args": ["-c", "env > $PLUGIN_DATA/probe"],
+                    "args": ["-c", format!("env > {}", probe.display())],
                 }
             }),
         );
         let server = Server::start(&home).await;
 
         // The child is not an MCP server, so the handshake fails; that the child
-        // ran at all is what proves it was launched with the reserved variables.
+        // ran at all is what proves how it was launched.
         let _ = ()
             .serve(StreamableHttpClientTransport::from_uri(
                 server.url("/mcps/env-probe"),
             ))
             .await;
 
-        let probe = home.path().join(".agents/.data/env-probe/probe");
         let deadline = Instant::now() + Duration::from_secs(10);
         let env = loop {
             if let Ok(contents) = std::fs::read_to_string(&probe) {
@@ -244,8 +263,8 @@ mod proxy {
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
 
-        assert!(env.contains("PLUGIN_ROOT="), "{env}");
-        assert!(env.contains("PLUGIN_DATA="), "{env}");
+        assert!(!env.contains("PLUGIN_ROOT="), "{env}");
+        assert!(!env.contains("PLUGIN_DATA="), "{env}");
     }
 }
 
@@ -355,6 +374,56 @@ mod merge {
         let client = ()
             .serve(StreamableHttpClientTransport::from_uri(
                 server.url("/workspaces/ws/mcps/echo"),
+            ))
+            .await
+            .expect("initialize the proxy");
+
+        let tools = client
+            .peer()
+            .list_tools(None)
+            .await
+            .expect("list tools through the proxy");
+        let names: BTreeSet<String> = tools
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        assert_eq!(names, BTreeSet::from(["workspace-tool".to_owned()]));
+
+        let _ = client.cancel().await;
+    }
+
+    /// A plugin's entry id carries the plugin id as a prefix, so the only way
+    /// two entries collide is a same-named plugin in both scopes.
+    #[tokio::test]
+    async fn plugin_prefix() {
+        let global = start_upstream(&["global-tool"]).await;
+        let local = start_upstream(&["workspace-tool"]).await;
+
+        let home = Dir::new("merge-plugin-prefix");
+        let plugin = write_plugin(home.path(), "global", manifest("deploy-kit"));
+        write_plugin_mcp(
+            &plugin,
+            json!({ "echo": { "type": "streamable-http", "url": global } }),
+        );
+        let root = workspace_root(&home);
+        let plugin = write_plugin(&root, "local", manifest("deploy-kit"));
+        write_plugin_mcp(
+            &plugin,
+            json!({ "echo": { "type": "streamable-http", "url": local } }),
+        );
+
+        let server = Server::start(&home).await;
+        server.register("ws", &root).await;
+
+        assert_eq!(
+            ids(&server.get_json("/workspaces/ws/mcps").await),
+            BTreeSet::from(["deploy-kit.echo".to_owned()])
+        );
+
+        let client = ()
+            .serve(StreamableHttpClientTransport::from_uri(
+                server.url("/workspaces/ws/mcps/deploy-kit.echo"),
             ))
             .await
             .expect("initialize the proxy");

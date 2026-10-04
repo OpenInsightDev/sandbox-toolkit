@@ -22,6 +22,9 @@ pub const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
 
 pub const SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
+/// The canonical `$schema` of an Agent Plugins 1.0.0 `plugin.json`.
+pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
+
 /// The first port a test process hands out. The block sits below the range the
 /// kernel gives to connections, so a server never meets one of them.
 const FIRST_PORT: u16 = 20_000;
@@ -283,6 +286,48 @@ pub fn write_mcp_json(root: &Path, servers: Value) {
     std::fs::create_dir_all(&agents).expect("create .agents");
     let document = json!({ "$schema": SCHEMA, "mcpServers": servers });
     std::fs::write(agents.join("mcp.json"), document.to_string()).expect("write mcp.json");
+}
+
+/// A minimal valid manifest for the plugin `name`.
+pub fn manifest(name: &str) -> Value {
+    json!({ "$schema": PLUGIN_SCHEMA, "name": name })
+}
+
+/// The directory a scope discovers its plugins in.
+pub fn plugins_dir(root: &Path) -> PathBuf {
+    root.join(".agents/plugins")
+}
+
+/// Writes `manifest` as a plugin's `plugin.json`, and returns the plugin
+/// directory.
+pub fn write_plugin(root: &Path, dir: &str, manifest: Value) -> PathBuf {
+    let plugin = plugins_dir(root).join(dir);
+    std::fs::create_dir_all(&plugin).expect("create the plugin directory");
+    std::fs::write(plugin.join("plugin.json"), manifest.to_string()).expect("write plugin.json");
+    plugin
+}
+
+/// Writes a plugin's `mcp.json`.
+pub fn write_plugin_mcp(plugin: &Path, servers: Value) {
+    let document = json!({ "$schema": SCHEMA, "mcpServers": servers });
+    std::fs::write(plugin.join("mcp.json"), document.to_string()).expect("write mcp.json");
+}
+
+/// Writes a skill under a plugin's `skills/`, and returns its directory.
+pub fn write_plugin_skill(plugin: &Path, id: &str, frontmatter: &str, body: &str) -> PathBuf {
+    let dir = plugin.join("skills").join(id);
+    std::fs::create_dir_all(&dir).expect("create the skill directory");
+    let document = format!("---\n{frontmatter}\n---\n\n{body}");
+    std::fs::write(dir.join("SKILL.md"), document).expect("write SKILL.md");
+    dir
+}
+
+/// The canonical form of `path`, as the server reports a `root`.
+pub fn canonical(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .expect("canonicalize a path")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(not(target_os = "linux"))]

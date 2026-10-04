@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use harness::{Dir, Server, write_mcp_json};
+use harness::{Dir, Server, manifest, write_mcp_json, write_plugin};
 
 const SKILL: &str = "---\nname: deploy\ndescription: Deploy.\n---\n\nShip it.\n";
 
@@ -323,6 +323,14 @@ mod resources {
             server.get("/skills/missing").await.status(),
             reqwest::StatusCode::NOT_FOUND
         );
+        assert_eq!(
+            server.get("/plugins").await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            server.get("/plugins/missing").await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
@@ -376,4 +384,23 @@ mod resources {
         );
     }
 
+    /// A plugin the loader rejects is not a partial loss: the whole resource set
+    /// is absent, so every resource mount answers `404`.
+    #[tokio::test]
+    async fn broken_plugin() {
+        let home = Dir::new("agents-broken-plugin");
+        write_skill(home.path());
+        write_mcp_json(home.path(), json!({}));
+        write_plugin(home.path(), "broken", manifest("Deploy Kit"));
+
+        let server = Server::start(&home).await;
+
+        for path in ["/plugins", "/mcps", "/skills"] {
+            assert_eq!(
+                server.get(path).await.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+    }
 }

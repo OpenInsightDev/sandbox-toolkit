@@ -95,15 +95,18 @@ Workspace 以 `id` 标识，绑定一个规范化的绝对目录 `root`，并带
 
 ## 资源
 
-Workspace 监听 `root/.agents` 目录的存在性，并据此决定是否持有资源集合（见 [MCP 设计](./MCP.md)、[Skill 设计](./Skill.md)）。
+Workspace 监听 `root/.agents` 目录的存在性，并据此决定是否持有资源集合（见 [MCP 设计](./MCP.md)、[Skill 设计](./Skill.md)、[Plugin 设计](./Plugin.md)）。
 
-`root/.agents` 存在时构造资源集合，不存在时为 `None`；构造是整体的，任一类资源构造失败（如 `.agents` 存在而 `mcp.json` 损坏）即整体视为 `None`；`mcp.json` 缺失不算构造失败，该资源类只是没有条目；运行期 `.agents` 出现或消失时同样构造或丢弃。
+`root/.agents` 存在时构造资源集合，不存在时为 `None`；构造是整体的，任一类资源构造失败（如 `.agents` 存在而 `mcp.json` 损坏，或某个 plugin 的 `plugin.json` 被拒）即整体视为 `None`；`mcp.json` 缺失不算构造失败，该资源类只是没有条目；运行期 `.agents` 出现或消失时同样构造或丢弃。
 
-资源缺失时，global 的挂载回答 `404`：`GET /mcps`、`/mcps/{id}`、`GET /skills` 与 `/skills/{skill_id}` 均如此。工作区挂载的 `404` 判定另见 [MCP 设计](./MCP.md) 与 [Skill 设计](./Skill.md) 的合并规则。
+构造时先加载 Plugin，再把它交给 MCP 与 Skill，见 [Plugin 设计](./Plugin.md)。
+
+资源缺失时，global 的挂载回答 `404`：`GET /mcps`、`/mcps/{id}`、`GET /skills`、`/skills/{skill_id}`、`GET /plugins` 与 `/plugins/{plugin_id}` 均如此。工作区挂载的 `404` 判定另见 [MCP 设计](./MCP.md) 与 [Skill 设计](./Skill.md) 的合并规则。
 
 ### 测试
 
-- `resources::absent`：无 `.agents` 时注册与启动成功，`GET /mcps`、`/mcps/{id}`、`GET /skills` 与 `/skills/{skill_id}` 返回 `404`。
+- `resources::absent`：无 `.agents` 时注册与启动成功，`GET /mcps`、`/mcps/{id}`、`GET /skills`、`/skills/{skill_id}`、`GET /plugins` 与 `/plugins/{plugin_id}` 返回 `404`。
 - `resources::present`：有 `.agents` 时资源集合被构造，`GET /mcps` 返回 `200`；无 `mcp.json` 时同样构造，`GET /mcps` 与 `GET /skills` 都返回 `200`。
 - `resources::toggles`：运行期创建 `.agents` 后 `GET /mcps` 变为 `200`，删除后回到 `404`。
 - `resources::broken`：`.agents` 存在但 `mcp.json` 损坏时，资源集合整体视为缺失，`GET /mcps` 与 `GET /skills` 返回 `404`。
+- `resources::broken_plugin`：`.agents` 存在但某个 plugin 的 `plugin.json` 被拒时，资源集合整体视为缺失，`GET /plugins`、`GET /mcps` 与 `GET /skills` 都返回 `404`。

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use harness::{Dir, Server};
+use harness::{Dir, Server, manifest, write_plugin, write_plugin_skill};
 
 fn skills_dir(root: &Path) -> PathBuf {
     root.join(".agents/skills")
@@ -70,6 +70,22 @@ mod load {
         let server = Server::start(&home).await;
 
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy", "other"]);
+    }
+
+    #[tokio::test]
+    async fn plugin() {
+        let home = Dir::new("load-plugin");
+        let plugin = write_plugin(home.path(), "deploy-kit", manifest("deploy-kit"));
+        write_plugin_skill(
+            &plugin,
+            "deploy",
+            "name: deploy\ndescription: Shipped by a plugin.",
+            "Plugin body.\n",
+        );
+
+        let server = Server::start(&home).await;
+
+        assert_eq!(ids(&server.get_json("/skills").await), ["deploy-kit.deploy"]);
     }
 
     #[tokio::test]
@@ -190,6 +206,43 @@ mod merge {
         assert_eq!(
             entry(&document, "deploy")["description"],
             "Workspace deploy."
+        );
+    }
+
+    /// A plugin's skill carries the plugin id as a prefix, so the only way two
+    /// entries collide is a same-named plugin in both scopes.
+    #[tokio::test]
+    async fn plugin_prefix() {
+        let home = Dir::new("merge-plugin-home");
+        let root = Dir::new("merge-plugin-root");
+        let global = write_plugin(home.path(), "global", manifest("deploy-kit"));
+        write_plugin_skill(
+            &global,
+            "deploy",
+            "name: deploy\ndescription: Shipped by the global plugin.",
+            "Global plugin body.\n",
+        );
+        let local = write_plugin(root.path(), "local", manifest("deploy-kit"));
+        write_plugin_skill(
+            &local,
+            "deploy",
+            "name: deploy\ndescription: Shipped by the workspace plugin.",
+            "Workspace plugin body.\n",
+        );
+
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
+
+        assert_eq!(
+            ids(&server.get_json("/workspaces/docs/skills").await),
+            ["deploy-kit.deploy"]
+        );
+
+        let response = server.get("/workspaces/docs/skills/deploy-kit.deploy").await;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.text().await.expect("read body"),
+            "Workspace plugin body.\n"
         );
     }
 
@@ -571,6 +624,31 @@ mod workspace {
                 .await
                 .status(),
             reqwest::StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_skill() {
+        let home = Dir::new("workspace-plugin-home");
+        let plugin = write_plugin(home.path(), "deploy-kit", manifest("deploy-kit"));
+        let deploy = write_plugin_skill(
+            &plugin,
+            "deploy",
+            "name: deploy\ndescription: Shipped by a plugin.",
+            "Plugin body.\n",
+        );
+
+        let server = Server::start(&home).await;
+
+        assert_eq!(
+            server
+                .get_json("/workspaces/skill.global.deploy-kit.deploy")
+                .await,
+            json!({
+                "id": "skill.global.deploy-kit.deploy",
+                "root": deploy,
+                "access": "read-write",
+            })
         );
     }
 
