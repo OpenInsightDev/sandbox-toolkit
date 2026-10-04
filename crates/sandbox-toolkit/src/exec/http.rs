@@ -32,7 +32,7 @@ async fn exec(
         Err(error) => return error.into_response(),
     };
     let cwd = request.cwd.clone().unwrap_or_else(|| metadata.root.clone());
-    let env = request.environment(&metadata, &state.bin);
+    let env = metadata.child_env(&state.bin, &request.env);
 
     let mut execution = match Execution::spawn(&program, &args, &cwd, &env) {
         Ok(execution) => execution,

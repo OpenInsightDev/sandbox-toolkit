@@ -19,6 +19,7 @@ bytes = { version = "1.12.1", features = ["serde"] }
 chrono = "0.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dirs = "7"
+futures-util = "0.3"
 globset = "0.4.20"
 httpdate = "1.0.3"
 libc = "0.2"
@@ -59,7 +60,6 @@ sandbox-toolkit-utils = { path = "../utils" }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # The pty end-to-end tests dial WebSockets over HTTP/2 extended CONNECT; all of
 # these are already in the tree through `axum`.
-futures-util = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

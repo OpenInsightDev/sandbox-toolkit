@@ -1,15 +1,13 @@
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
-use crate::binary::path;
-use crate::workspace::Metadata;
+use crate::exec::frame::Status;
 
 /// The payload kind a request carries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema, TS)]
@@ -58,31 +56,6 @@ impl ExecRequest {
             }
         }
     }
-
-    /// The whole environment the child starts with: the service's own, with the
-    /// materialized tools on `PATH`, the workspace variable injected into it,
-    /// and the request's entries overriding both.
-    pub fn environment(&self, workspace: &Metadata, bin: &Path) -> Vec<(OsString, OsString)> {
-        let mut env: HashMap<OsString, OsString> = std::env::vars_os().collect();
-        env.insert("PATH".into(), path::for_subprocess(bin));
-        let (name, root) = workspace.env();
-        env.insert(name.into(), root);
-        env.extend(
-            self.env
-                .iter()
-                .map(|(name, value)| (name.into(), value.into())),
-        );
-        env.into_iter().collect()
-    }
-}
-
-/// How a command ended: it exited with a code, or a signal terminated it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
-#[serde(tag = "status", rename_all = "snake_case")]
-#[ts(export)]
-pub enum ExecStatus {
-    Exited { exit_code: i32 },
-    Signaled { signal: i32 },
 }
 
 /// The direct answer to a command that finished within `wait`: its terminal
@@ -104,14 +77,14 @@ pub enum ExecResult {
 }
 
 impl ExecResult {
-    pub fn new(status: ExecStatus, stdout: String, stderr: String) -> Self {
+    pub fn new(status: Status, stdout: String, stderr: String) -> Self {
         match status {
-            ExecStatus::Exited { exit_code } => Self::Exited {
+            Status::Exited { exit_code } => Self::Exited {
                 exit_code,
                 stdout,
                 stderr,
             },
-            ExecStatus::Signaled { signal } => Self::Signaled {
+            Status::Signaled { signal } => Self::Signaled {
                 signal,
                 stdout,
                 stderr,

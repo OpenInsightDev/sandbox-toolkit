@@ -36,7 +36,8 @@ pub(crate) fn unsupported_signal(signal: ProcessSignal) -> io::Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessExit {
     pub exit_code: i32,
-    pub signal: Option<String>,
+    /// The number of the signal that terminated the process.
+    pub signal: Option<i32>,
 }
 
 impl ProcessExit {
@@ -47,10 +48,10 @@ impl ProcessExit {
         }
     }
 
-    pub fn signaled(exit_code: i32, signal: impl Into<String>) -> Self {
+    pub fn signaled(exit_code: i32, signal: i32) -> Self {
         Self {
             exit_code,
-            signal: Some(signal.into()),
+            signal: Some(signal),
         }
     }
 }
@@ -59,21 +60,10 @@ pub(crate) fn process_exit_from_status(status: ExitStatus) -> ProcessExit {
     use std::os::unix::process::ExitStatusExt;
 
     if let Some(signal) = status.signal() {
-        return ProcessExit::signaled(128 + signal, signal_name(signal));
+        return ProcessExit::signaled(128 + signal, signal);
     }
 
     ProcessExit::exited(status.code().unwrap_or(-1))
-}
-
-fn signal_name(signal: i32) -> String {
-    let name = unsafe { libc::strsignal(signal) };
-    if name.is_null() {
-        return format!("signal {signal}");
-    }
-
-    unsafe { std::ffi::CStr::from_ptr(name) }
-        .to_string_lossy()
-        .into_owned()
 }
 
 pub(crate) trait ChildTerminator: Send + Sync {
@@ -190,7 +180,7 @@ impl ProcessHandle {
     }
 
     /// Returns the terminating signal if the child was signalled.
-    pub fn exit_signal(&self) -> Option<String> {
+    pub fn exit_signal(&self) -> Option<i32> {
         self.exit_status().and_then(|status| status.signal)
     }
 

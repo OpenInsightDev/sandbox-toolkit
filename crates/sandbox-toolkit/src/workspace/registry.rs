@@ -4,6 +4,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
+use crate::binary::path;
 use crate::mcp;
 use crate::path::AGENTS_DIR;
 use crate::workspace::model::CreateWorkspaceRequest;
@@ -81,6 +82,27 @@ impl Metadata {
         }));
 
         (name, self.root.clone().into_os_string())
+    }
+
+    /// The whole environment a child of this workspace starts with: the
+    /// service's own, with the materialized tools on `PATH`, the workspace
+    /// variable injected into it, and `overrides` replacing both.
+    pub fn child_env(
+        &self,
+        bin: &Path,
+        overrides: &HashMap<String, String>,
+    ) -> Vec<(OsString, OsString)> {
+        let mut env: HashMap<OsString, OsString> = std::env::vars_os().collect();
+        env.insert("PATH".into(), path::for_subprocess(bin));
+        let (name, root) = self.env();
+        env.insert(name.into(), root);
+        env.extend(
+            overrides
+                .iter()
+                .map(|(name, value)| (name.into(), value.into())),
+        );
+
+        env.into_iter().collect()
     }
 }
 

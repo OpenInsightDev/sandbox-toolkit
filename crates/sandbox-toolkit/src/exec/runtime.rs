@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::exec::model::ExecStatus;
+use crate::exec::frame::Status;
 
 /// Output is read in chunks bounded by this size, so a read is always small
 /// enough for one frame.
@@ -25,7 +25,7 @@ const BUFFER: usize = 16;
 pub enum Event {
     Stdout(Bytes),
     Stderr(Bytes),
-    Status(ExecStatus),
+    Status(Status),
 }
 
 /// A running command whose output arrives as [`Event`]s.
@@ -112,14 +112,14 @@ where
 }
 
 /// An unwaitable child has no status to report, so it exits as `-1`.
-fn status(waited: io::Result<ExitStatus>) -> ExecStatus {
+fn status(waited: io::Result<ExitStatus>) -> Status {
     let Ok(waited) = waited else {
-        return ExecStatus::Exited { exit_code: -1 };
+        return Status::Exited { exit_code: -1 };
     };
 
     match waited.signal() {
-        Some(signal) => ExecStatus::Signaled { signal },
-        None => ExecStatus::Exited {
+        Some(signal) => Status::Signaled { signal },
+        None => Status::Exited {
             exit_code: waited.code().unwrap_or(-1),
         },
     }

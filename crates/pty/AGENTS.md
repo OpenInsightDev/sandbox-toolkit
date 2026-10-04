@@ -33,6 +33,10 @@ The vendored PTY backend flattened portable-pty's `ExitStatus` to
 child was indistinguishable from `exit 1`. `ProcessExit { exit_code, signal }`
 now carries both, is threaded through the PTY, pipe and driver backends and their
 exit channels, and is exposed via `ProcessHandle::exit_status` / `exit_signal`.
+`signal` is the signal number, which is what a caller reports, rather than a
+name. The PTY backend takes the status from the standard library `ExitStatus`,
+because portable-pty flattens the number into a name and pins a signalled
+child's exit code to `1`, so the two backends now agree on both fields.
 
 ### PTY children receive Linux `PR_SET_PDEATHSIG`
 

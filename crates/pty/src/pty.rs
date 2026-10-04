@@ -21,6 +21,7 @@ use crate::process::ProcessHandle;
 use crate::process::ProcessSignal;
 use crate::process::SpawnedProcess;
 use crate::process::TerminalSize;
+use crate::process::process_exit_from_status;
 
 struct PtyChildTerminator {
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
@@ -161,11 +162,11 @@ pub async fn spawn_process(
     let exit = Arc::new(StdMutex::new(None));
     let wait_exit = Arc::clone(&exit);
     let wait_handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
-        let status = match portable_pty::Child::wait(&mut child) {
-            Ok(status) => match status.signal() {
-                Some(signal) => ProcessExit::signaled(status.exit_code() as i32, signal),
-                None => ProcessExit::exited(status.exit_code() as i32),
-            },
+        // portable-pty reports a signal as a name and pins a signalled child's
+        // exit code to 1, so the status comes from the child directly, as it
+        // does for the pipe backend.
+        let status = match child.wait() {
+            Ok(status) => process_exit_from_status(status),
             Err(_) => ProcessExit::exited(-1),
         };
         wait_exit_status.store(true, std::sync::atomic::Ordering::SeqCst);
