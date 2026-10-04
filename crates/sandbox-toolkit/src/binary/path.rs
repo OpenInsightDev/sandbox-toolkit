@@ -1,5 +1,16 @@
 use std::ffi::OsString;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// The toolkit's cache directory: the materialized tools and the sidecar state
+/// live under it.
+pub fn cache() -> io::Result<PathBuf> {
+    dirs::cache_dir()
+        .map(|cache| cache.join(CACHE))
+        .ok_or_else(|| io::Error::other("the system cache directory is unavailable"))
+}
+
+const CACHE: &str = "sandbox-toolkit";
 
 /// Joined by hand because `join_paths` rejects a directory holding the separator
 /// instead of returning a `PATH`.

@@ -12,6 +12,7 @@ const FD: (&str, &str) = ("10.5.0", "fd");
 const RG: (&str, &str) = ("15.2.0", "rg");
 const UV: (&str, &str) = ("0.12.16", "uv");
 const DENO: (&str, &str) = ("2.9.7", "deno");
+const TUSD: (&str, &str) = ("2.10.1", "tusd");
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() {
@@ -91,7 +92,33 @@ fn sources(target: &str) -> Vec<Source> {
             format!("deno-{target}.zip"),
             &[DENO.1],
         ),
+        Source::archive(
+            format!("https://github.com/tus/tusd/releases/download/v{}", TUSD.0),
+            tusd_asset(target),
+            &[TUSD.1],
+        ),
     ]
+}
+
+/// tusd is a Go program, so its release assets are named by `GOOS`/`GOARCH`
+/// rather than by the target triple the other tools identify themselves with.
+///
+/// The asset is the one for the target the build script runs for, so a host
+/// tusd is not released for fails here instead of fetching the wrong binary.
+fn tusd_asset(target: &str) -> String {
+    let os = match target {
+        target if target.contains("linux") => "linux",
+        target if target.contains("apple-darwin") => "darwin",
+        target => panic!("tusd is not released for {target}"),
+    };
+    let arch = match target {
+        target if target.starts_with("x86_64") => "amd64",
+        target if target.starts_with("aarch64") => "arm64",
+        target => panic!("tusd is not released for {target}"),
+    };
+    let extension = if os == "linux" { "tar.gz" } else { "zip" };
+
+    format!("tusd_{os}_{arch}.{extension}")
 }
 
 fn download_all(sources: &[Source], cache: &Path) {

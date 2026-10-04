@@ -31,7 +31,7 @@
 
 启动时把嵌入的 `tusd` 物化后拉起，以 `-unix-sock $CACHE/sandbox-toolkit/tus.sock -base-path /tus -behind-proxy -upload-dir $CACHE/sandbox-toolkit/tus` 启动，不监听 TCP；服务在它开始接受请求后才对外服务。
 
-服务收到 `SIGTERM` 或 `SIGINT` 时先停对外服务，再让 tusd 退出并等它结束。上游连不上时回答 `502`。
+服务收到 `SIGTERM` 或 `SIGINT` 时先停对外服务，再让 tusd 退出并等它结束：给它 10 秒自行退出，超时则强杀，服务随即退出。上游连不上时回答 `502`。
 
 ### 测试
 

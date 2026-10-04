@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::task::{JoinError, JoinSet};
 
-use super::embed;
+use super::{embed, path};
 
-const SUBDIR: &str = "sandbox-toolkit/bin";
+const BIN: &str = "bin";
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -27,7 +27,7 @@ pub enum Error {
 /// A tool already holding exactly the embedded bytes is left alone, so a restart
 /// touches no file.
 pub async fn materialize() -> Result<PathBuf, Error> {
-    let dir = dir()?;
+    let dir = path::cache()?.join(BIN);
     tokio::fs::create_dir_all(&dir).await?;
 
     let mut tasks = JoinSet::new();
@@ -44,12 +44,6 @@ pub async fn materialize() -> Result<PathBuf, Error> {
     }
 
     Ok(dir)
-}
-
-fn dir() -> io::Result<PathBuf> {
-    dirs::cache_dir()
-        .map(|cache| cache.join(SUBDIR))
-        .ok_or_else(|| io::Error::other("the system cache directory is unavailable"))
 }
 
 fn release(dir: &Path, tool: &embed::Tool) -> Result<(), Error> {

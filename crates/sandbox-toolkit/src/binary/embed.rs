@@ -12,9 +12,9 @@ impl Tool {
     }
 }
 
-/// `uv`'s release ships `uvx` beside it, so four upstream tools cover five
-/// executables.
-pub static TOOLS: [Tool; 5] = [
+/// `uv`'s release ships `uvx` beside it, so five upstream releases cover the
+/// six executables the toolkit deploys.
+pub static TOOLS: [Tool; 6] = [
     Tool {
         name: "fd",
         payload: include_bytes!(concat!(env!("OUT_DIR"), "/fd.zst")),
@@ -39,5 +39,10 @@ pub static TOOLS: [Tool; 5] = [
         name: "deno",
         payload: include_bytes!(concat!(env!("OUT_DIR"), "/deno.zst")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/deno.blake3")),
+    },
+    Tool {
+        name: "tusd",
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/tusd.zst")),
+        digest: include_bytes!(concat!(env!("OUT_DIR"), "/tusd.blake3")),
     },
 ];
