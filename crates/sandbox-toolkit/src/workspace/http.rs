@@ -51,7 +51,7 @@ async fn list(State(state): State<AppState>) -> Json<WorkspaceList> {
 }
 
 async fn one(State(state): State<AppState>, Path(path): Path<WorkspacePath>) -> Response {
-    match state.registry.get(&path.workspace_id).await {
+    match state.registry.resolve(&path.workspace_id).await {
         Some(workspace) => Json(workspace.metadata().await).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }

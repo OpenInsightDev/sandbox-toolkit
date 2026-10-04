@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 
 const SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
-/// A directory removed when the test ends.
+const SKILL: &str = "---\nname: deploy\ndescription: Deploy.\n---\n\nShip it.\n";
+
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -36,7 +37,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The `sbxtkt` server under test, running on a private port with a throwaway root.
 struct Server {
     child: Child,
     base_url: String,
@@ -149,6 +149,13 @@ fn write_mcp_json(home: &Path, servers: Value) {
     std::fs::write(agents.join("mcp.json"), document.to_string()).expect("write mcp.json");
 }
 
+fn write_skill(root: &Path) -> PathBuf {
+    let directory = root.join(".agents/skills/deploy");
+    std::fs::create_dir_all(&directory).expect("create .agents");
+    std::fs::write(directory.join("SKILL.md"), SKILL).expect("write SKILL.md");
+    directory
+}
+
 /// Creates `path` and returns its canonical absolute form, matching the `root`
 /// the server reports.
 fn dir(path: &Path) -> String {
@@ -162,7 +169,6 @@ fn dir(path: &Path) -> String {
 mod register {
     use super::*;
 
-    /// A canonical absolute directory is registered and readable back.
     #[tokio::test]
     async fn creates() {
         let home = TempDir::new("register-creates");
@@ -181,7 +187,6 @@ mod register {
         assert_eq!(server.get_json("/workspaces/work").await, created);
     }
 
-    /// Registering an occupied `id` is a conflict.
     #[tokio::test]
     async fn conflict() {
         let home = TempDir::new("register-conflict");
@@ -199,7 +204,6 @@ mod register {
         );
     }
 
-    /// A relative, absent, or non-directory root is rejected.
     #[tokio::test]
     async fn invalid_root() {
         let home = TempDir::new("register-invalid-root");
@@ -233,7 +237,6 @@ mod register {
         assert_eq!(not_dir.status(), reqwest::StatusCode::BAD_REQUEST);
     }
 
-    /// An `id` outside the allowed character set is rejected.
     #[tokio::test]
     async fn invalid_id() {
         let home = TempDir::new("register-invalid-id");
@@ -252,7 +255,6 @@ mod register {
         }
     }
 
-    /// A root the service process cannot write fails the permission probe.
     #[tokio::test]
     async fn denied() {
         // Mode bits do not deny uid 0, so the probe cannot be refused that way.
@@ -285,7 +287,6 @@ mod register {
 mod query {
     use super::*;
 
-    /// The list holds `global` and every registered workspace.
     #[tokio::test]
     async fn list() {
         let home = TempDir::new("query-list");
@@ -317,7 +318,6 @@ mod query {
         );
     }
 
-    /// A single workspace is fetched by id.
     #[tokio::test]
     async fn one() {
         let home = TempDir::new("query-one");
@@ -332,7 +332,6 @@ mod query {
         assert_eq!(workspace["root"], json!(root));
     }
 
-    /// An unknown id is not found.
     #[tokio::test]
     async fn unknown() {
         let home = TempDir::new("query-unknown");
@@ -346,7 +345,6 @@ mod query {
 mod update {
     use super::*;
 
-    /// `PATCH` rewrites `access` and the change is visible afterwards.
     #[tokio::test]
     async fn access() {
         let home = TempDir::new("update-access");
@@ -369,7 +367,6 @@ mod update {
         );
     }
 
-    /// Patching an unknown id is not found.
     #[tokio::test]
     async fn unknown() {
         let home = TempDir::new("update-unknown");
@@ -385,7 +382,6 @@ mod update {
 mod unregister {
     use super::*;
 
-    /// A removed workspace is gone from the registry.
     #[tokio::test]
     async fn removes() {
         let home = TempDir::new("unregister-removes");
@@ -404,7 +400,6 @@ mod unregister {
         );
     }
 
-    /// Removing an unknown id is not found.
     #[tokio::test]
     async fn unknown() {
         let home = TempDir::new("unregister-unknown");
@@ -418,7 +413,6 @@ mod unregister {
 mod global {
     use super::*;
 
-    /// The preset `global` workspace is rooted at the user's home directory.
     #[tokio::test]
     async fn default() {
         let home = TempDir::new("global-default");
@@ -430,7 +424,6 @@ mod global {
         assert_eq!(workspace["access"], json!("read-write"));
     }
 
-    /// The preset `global` workspace rejects updates and deregistration.
     #[tokio::test]
     async fn immutable() {
         let home = TempDir::new("global-immutable");
@@ -449,7 +442,6 @@ mod global {
 mod resources {
     use super::*;
 
-    /// Without `.agents`, the workspace holds no resources and its mounts are absent.
     #[tokio::test]
     async fn absent() {
         let home = TempDir::new("agents-absent");
@@ -473,7 +465,6 @@ mod resources {
         );
     }
 
-    /// With `.agents`, resources are constructed and the MCP mount answers.
     #[tokio::test]
     async fn present() {
         let home = TempDir::new("agents-present");
@@ -481,9 +472,19 @@ mod resources {
         let server = Server::start(home.path()).await;
 
         assert_eq!(server.get("/mcps").await.status(), reqwest::StatusCode::OK);
+
+        // A scope that declares only skills holds resources all the same.
+        let bare = TempDir::new("agents-present-bare");
+        write_skill(bare.path());
+        let server = Server::start(bare.path()).await;
+
+        assert_eq!(server.get("/mcps").await.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            server.get("/skills").await.status(),
+            reqwest::StatusCode::OK
+        );
     }
 
-    /// Creating or removing `.agents` at runtime toggles the resources.
     #[tokio::test]
     async fn toggles() {
         let home = TempDir::new("agents-toggles");
@@ -497,42 +498,24 @@ mod resources {
         wait_status(&server, "/mcps", reqwest::StatusCode::NOT_FOUND).await;
     }
 
-    /// One resource failing to construct takes the whole set down, so a skill
-    /// that is discoverable on disk still answers nothing while `mcp.json` is
-    /// missing or unparseable.
     #[tokio::test]
     async fn broken() {
-        const SKILL: &str = "---\nname: deploy\ndescription: Deploy.\n---\n\nShip it.\n";
+        let home = TempDir::new("agents-broken");
+        write_skill(home.path());
+        std::fs::write(home.path().join(".agents/mcp.json"), "{ not json").expect("write mcp.json");
 
-        for (tag, mcp_json) in [
-            ("agents-broken-missing", None),
-            ("agents-broken-malformed", Some("{ not json")),
-        ] {
-            let home = TempDir::new(tag);
-            let skills = home.path().join(".agents/skills/deploy");
-            std::fs::create_dir_all(&skills).expect("create .agents");
-            std::fs::write(skills.join("SKILL.md"), SKILL).expect("write SKILL.md");
-            if let Some(document) = mcp_json {
-                std::fs::write(home.path().join(".agents/mcp.json"), document)
-                    .expect("write mcp.json");
-            }
+        let server = Server::start(home.path()).await;
 
-            let server = Server::start(home.path()).await;
-
-            assert_eq!(
-                server.get("/mcps").await.status(),
-                reqwest::StatusCode::NOT_FOUND,
-                "{tag}"
-            );
-            assert_eq!(
-                server.get("/skills").await.status(),
-                reqwest::StatusCode::NOT_FOUND,
-                "{tag}"
-            );
-        }
+        assert_eq!(
+            server.get("/mcps").await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            server.get("/skills").await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
     }
 
-    /// Polls until the path answers with the expected status, failing at the deadline.
     async fn wait_status(server: &Server, path: &str, status: reqwest::StatusCode) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {

@@ -19,9 +19,16 @@ pub enum Error {
     Config(#[from] config::Error),
 }
 
+enum State {
+    Ready(Proxies),
+    /// The configuration stopped parsing, so the scope declares nothing it can
+    /// serve; the entries the last successful load produced are gone with it.
+    Broken,
+}
+
 pub struct Runtime {
     watch: Watch,
-    mcps: Arc<RwLock<Proxies>>,
+    state: Arc<RwLock<State>>,
 
     handle: JoinHandle<()>,
 }
@@ -46,19 +53,21 @@ impl Runtime {
         let mut events = watch.subscribe();
 
         let env = HashMap::<String, OsString>::new();
-        let mcps = Self::load(&root, &env).await?;
-        let mcps = Arc::new(RwLock::new(mcps));
+        let state = Arc::new(RwLock::new(State::Ready(Self::load(&root, &env).await?)));
 
-        let task_mcps = Arc::clone(&mcps);
+        let task_state = Arc::clone(&state);
         let handle = tokio::spawn(async move {
             while let Ok(Ok(event)) = events.recv().await {
                 match event.kind {
                     EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                        let Ok(next) = Self::load(&root, &env).await else {
-                            continue;
+                        let next = match Self::load(&root, &env).await {
+                            Ok(proxies) => State::Ready(proxies),
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to reload mcp.json");
+                                State::Broken
+                            }
                         };
-                        let mut proxies = task_mcps.write().await;
-                        *proxies = next;
+                        *task_state.write().await = next;
                     }
                     EventKind::Access(_) | EventKind::Any | EventKind::Other => {}
                 }
@@ -67,22 +76,31 @@ impl Runtime {
 
         Ok(Self {
             watch,
-            mcps,
+            state,
             handle,
         })
     }
 }
 
 impl Runtime {
-    pub async fn get(&self, id: &str) -> Option<Service> {
-        self.mcps
-            .read()
-            .await
-            .get(id)
-            .map(|proxy| proxy.service.clone())
+    /// Whether the configuration stopped parsing; a scope that does not parse
+    /// presents no entries, so its mounts answer `404`.
+    pub async fn broken(&self) -> bool {
+        matches!(&*self.state.read().await, State::Broken)
     }
 
-    pub async fn ids(&self) -> Vec<String> {
-        self.mcps.read().await.keys().cloned().collect()
+    pub async fn get(&self, id: &str) -> Option<Service> {
+        match &*self.state.read().await {
+            State::Ready(mcps) => mcps.get(id).map(|proxy| proxy.service.clone()),
+            State::Broken => None,
+        }
+    }
+
+    /// The ids the configuration declares, or `None` while it stopped parsing.
+    pub async fn ids(&self) -> Option<Vec<String>> {
+        match &*self.state.read().await {
+            State::Ready(mcps) => Some(mcps.keys().cloned().collect()),
+            State::Broken => None,
+        }
     }
 }

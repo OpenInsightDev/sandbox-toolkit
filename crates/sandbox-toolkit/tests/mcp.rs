@@ -21,7 +21,6 @@ use serde_json::{Value, json};
 
 const SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
-/// A directory removed when the test ends.
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -45,7 +44,6 @@ impl Drop for TempDir {
     }
 }
 
-/// The `sbxtkt` server under test, running on a private port with a throwaway root.
 struct Server {
     child: Child,
     base_url: String,
@@ -92,18 +90,27 @@ impl Server {
             .expect("POST request")
     }
 
-    /// The decoded JSON body of a `GET`, asserting it succeeded.
     async fn get_json(&self, path: &str) -> Value {
         let response = self.get(path).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
         response.json().await.expect("decode GET body")
     }
 
-    /// The decoded `/mcps` document, the mount's primary observable.
     async fn list(&self) -> Value {
         let response = self.get("/mcps").await;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         response.json().await.expect("decode /mcps")
+    }
+
+    async fn wait_status(&self, path: &str, status: reqwest::StatusCode) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if self.get(path).await.status() == status {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{path} did not answer {status}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     async fn wait_ready(&mut self) {
@@ -156,7 +163,6 @@ fn ids(document: &Value) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Registers a workspace rooted at `root`, asserting the server accepted it.
 async fn register(server: &Server, id: &str, root: &Path) {
     let body = json!({ "id": id, "root": root.to_string_lossy() });
     let response = server.post("/workspaces", body).await;
@@ -187,8 +193,6 @@ impl ServerHandler for Upstream {
     }
 }
 
-/// A minimal in-process MCP server exposing `names` as tools, for the proxy to
-/// reverse-proxy to.
 async fn start_upstream(names: &[&'static str]) -> String {
     let tools: Vec<Tool> = names
         .iter()
@@ -219,7 +223,6 @@ async fn start_upstream(names: &[&'static str]) -> String {
 mod load {
     use super::*;
 
-    /// Every entry in `.agents/mcp.json` shows up in `GET /mcps`.
     #[tokio::test]
     async fn discovers() {
         let home = TempDir::new("load");
@@ -238,7 +241,6 @@ mod load {
         );
     }
 
-    /// Rewriting `.agents/mcp.json` changes what `GET /mcps` reports.
     #[tokio::test]
     async fn reloads() {
         let home = TempDir::new("reload");
@@ -269,12 +271,48 @@ mod load {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+
+    /// A `mcp.json` that stops parsing after startup is not served from the last
+    /// successful load: the mount reports the failure until it parses again, and
+    /// only the MCP mount is affected.
+    #[tokio::test]
+    async fn broken() {
+        let home = TempDir::new("broken");
+        write_mcp_json(
+            home.path(),
+            json!({ "validator": { "type": "stdio", "command": "./bin/validator" } }),
+        );
+        let server = Server::start(home.path()).await;
+        assert_eq!(
+            ids(&server.list().await),
+            BTreeSet::from(["validator".to_owned()])
+        );
+
+        std::fs::write(home.path().join(".agents/mcp.json"), "{ not json").expect("break mcp.json");
+
+        server
+            .wait_status("/mcps", reqwest::StatusCode::NOT_FOUND)
+            .await;
+        assert_eq!(
+            server.get("/mcps/validator").await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            server.get("/skills").await.status(),
+            reqwest::StatusCode::OK
+        );
+
+        write_mcp_json(
+            home.path(),
+            json!({ "validator": { "type": "stdio", "command": "./bin/validator" } }),
+        );
+        server.wait_status("/mcps", reqwest::StatusCode::OK).await;
+    }
 }
 
 mod proxy {
     use super::*;
 
-    /// An unknown `mcp_id` answers 404.
     #[tokio::test]
     async fn not_found() {
         let home = TempDir::new("proxy-missing");
@@ -293,8 +331,6 @@ mod proxy {
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
     }
 
-    /// A `streamable-http` entry proxies a handshake and a `list_tools` call to
-    /// its upstream.
     #[tokio::test]
     async fn remote() {
         let upstream = start_upstream(&[]).await;
@@ -322,8 +358,6 @@ mod proxy {
         let _ = client.cancel().await;
     }
 
-    /// A `stdio` entry's child is spawned with `PLUGIN_ROOT` and `PLUGIN_DATA`
-    /// set.
     #[tokio::test]
     async fn stdio() {
         let home = TempDir::new("proxy-stdio");
@@ -365,8 +399,6 @@ mod proxy {
 mod query {
     use super::*;
 
-    /// `GET /mcps` presents every entry as `streamable-http` pointing at
-    /// `/mcps/{mcp_id}`.
     #[tokio::test]
     async fn manifest() {
         let home = TempDir::new("query-shape");
@@ -390,8 +422,6 @@ mod query {
         );
     }
 
-    /// `GET /workspaces/global/mcps` addresses entries under the workspace
-    /// prefix.
     #[tokio::test]
     async fn workspace() {
         let home = TempDir::new("query-workspace");
@@ -414,7 +444,6 @@ mod query {
         );
     }
 
-    /// An unknown workspace answers 404.
     #[tokio::test]
     async fn unknown_workspace() {
         let home = TempDir::new("query-missing");
@@ -429,7 +458,6 @@ mod query {
 mod merge {
     use super::*;
 
-    /// A workspace's view adds global's entries to its own.
     #[tokio::test]
     async fn includes_global() {
         let home = TempDir::new("merge-includes");
@@ -452,7 +480,6 @@ mod merge {
         );
     }
 
-    /// A name defined by both scopes resolves to the workspace's entry.
     #[tokio::test]
     async fn workspace_wins() {
         let global = start_upstream(&["global-tool"]).await;
@@ -494,7 +521,6 @@ mod merge {
         let _ = client.cancel().await;
     }
 
-    /// A workspace without its own `.agents` still answers with global's entries.
     #[tokio::test]
     async fn absent_workspace() {
         let home = TempDir::new("merge-absent");
@@ -513,7 +539,35 @@ mod merge {
         );
     }
 
-    /// A workspace root directory under `home`, created without `.agents`.
+    /// A scope that stops parsing its `mcp.json` takes the mount that merges it
+    /// down with it, even while global's entries are intact.
+    #[tokio::test]
+    async fn broken() {
+        let home = TempDir::new("merge-broken");
+        write_mcp_json(
+            home.path(),
+            json!({ "global-only": { "type": "stdio", "command": "global" } }),
+        );
+        let root = workspace_root(&home);
+        write_mcp_json(
+            &root,
+            json!({ "workspace-only": { "type": "stdio", "command": "workspace" } }),
+        );
+
+        let server = Server::start(home.path()).await;
+        register(&server, "ws", &root).await;
+        assert_eq!(
+            ids(&server.get_json("/workspaces/ws/mcps").await),
+            BTreeSet::from(["global-only".to_owned(), "workspace-only".to_owned()])
+        );
+
+        std::fs::write(root.join(".agents/mcp.json"), "{ not json").expect("break mcp.json");
+
+        server
+            .wait_status("/workspaces/ws/mcps", reqwest::StatusCode::NOT_FOUND)
+            .await;
+    }
+
     fn workspace_root(home: &TempDir) -> PathBuf {
         let root = home.path().join("ws");
         std::fs::create_dir_all(&root).expect("create the workspace root");

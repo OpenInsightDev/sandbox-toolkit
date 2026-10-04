@@ -36,7 +36,12 @@ pub struct Entry {
 
 pub async fn entries(root: &Path) -> Result<Vec<Entry>, Error> {
     let agents_dir = root.join(AGENTS_DIR);
-    let bytes = tokio::fs::read(agents_dir.join(MCP_JSON)).await?;
+    let bytes = match tokio::fs::read(agents_dir.join(MCP_JSON)).await {
+        Ok(bytes) => bytes,
+        // A scope that declares no servers is not a failure: it simply has none.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
 
     let (config, _) = McpConfig::parse(&bytes, SpecVersion::V1_0_0)?;
 

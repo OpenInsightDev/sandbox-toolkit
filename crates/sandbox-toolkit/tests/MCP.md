@@ -8,24 +8,26 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 
 ## 加载
 
-监听 `.agents/mcp.json` 与 plugin `mcp.json` 的变动并重载。
+监听 `.agents/mcp.json` 与 plugin `mcp.json` 的变动并重载；`.agents/mcp.json` 缺失时条目为空，不算加载失败；重载失败时丢弃上一次成功加载的条目，挂载回答 `404`，直到再次解析成功。
 
 ### 测试
 
 - `load::discovers`：`.agents/mcp.json` 中的每个条目都出现在 `GET /mcps` 中。
 - `load::reloads`：改写 `.agents/mcp.json` 后，`GET /mcps` 随之反映新的条目集合。
+- `load::broken`：运行期把 `.agents/mcp.json` 改坏后 `GET /mcps` 与 `/mcps/{mcp_id}` 返回 `404`，`GET /skills` 仍为 `200`；改回有效后恢复 `200`。
 
 ## 合并
 
 工作区对外呈现的 MCP 集合是 global 与工作区自身的并集，按 id 合并，同名时工作区条目胜出；`/mcps`（无前缀）解析到 global。
 
-工作区自身资源缺失不影响合并结果，仅当 global 与工作区都无资源时，工作区挂载回答 `404`。
+工作区自身资源缺失不影响合并结果，仅当 global 与工作区都无资源时，工作区挂载回答 `404`；被合并的任一 scope 处于重载失败状态时，该挂载回答 `404`。
 
 ### 测试
 
 - `merge::includes_global`：global 与工作区各自的条目都出现在 `/workspaces/{id}/mcps` 文档中。
 - `merge::workspace_wins`：同名 id 经 `/workspaces/{id}/mcps/{mcp_id}` 接入到工作区自身的上游。
 - `merge::absent_workspace`：工作区自身无 `.agents` 而 global 有资源时，`/workspaces/{id}/mcps` 返回 global 的条目而非 `404`。
+- `merge::broken`：工作区自身的 `mcp.json` 运行期损坏后，`/workspaces/{id}/mcps` 返回 `404`，global 的条目不再呈现。
 
 ## 代理
 
@@ -43,7 +45,7 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 
 | 状态码 | 语义 | 触发条件 |
 | --- | --- | --- |
-| 404 | 未找到 | `{mcp_id}` 不在合并集合中；或 workspace 挂载下 `{workspace_id}` 不存在 |
+| 404 | 未找到 | `{mcp_id}` 不在合并集合中；或 workspace 挂载下 `{workspace_id}` 不存在；或该挂载合并了 [加载](#加载) 失败的 scope |
 
 ### 测试
 
@@ -62,7 +64,7 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 | 状态码 | 语义 | 触发条件 |
 | --- | --- | --- |
 | 200 | 成功 | 返回 mcp.json 文档 |
-| 404 | 未找到 | workspace 挂载下 `{workspace_id}` 不存在 |
+| 404 | 未找到 | workspace 挂载下 `{workspace_id}` 不存在；或该挂载合并了 [加载](#加载) 失败的 scope |
 
 ### 测试
 

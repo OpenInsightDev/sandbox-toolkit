@@ -5,8 +5,8 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::binary::path;
-use crate::mcp;
 use crate::path::AGENTS_DIR;
+use crate::skill::{Skills, split_derived_workspace_id};
 use crate::workspace::model::CreateWorkspaceRequest;
 
 use super::model::Metadata;
@@ -84,9 +84,6 @@ impl Metadata {
         (name, self.root.clone().into_os_string())
     }
 
-    /// The whole environment a child of this workspace starts with: the
-    /// service's own, with the materialized tools on `PATH`, the workspace
-    /// variable injected into it, and `overrides` replacing both.
     pub fn child_env(
         &self,
         bin: &Path,
@@ -108,27 +105,26 @@ impl Metadata {
 
 pub struct Workspace {
     metadata: RwLock<Metadata>,
-    resources: Arc<RwLock<Option<Resources>>>,
+    resources: Arc<RwLock<Option<Arc<Resources>>>>,
     watch: Watch,
     handle: JoinHandle<()>,
 }
 
 impl Workspace {
     pub async fn new(metadata: Metadata) -> Result<Self, WorkspaceError> {
-        let root = metadata.root.clone();
-        let watch = Watch::new(root.join(AGENTS_DIR)).await?;
+        let watch = Watch::new(metadata.root.join(AGENTS_DIR)).await?;
         let mut events = watch.subscribe();
 
         let resources = Arc::new(RwLock::new(None));
-        sync_resources(&root, &resources).await;
+        sync_resources(&metadata, &resources).await;
 
         let task_resources = Arc::clone(&resources);
-        let task_root = root.clone();
+        let task_metadata = metadata.clone();
         let handle = tokio::spawn(async move {
             while let Ok(Ok(event)) = events.recv().await {
                 match event.kind {
                     EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                        sync_resources(&task_root, &task_resources).await;
+                        sync_resources(&task_metadata, &task_resources).await;
                     }
                     EventKind::Access(_) | EventKind::Any | EventKind::Other => {}
                 }
@@ -156,26 +152,46 @@ impl Workspace {
         self.metadata.write().await.access = access;
     }
 
-    /// Cloned out so callers can hold a handle independent of the workspace registry lock.
-    pub async fn mcps(&self) -> Option<Arc<mcp::Runtime>> {
-        self.resources
-            .read()
-            .await
-            .as_ref()
-            .map(|resources| Arc::clone(&resources.mcps))
+    /// Cloned out so callers can hold the resource set independent of the
+    /// workspace registry lock.
+    pub async fn resources(&self) -> Option<Arc<Resources>> {
+        self.resources.read().await.clone()
     }
 }
 
-async fn sync_resources(root: &Path, resources: &RwLock<Option<Resources>>) {
-    let present = tokio::fs::metadata(root.join(AGENTS_DIR))
+pub enum Resolved {
+    Registered(Arc<Workspace>),
+    /// The view a skill discovered in a scope derives.
+    Derived(Metadata),
+}
+
+impl Resolved {
+    pub async fn metadata(&self) -> Metadata {
+        match self {
+            Self::Registered(workspace) => workspace.metadata().await,
+            Self::Derived(metadata) => metadata.clone(),
+        }
+    }
+
+    /// The resource set the workspace holds; a derived workspace holds none.
+    pub async fn resources(&self) -> Option<Arc<Resources>> {
+        match self {
+            Self::Registered(workspace) => workspace.resources().await,
+            Self::Derived(_) => None,
+        }
+    }
+}
+
+async fn sync_resources(metadata: &Metadata, resources: &RwLock<Option<Arc<Resources>>>) {
+    let present = tokio::fs::metadata(metadata.root.join(AGENTS_DIR))
         .await
         .map(|metadata| metadata.is_dir())
         .unwrap_or(false);
 
     let mut guard = resources.write().await;
     match (present, guard.is_some()) {
-        (true, false) => match Resources::new(root).await {
-            Ok(next) => *guard = Some(next),
+        (true, false) => match Resources::new(metadata).await {
+            Ok(next) => *guard = Some(Arc::new(next)),
             Err(error) => tracing::warn!(%error, "failed to load workspace resources"),
         },
         (false, true) => *guard = None,
@@ -217,6 +233,33 @@ impl Registry {
         self.workspaces.read().await.get(id).cloned()
     }
 
+    pub async fn resolve(&self, id: &str) -> Option<Resolved> {
+        if let Some(workspace) = self.get(id).await {
+            return Some(Resolved::Registered(workspace));
+        }
+
+        self.derive(id).await
+    }
+
+    /// The workspace `skill.{scope}.{skill_id}` derives. It resolves while its
+    /// `{scope}` is `global` or a registered workspace, and `{skill_id}` is a
+    /// skill that scope discovers right now.
+    async fn derive(&self, id: &str) -> Option<Resolved> {
+        let (scope_id, skill_id) = split_derived_workspace_id(id)?;
+        let scope = self.get(scope_id).await?;
+        let metadata = scope.metadata().await;
+
+        let skill = Skills::new(&metadata.id, &metadata.root)
+            .get(skill_id)
+            .await?;
+
+        Some(Resolved::Derived(Metadata {
+            id: id.to_owned(),
+            root: skill.root,
+            access: metadata.access,
+        }))
+    }
+
     pub async fn list(&self) -> Vec<Metadata> {
         let workspaces = self.workspaces.read().await;
         let mut list = Vec::with_capacity(workspaces.len());
@@ -252,15 +295,18 @@ impl Registry {
         Ok(())
     }
 
-    /// Resolves a workspace the caller may mutate, rejecting the preset `global`.
+    /// Resolves a workspace the caller may mutate. Only a registered workspace
+    /// is mutable: the preset `global` and a derived view answer `403`.
     async fn mutable(&self, id: &str) -> Result<Arc<Workspace>, WorkspaceError> {
         if id == GLOBAL_WORKSPACE_ID {
             return Err(WorkspaceError::Immutable { id: id.to_owned() });
         }
 
-        self.get(id)
-            .await
-            .ok_or_else(|| WorkspaceError::NotFound { id: id.to_owned() })
+        match self.resolve(id).await {
+            Some(Resolved::Registered(workspace)) => Ok(workspace),
+            Some(Resolved::Derived(_)) => Err(WorkspaceError::Immutable { id: id.to_owned() }),
+            None => Err(WorkspaceError::NotFound { id: id.to_owned() }),
+        }
     }
 }
 

@@ -5,11 +5,13 @@ use axum::Json;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, OriginalUri, Path, Request};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
 use tower::Service;
+
+use crate::http::origin;
 
 use super::model::{StreamableHttpMcpServer, StreamableHttpServerMcpConfig};
 use super::runtime::Runtime;
@@ -24,18 +26,37 @@ impl ExtractRuntime {
         Self { global, workspace }
     }
 
-    pub async fn ids(&self) -> Vec<String> {
+    /// Whether any scope the mount presents stopped parsing its `mcp.json`.
+    async fn broken(&self) -> bool {
+        for runtime in [self.global.as_ref(), self.workspace.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if runtime.broken().await {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The ids the mount presents, or `None` while a scope it presents stopped
+    /// parsing its `mcp.json`.
+    pub async fn ids(&self) -> Option<Vec<String>> {
         let mut ids = BTreeSet::new();
         if let Some(global) = &self.global {
-            ids.extend(global.ids().await);
+            ids.extend(global.ids().await?);
         }
         if let Some(workspace) = &self.workspace {
-            ids.extend(workspace.ids().await);
+            ids.extend(workspace.ids().await?);
         }
-        ids.into_iter().collect()
+        Some(ids.into_iter().collect())
     }
 
     pub async fn get(&self, id: &str) -> Option<super::proxy::Service> {
+        if self.broken().await {
+            return None;
+        }
+
         if let Some(workspace) = &self.workspace {
             if let Some(service) = workspace.get(id).await {
                 return Some(service);
@@ -71,9 +92,12 @@ async fn list(
     headers: HeaderMap,
 ) -> Response {
     let base = format!("{}{}", origin(&uri, &headers), uri.path());
-    let servers = runtime
-        .ids()
-        .await
+    // A scope that stopped parsing its `mcp.json` presents nothing.
+    let Some(ids) = runtime.ids().await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let servers = ids
         .into_iter()
         .map(|id| {
             let url = format!("{base}/{id}");
@@ -93,23 +117,4 @@ async fn proxy(runtime: ExtractRuntime, Path(path): Path<McpPath>, request: Requ
         Ok(response) => response.map(Body::new),
         Err(never) => match never {},
     }
-}
-
-/// The external origin (`scheme` + host) the request reached us through, resolved
-/// like axum's `Scheme`/`Host` extractors: a forwarded header, then the request
-/// URI (h2 carries scheme and authority there; an h1 origin-form request only the
-/// path, so `Host` stands in).
-fn origin(uri: &Uri, headers: &HeaderMap) -> String {
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| uri.scheme_str())
-        .unwrap_or("http");
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| uri.authority().map(|authority| authority.as_str()))
-        .unwrap_or_default();
-
-    format!("{scheme}://{host}")
 }

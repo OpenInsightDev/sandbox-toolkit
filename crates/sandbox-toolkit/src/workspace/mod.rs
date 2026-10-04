@@ -5,3 +5,4 @@ mod resources;
 
 pub use model::*;
 pub use registry::*;
+pub use resources::*;
