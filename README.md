@@ -42,6 +42,7 @@ A workspace is the enforced boundary: every path is canonicalized and must resol
 - **Commands** — `exec` runs an executable or a shell script with a caller-supplied `cwd`, `env` and argv, returning JSON for fast commands and a multiplexed frame stream for long-running ones.
 - **Terminals** — interactive PTY sessions over WebSocket (HTTP/2 extended CONNECT, RFC 8441).
 - **Skills** — [Agent Skills](https://agentskills.io/specification) discovered from `.agents/skills`, with progressive disclosure and an auto-derived read-only workspace for bundled files.
+- **Uploads** — resumable uploads at `/tus`, a reverse proxy to a bundled [tusd](https://github.com/tus/tusd) the server runs as its sidecar.
 - **One model, two surfaces** — each operation is implemented once against a shared Rust model that generates the HTTP wire format, the MCP schemas, and the TypeScript SDK types.
 
 ## TypeScript SDK
