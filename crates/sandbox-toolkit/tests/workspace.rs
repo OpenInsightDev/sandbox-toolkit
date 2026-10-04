@@ -449,7 +449,7 @@ mod global {
 mod resources {
     use super::*;
 
-    /// Without `.agents`, the workspace holds no resources and its MCP mount is absent.
+    /// Without `.agents`, the workspace holds no resources and its mounts are absent.
     #[tokio::test]
     async fn absent() {
         let home = TempDir::new("agents-absent");
@@ -461,6 +461,14 @@ mod resources {
         );
         assert_eq!(
             server.post("/mcps/missing", json!({})).await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            server.get("/skills").await.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            server.get("/skills/missing").await.status(),
             reqwest::StatusCode::NOT_FOUND
         );
     }
@@ -487,6 +495,41 @@ mod resources {
 
         std::fs::remove_dir_all(home.path().join(".agents")).expect("remove .agents");
         wait_status(&server, "/mcps", reqwest::StatusCode::NOT_FOUND).await;
+    }
+
+    /// One resource failing to construct takes the whole set down, so a skill
+    /// that is discoverable on disk still answers nothing while `mcp.json` is
+    /// missing or unparseable.
+    #[tokio::test]
+    async fn broken() {
+        const SKILL: &str = "---\nname: deploy\ndescription: Deploy.\n---\n\nShip it.\n";
+
+        for (tag, mcp_json) in [
+            ("agents-broken-missing", None),
+            ("agents-broken-malformed", Some("{ not json")),
+        ] {
+            let home = TempDir::new(tag);
+            let skills = home.path().join(".agents/skills/deploy");
+            std::fs::create_dir_all(&skills).expect("create .agents");
+            std::fs::write(skills.join("SKILL.md"), SKILL).expect("write SKILL.md");
+            if let Some(document) = mcp_json {
+                std::fs::write(home.path().join(".agents/mcp.json"), document)
+                    .expect("write mcp.json");
+            }
+
+            let server = Server::start(home.path()).await;
+
+            assert_eq!(
+                server.get("/mcps").await.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{tag}"
+            );
+            assert_eq!(
+                server.get("/skills").await.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{tag}"
+            );
+        }
     }
 
     /// Polls until the path answers with the expected status, failing at the deadline.
