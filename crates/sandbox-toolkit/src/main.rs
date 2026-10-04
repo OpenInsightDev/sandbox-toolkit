@@ -2,10 +2,9 @@ use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-mod embed;
+mod binary;
 mod exec;
 mod http;
-mod materialize;
 mod mcp;
 mod path;
 mod skill;
@@ -35,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     match Cli::parse().command {
         Command::Serve { host, port } => {
-            let bin = materialize::materialize().await?;
+            let bin = binary::materialize().await?;
 
             let listener = TcpListener::bind((host.as_str(), port)).await?;
             tracing::info!(address = %listener.local_addr()?, "listening");
