@@ -83,7 +83,13 @@ export default defineConfig({
         cache: false,
       },
       "rust:test": {
-        command: "cargo test --workspace",
+        command: "cargo test --workspace --lib --bins",
+        cache: false,
+      },
+      // The end-to-end suite drives the server and the processes it spawns, so
+      // it runs inside the Linux container `tools/test/e2e.sh` starts.
+      "rust:e2e": {
+        command: "sh tools/test/e2e.sh",
         cache: false,
       },
       // Workspace entry points pair the cargo tasks with the TypeScript side.
@@ -99,7 +105,7 @@ export default defineConfig({
         cache: false,
       },
       test: {
-        command: ["vp run rust:test", "vp run -r test"],
+        command: ["vp run rust:test", "vp run rust:e2e", "vp run -r test"],
         cache: false,
       },
       check: {

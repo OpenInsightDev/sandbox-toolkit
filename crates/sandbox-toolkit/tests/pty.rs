@@ -1,9 +1,6 @@
-use std::fs::File;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+mod harness;
+
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Empty;
@@ -17,139 +14,15 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
-const STDIN: u8 = 0;
-const STDOUT: u8 = 1;
-const STDERR: u8 = 2;
-const ERROR: u8 = 3;
-const RESIZE: u8 = 4;
-
-const MAX_PAYLOAD_LEN: usize = 4 * 1024 * 1024;
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("sbxtkt-pty-{tag}-{}-{serial}", std::process::id()));
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        Self(std::fs::canonicalize(path).expect("canonicalize temp dir"))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-struct Server {
-    child: Child,
-    base_url: String,
-    log: PathBuf,
-}
-
-impl Server {
-    async fn start(home: &Path) -> Self {
-        let port = free_port();
-        let log = home.join("server.log");
-        let child = Command::new(env!("CARGO_BIN_EXE_sbxtkt"))
-            .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
-            .env("HOME", home)
-            .env("RUST_LOG", "warn")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(File::create(&log).expect("create server log")))
-            .spawn()
-            .expect("spawn sbxtkt");
-
-        let mut server = Self {
-            child,
-            base_url: format!("http://127.0.0.1:{port}"),
-            log,
-        };
-        server.wait_ready().await;
-        server
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
-    }
-
-    fn authority(&self) -> String {
-        self.base_url.trim_start_matches("http://").to_owned()
-    }
-
-    async fn post(&self, path: &str, body: Value) -> reqwest::Response {
-        reqwest::Client::new()
-            .post(self.url(path))
-            .json(&body)
-            .send()
-            .await
-            .expect("POST request")
-    }
-
-    async fn wait_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if reqwest::get(self.url("/workspaces")).await.is_ok() {
-                return;
-            }
-            if let Some(status) = self.child.try_wait().expect("poll server") {
-                panic!(
-                    "server exited with {status}: {}",
-                    std::fs::read_to_string(&self.log).unwrap_or_default()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "server did not become ready: {}",
-            std::fs::read_to_string(&self.log).unwrap_or_default()
-        );
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("reserve a port")
-        .local_addr()
-        .expect("read the reserved address")
-        .port()
-}
-
-fn channel_bytes(frames: &[(u8, Vec<u8>)], channel: u8) -> Vec<u8> {
-    frames
-        .iter()
-        .filter(|(id, _)| *id == channel)
-        .flat_map(|(_, payload)| payload.clone())
-        .collect()
-}
+use harness::{
+    Dir, ERROR, MAX_PAYLOAD_LEN, RESIZE, STDERR, STDIN, STDOUT, Server, channel_bytes,
+    terminal_status,
+};
 
 fn channel_contains(frames: &[(u8, Vec<u8>)], channel: u8, needle: &[u8]) -> bool {
     channel_bytes(frames, channel)
         .windows(needle.len())
         .any(|window| window == needle)
-}
-
-fn terminal_status(frames: &[(u8, Vec<u8>)]) -> Value {
-    let statuses = frames.iter().filter(|(id, _)| *id == ERROR).count();
-    assert_eq!(statuses, 1, "exactly one terminal frame");
-    let (channel, payload) = frames.last().expect("a terminal frame");
-    assert_eq!(*channel, ERROR, "the terminal frame comes last");
-    serde_json::from_slice(payload).expect("decode terminal status")
 }
 
 /// A pty session's WebSocket, tunneled over HTTP/2 extended CONNECT (RFC 8441).
@@ -245,8 +118,8 @@ mod pty {
 
     #[tokio::test]
     async fn create() {
-        let home = TempDir::new("create");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("create");
+        let server = Server::start(&home).await;
 
         let session = create_session(&server).await;
         let id = session["id"].as_str().expect("session id");
@@ -256,8 +129,8 @@ mod pty {
 
     #[tokio::test]
     async fn unknown_session() {
-        let home = TempDir::new("unknown-session");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("unknown-session");
+        let server = Server::start(&home).await;
 
         let (status, _) = attach_pty(&server, "/pty/missing").await;
 
@@ -266,8 +139,8 @@ mod pty {
 
     #[tokio::test]
     async fn attach_once() {
-        let home = TempDir::new("attach-once");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("attach-once");
+        let server = Server::start(&home).await;
         let session = create_session(&server).await;
         let endpoint = session["endpoint"].as_str().expect("session endpoint");
 
@@ -282,8 +155,8 @@ mod pty {
 
     #[tokio::test]
     async fn attach() {
-        let home = TempDir::new("attach");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("attach");
+        let server = Server::start(&home).await;
         let mut socket = attach_session(&server).await;
 
         // The session runs an interactive shell, whose output carries the echo
@@ -304,8 +177,8 @@ mod pty {
 
     #[tokio::test]
     async fn exit() {
-        let home = TempDir::new("exit");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("exit");
+        let server = Server::start(&home).await;
         let mut socket = attach_session(&server).await;
 
         socket
@@ -321,8 +194,8 @@ mod pty {
 
     #[tokio::test]
     async fn channels() {
-        let home = TempDir::new("channels");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("channels");
+        let server = Server::start(&home).await;
         let mut socket = attach_session(&server).await;
 
         socket
@@ -341,8 +214,8 @@ mod pty {
 
     #[tokio::test]
     async fn resize() {
-        let home = TempDir::new("resize");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("resize");
+        let server = Server::start(&home).await;
         let mut socket = attach_session(&server).await;
 
         // 40 rows and 120 columns, which the session then reports.
@@ -362,8 +235,8 @@ mod pty {
 
     #[tokio::test]
     async fn close() {
-        let home = TempDir::new("close");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("close");
+        let server = Server::start(&home).await;
         let session = create_session(&server).await;
         let endpoint = session["endpoint"]
             .as_str()
@@ -393,8 +266,8 @@ mod pty {
 
     #[tokio::test]
     async fn reclaims() {
-        let home = TempDir::new("reclaims");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("reclaims");
+        let server = Server::start(&home).await;
         let session = create_session(&server).await;
         let endpoint = session["endpoint"]
             .as_str()
@@ -420,8 +293,8 @@ mod pty {
     #[tokio::test]
     #[ignore = "receiver-side rule: the client never sends an oversized message"]
     async fn message_limit() {
-        let home = TempDir::new("message-limit");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("message-limit");
+        let server = Server::start(&home).await;
         let mut socket = attach_session(&server).await;
 
         let mut message = vec![STDIN];

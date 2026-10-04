@@ -1,131 +1,18 @@
+mod harness;
+
 use std::fs::File;
-use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+use harness::{Dir, Server};
 
 const TOOLS: [&str; 4] = ["fd", "rg", "uv", "deno"];
 
 /// A directory the server's own `PATH` keeps, so `path::keeps` can tell an added
 /// entry from a `PATH` that was replaced.
 const SENTINEL: &str = "/sbxtkt-test-sentinel-bin";
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "sbxtkt-binary-{tag}-{}-{serial}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        Self(std::fs::canonicalize(path).expect("canonicalize temp dir"))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-struct Server {
-    child: Child,
-    base_url: String,
-    log: PathBuf,
-}
-
-impl Server {
-    async fn start(home: &Path) -> Self {
-        let port = free_port();
-        let log = home.join("server.log");
-        let child = Command::new(env!("CARGO_BIN_EXE_sbxtkt"))
-            .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
-            .env("HOME", home)
-            // The cache the tools materialize into follows `HOME`, not whatever
-            // cache the developer running the tests has set.
-            .env_remove("XDG_CACHE_HOME")
-            .env("PATH", format!("{SENTINEL}:/usr/bin:/bin"))
-            .env("RUST_LOG", "warn")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(File::create(&log).expect("create server log")))
-            .spawn()
-            .expect("spawn sbxtkt");
-
-        let mut server = Self {
-            child,
-            base_url: format!("http://127.0.0.1:{port}"),
-            log,
-        };
-        server.wait_ready().await;
-        server
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
-    }
-
-    async fn post(&self, path: &str, body: Value) -> reqwest::Response {
-        reqwest::Client::new()
-            .post(self.url(path))
-            .json(&body)
-            .send()
-            .await
-            .expect("POST request")
-    }
-
-    async fn exec_json(&self, body: Value) -> Value {
-        let response = self.post("/exec", body).await;
-        assert_eq!(response.status(), reqwest::StatusCode::OK, "POST /exec");
-        response.json().await.expect("decode exec result")
-    }
-
-    async fn wait_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while Instant::now() < deadline {
-            if reqwest::get(self.url("/workspaces")).await.is_ok() {
-                return;
-            }
-            if let Some(status) = self.child.try_wait().expect("poll server") {
-                panic!(
-                    "server exited with {status}: {}",
-                    std::fs::read_to_string(&self.log).unwrap_or_default()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "server did not become ready: {}",
-            std::fs::read_to_string(&self.log).unwrap_or_default()
-        );
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("reserve a port")
-        .local_addr()
-        .expect("read the reserved address")
-        .port()
-}
 
 fn cache_bin(home: &Path) -> PathBuf {
     home.join(".cache/sandbox-toolkit/bin")
@@ -172,8 +59,8 @@ mod embed {
 
     #[tokio::test]
     async fn tools() {
-        let home = TempDir::new("embed-tools");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("embed-tools");
+        let server = Server::start(&home).await;
 
         for tool in TOOLS {
             // Absolute path, so what runs is the embedded payload itself.
@@ -200,8 +87,8 @@ mod materialize {
 
     #[tokio::test]
     async fn layout() {
-        let home = TempDir::new("materialize-layout");
-        Server::start(home.path()).await;
+        let home = Dir::new("materialize-layout");
+        Server::start(&home).await;
 
         for tool in TOOLS {
             let path = cache_bin(home.path()).join(tool);
@@ -220,12 +107,12 @@ mod materialize {
 
     #[tokio::test]
     async fn skip() {
-        let home = TempDir::new("materialize-skip");
-        Server::start(home.path()).await;
+        let home = Dir::new("materialize-skip");
+        Server::start(&home).await;
         let before = digests(home.path());
         let times = modified(home.path());
 
-        Server::start(home.path()).await;
+        Server::start(&home).await;
 
         assert_eq!(digests(home.path()), before, "content changed on restart");
         assert_eq!(
@@ -237,8 +124,8 @@ mod materialize {
 
     #[tokio::test]
     async fn repair() {
-        let home = TempDir::new("materialize-repair");
-        Server::start(home.path()).await;
+        let home = Dir::new("materialize-repair");
+        Server::start(&home).await;
         let before = digests(home.path());
 
         let tampered = cache_bin(home.path()).join("fd");
@@ -246,7 +133,7 @@ mod materialize {
         std::fs::write(&tampered, b"not the embedded tool").expect("tamper with a tool");
         std::fs::remove_file(&removed).expect("delete a tool");
 
-        Server::start(home.path()).await;
+        Server::start(&home).await;
 
         assert_eq!(digests(home.path()), before, "tools were not restored");
     }
@@ -257,8 +144,8 @@ mod path {
 
     #[tokio::test]
     async fn tools() {
-        let home = TempDir::new("path-tools");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("path-tools");
+        let server = Server::start(&home).await;
 
         for tool in TOOLS {
             let result = server
@@ -275,8 +162,11 @@ mod path {
 
     #[tokio::test]
     async fn keeps() {
-        let home = TempDir::new("path-keeps");
-        let server = Server::start(home.path()).await;
+        let home = Dir::new("path-keeps");
+        let server = Server::start_with(&home, |command| {
+            command.env("PATH", format!("{SENTINEL}:/usr/bin:/bin"));
+        })
+        .await;
 
         let result = server
             .exec_json(json!({

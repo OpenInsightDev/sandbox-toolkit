@@ -89,11 +89,20 @@ The repository uses [Vite+](https://viteplus.dev/guide/) for the unified toolcha
 ```bash
 vp install           # install dependencies
 vp run check         # cargo clippy, format, lint and type-check
-vp run test          # cargo test --workspace, then the package tests
-vp run rust:build    # build the server binary the integration tests spawn
+vp run test          # unit tests, then the package tests
+vp run rust:e2e      # the end-to-end suite, in its Linux container
+vp run rust:build    # build the server binary the end-to-end tests spawn
 ```
 
-The PTY crate keeps its own tests (`cargo test -p pty`). See [`ONBOARD.md`](./ONBOARD.md) for known work items.
+The end-to-end suite drives the server and the processes it spawns, so it runs
+inside a Linux container: `docker` on CI, Apple's `container` on macOS, and
+`SBXTKT_TEST_RUNTIME` picks one where neither is right. The image is
+`rust:1.97-bookworm`, overridable with `SBXTKT_TEST_IMAGE`, and the container's
+build caches land in `target/{linux,cargo-home}`, so only the first run pays for
+a full compile. `cargo test` runs the suite by hand, and needs the same
+container.
+
+The PTY crate keeps its own tests (`cargo test -p pty`).
 
 ## License
 

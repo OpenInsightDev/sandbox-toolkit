@@ -28,6 +28,11 @@ A design doc is transcribed from the user's spoken description, not invented. Re
 - Scope: describe behavior as observable outcomes. Do not add edge cases, options, or configuration the user did not raise.
 - Sync: editing design content obliges reconciling the paired test list in the same change, so every section and test point covers and expresses the current intent, and stale, missing, or misdescribed groups and cases are added, deleted, or fixed.
 
+## Test harness
+
+- `harness/mod.rs` is where the suite starts servers, directories, ports and fixtures; a test file adds test points only.
+- The suite drives the server and the processes it spawns, so it runs in the Linux container `vp run test` starts; `Server::start` refuses to run anywhere else.
+
 ## Sync
 
 When the user asks to commit a design doc change, reconcile the paired test file so every changed section and test point matches the doc.

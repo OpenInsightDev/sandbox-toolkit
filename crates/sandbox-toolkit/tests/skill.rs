@@ -1,142 +1,11 @@
+mod harness;
+
 use std::collections::BTreeSet;
-use std::fs::File;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "sbxtkt-skill-{tag}-{}-{serial}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        Self(std::fs::canonicalize(path).expect("canonicalize temp dir"))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-struct Server {
-    child: Child,
-    base_url: String,
-    log: PathBuf,
-}
-
-impl Server {
-    async fn start(home: &Path) -> Self {
-        let port = free_port();
-        let log = home.join("server.log");
-        let child = Command::new(env!("CARGO_BIN_EXE_sbxtkt"))
-            .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
-            .env("HOME", home)
-            .env("RUST_LOG", "warn")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(File::create(&log).expect("create server log")))
-            .spawn()
-            .expect("spawn sbxtkt");
-
-        let mut server = Self {
-            child,
-            base_url: format!("http://127.0.0.1:{port}"),
-            log,
-        };
-        server.wait_ready().await;
-        server
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
-    }
-
-    async fn get(&self, path: &str) -> reqwest::Response {
-        reqwest::get(self.url(path)).await.expect("GET request")
-    }
-
-    async fn post(&self, path: &str, body: Value) -> reqwest::Response {
-        reqwest::Client::new()
-            .post(self.url(path))
-            .json(&body)
-            .send()
-            .await
-            .expect("POST request")
-    }
-
-    async fn patch(&self, path: &str, body: Value) -> reqwest::Response {
-        reqwest::Client::new()
-            .patch(self.url(path))
-            .json(&body)
-            .send()
-            .await
-            .expect("PATCH request")
-    }
-
-    async fn delete(&self, path: &str) -> reqwest::Response {
-        reqwest::Client::new()
-            .delete(self.url(path))
-            .send()
-            .await
-            .expect("DELETE request")
-    }
-
-    async fn get_json(&self, path: &str) -> Value {
-        let response = self.get(path).await;
-        assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
-        response.json().await.expect("decode GET body")
-    }
-
-    async fn wait_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if reqwest::get(self.url("/workspaces")).await.is_ok() {
-                return;
-            }
-            if let Some(status) = self.child.try_wait().expect("poll server") {
-                panic!(
-                    "server exited with {status}: {}",
-                    std::fs::read_to_string(&self.log).unwrap_or_default()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "server did not become ready: {}",
-            std::fs::read_to_string(&self.log).unwrap_or_default()
-        );
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("reserve a port")
-        .local_addr()
-        .expect("read the reserved address")
-        .port()
-}
+use harness::{Dir, Server};
 
 fn skills_dir(root: &Path) -> PathBuf {
     root.join(".agents/skills")
@@ -148,10 +17,6 @@ fn write_skill(skills: &Path, id: &str, frontmatter: &str, body: &str) -> PathBu
     let document = format!("---\n{frontmatter}\n---\n\n{body}");
     std::fs::write(dir.join("SKILL.md"), document).expect("write SKILL.md");
     dir
-}
-
-async fn register(server: &Server, id: &str, root: &Path) {
-    register_as(server, id, root, "read-write").await;
 }
 
 async fn register_as(server: &Server, id: &str, root: &Path, access: &str) {
@@ -187,7 +52,7 @@ mod load {
 
     #[tokio::test]
     async fn discovers() {
-        let home = TempDir::new("load-discovers");
+        let home = Dir::new("load-discovers");
         let skills = skills_dir(home.path());
         write_skill(
             &skills,
@@ -202,14 +67,14 @@ mod load {
             "Other.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy", "other"]);
     }
 
     #[tokio::test]
     async fn skips() {
-        let home = TempDir::new("load-skips");
+        let home = Dir::new("load-skips");
         let skills = skills_dir(home.path());
         write_skill(
             &skills,
@@ -234,14 +99,14 @@ mod load {
         );
         std::fs::write(skills.join("loose.txt"), "not a skill").expect("write a loose file");
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy"]);
     }
 
     #[tokio::test]
     async fn rescans() {
-        let home = TempDir::new("load-rescans");
+        let home = Dir::new("load-rescans");
         let skills = skills_dir(home.path());
         write_skill(
             &skills,
@@ -250,7 +115,7 @@ mod load {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         write_skill(
             &skills,
@@ -270,8 +135,8 @@ mod merge {
 
     #[tokio::test]
     async fn includes_global() {
-        let home = TempDir::new("merge-includes-home");
-        let root = TempDir::new("merge-includes-root");
+        let home = Dir::new("merge-includes-home");
+        let root = Dir::new("merge-includes-root");
         write_skill(
             &skills_dir(home.path()),
             "global-only",
@@ -285,8 +150,8 @@ mod merge {
             "Workspace.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         assert_eq!(
             ids(&server.get_json("/workspaces/docs/skills").await),
@@ -296,8 +161,8 @@ mod merge {
 
     #[tokio::test]
     async fn workspace_wins() {
-        let home = TempDir::new("merge-wins-home");
-        let root = TempDir::new("merge-wins-root");
+        let home = Dir::new("merge-wins-home");
+        let root = Dir::new("merge-wins-root");
         write_skill(
             &skills_dir(home.path()),
             "deploy",
@@ -311,8 +176,8 @@ mod merge {
             "Workspace body.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         let response = server.get("/workspaces/docs/skills/deploy").await;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
@@ -330,8 +195,8 @@ mod merge {
 
     #[tokio::test]
     async fn absent_workspace() {
-        let home = TempDir::new("merge-absent-home");
-        let root = TempDir::new("merge-absent-root");
+        let home = Dir::new("merge-absent-home");
+        let root = Dir::new("merge-absent-root");
         write_skill(
             &skills_dir(home.path()),
             "global-only",
@@ -339,8 +204,8 @@ mod merge {
             "Global.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         assert_eq!(
             ids(&server.get_json("/workspaces/docs/skills").await),
@@ -354,7 +219,7 @@ mod list {
 
     #[tokio::test]
     async fn skills() {
-        let home = TempDir::new("list-skills");
+        let home = Dir::new("list-skills");
         let skills = skills_dir(home.path());
         write_skill(
             &skills,
@@ -369,14 +234,14 @@ mod list {
             "First.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(ids(&server.get_json("/skills").await), ["deploy", "gamma"]);
     }
 
     #[tokio::test]
     async fn fields() {
-        let home = TempDir::new("list-fields");
+        let home = Dir::new("list-fields");
         let skills = skills_dir(home.path());
         let frontmatter = concat!(
             "name: deploy\n",
@@ -394,7 +259,7 @@ mod list {
             "Other.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
         let document = server.get_json("/skills").await;
 
         assert_eq!(
@@ -420,8 +285,8 @@ mod list {
 
     #[tokio::test]
     async fn uri() {
-        let home = TempDir::new("list-uri-home");
-        let root = TempDir::new("list-uri-root");
+        let home = Dir::new("list-uri-home");
+        let root = Dir::new("list-uri-root");
         write_skill(
             &skills_dir(home.path()),
             "deploy",
@@ -435,8 +300,8 @@ mod list {
             "Workspace body.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         let global = server.get_json("/skills").await;
         assert_eq!(
@@ -453,8 +318,8 @@ mod list {
 
     #[tokio::test]
     async fn workspace() {
-        let home = TempDir::new("list-workspace-home");
-        let root = TempDir::new("list-workspace-root");
+        let home = Dir::new("list-workspace-home");
+        let root = Dir::new("list-workspace-root");
         write_skill(
             &skills_dir(home.path()),
             "global-only",
@@ -468,8 +333,8 @@ mod list {
             "Workspace.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         let document = server.get_json("/workspaces/docs/skills").await;
         assert_eq!(ids(&document), ["global-only", "workspace-only"]);
@@ -485,7 +350,7 @@ mod list {
 
     #[tokio::test]
     async fn unknown_workspace() {
-        let home = TempDir::new("list-unknown");
+        let home = Dir::new("list-unknown");
         write_skill(
             &skills_dir(home.path()),
             "deploy",
@@ -493,7 +358,7 @@ mod list {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(
             server.get("/workspaces/missing/skills").await.status(),
@@ -507,7 +372,7 @@ mod read {
 
     #[tokio::test]
     async fn body() {
-        let home = TempDir::new("read-body");
+        let home = Dir::new("read-body");
         write_skill(
             &skills_dir(home.path()),
             "deploy",
@@ -515,7 +380,7 @@ mod read {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
         let response = server.get("/skills/deploy").await;
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
@@ -529,8 +394,8 @@ mod read {
 
     #[tokio::test]
     async fn merged() {
-        let home = TempDir::new("read-merged-home");
-        let root = TempDir::new("read-merged-root");
+        let home = Dir::new("read-merged-home");
+        let root = Dir::new("read-merged-root");
         write_skill(
             &skills_dir(home.path()),
             "global-only",
@@ -538,8 +403,8 @@ mod read {
             "Global body.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         let response = server.get("/workspaces/docs/skills/global-only").await;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
@@ -548,7 +413,7 @@ mod read {
 
     #[tokio::test]
     async fn not_found() {
-        let home = TempDir::new("read-missing");
+        let home = Dir::new("read-missing");
         write_skill(
             &skills_dir(home.path()),
             "deploy",
@@ -556,7 +421,7 @@ mod read {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(
             server.get("/skills/missing").await.status(),
@@ -570,8 +435,8 @@ mod workspace {
 
     #[tokio::test]
     async fn resolves() {
-        let home = TempDir::new("workspace-resolves-home");
-        let root = TempDir::new("workspace-resolves-root");
+        let home = Dir::new("workspace-resolves-home");
+        let root = Dir::new("workspace-resolves-root");
         let deploy = write_skill(
             &skills_dir(root.path()),
             "deploy",
@@ -579,8 +444,8 @@ mod workspace {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         assert_eq!(
             server.get_json("/workspaces/skill.docs.deploy").await,
@@ -594,8 +459,8 @@ mod workspace {
 
     #[tokio::test]
     async fn usable() {
-        let home = TempDir::new("workspace-usable-home");
-        let root = TempDir::new("workspace-usable-root");
+        let home = Dir::new("workspace-usable-home");
+        let root = Dir::new("workspace-usable-root");
         let deploy = write_skill(
             &skills_dir(root.path()),
             "deploy",
@@ -604,8 +469,8 @@ mod workspace {
         );
         std::fs::write(deploy.join("run.sh"), "#!/bin/sh\necho hi\n").expect("write run.sh");
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         let cwd = server
             .post(
@@ -636,8 +501,8 @@ mod workspace {
 
     #[tokio::test]
     async fn access() {
-        let home = TempDir::new("workspace-access-home");
-        let root = TempDir::new("workspace-access-root");
+        let home = Dir::new("workspace-access-home");
+        let root = Dir::new("workspace-access-root");
         write_skill(
             &skills_dir(root.path()),
             "deploy",
@@ -645,7 +510,7 @@ mod workspace {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
         register_as(&server, "docs", root.path(), "read-only").await;
 
         assert_eq!(
@@ -656,8 +521,8 @@ mod workspace {
 
     #[tokio::test]
     async fn not_listed() {
-        let home = TempDir::new("workspace-not-listed-home");
-        let root = TempDir::new("workspace-not-listed-root");
+        let home = Dir::new("workspace-not-listed-home");
+        let root = Dir::new("workspace-not-listed-root");
         write_skill(
             &skills_dir(root.path()),
             "deploy",
@@ -665,8 +530,8 @@ mod workspace {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         let listed = server.get_json("/workspaces").await;
         let ids: BTreeSet<String> = listed
@@ -684,8 +549,8 @@ mod workspace {
 
     #[tokio::test]
     async fn unknown() {
-        let home = TempDir::new("workspace-unknown-home");
-        let root = TempDir::new("workspace-unknown-root");
+        let home = Dir::new("workspace-unknown-home");
+        let root = Dir::new("workspace-unknown-root");
         write_skill(
             &skills_dir(root.path()),
             "deploy",
@@ -693,8 +558,8 @@ mod workspace {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         assert_eq!(
             server.get("/workspaces/skill.docs.missing").await.status(),
@@ -711,8 +576,8 @@ mod workspace {
 
     #[tokio::test]
     async fn mutate_denied() {
-        let home = TempDir::new("workspace-mutate-home");
-        let root = TempDir::new("workspace-mutate-root");
+        let home = Dir::new("workspace-mutate-home");
+        let root = Dir::new("workspace-mutate-root");
         write_skill(
             &skills_dir(root.path()),
             "deploy",
@@ -720,8 +585,8 @@ mod workspace {
             "Ship it.\n",
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "docs", root.path()).await;
+        let server = Server::start(&home).await;
+        server.register("docs", root.path()).await;
 
         assert_eq!(
             server

@@ -1,10 +1,8 @@
+mod harness;
+
 use std::collections::BTreeSet;
-use std::fs::File;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::Router;
@@ -19,158 +17,13 @@ use rmcp::transport::{
 };
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("sbxtkt-mcp-{tag}-{}-{serial}", std::process::id()));
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        Self(std::fs::canonicalize(path).expect("canonicalize temp dir"))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-struct Server {
-    child: Child,
-    base_url: String,
-    log: PathBuf,
-}
-
-impl Server {
-    async fn start(home: &Path) -> Self {
-        let port = free_port();
-        let log = home.join("server.log");
-        let child = Command::new(env!("CARGO_BIN_EXE_sbxtkt"))
-            .args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()])
-            .env("HOME", home)
-            .env("RUST_LOG", "warn")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(File::create(&log).expect("create server log")))
-            .spawn()
-            .expect("spawn sbxtkt");
-
-        let mut server = Self {
-            child,
-            base_url: format!("http://127.0.0.1:{port}"),
-            log,
-        };
-        server.wait_ready().await;
-        server
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
-    }
-
-    async fn get(&self, path: &str) -> reqwest::Response {
-        reqwest::get(self.url(path)).await.expect("GET request")
-    }
-
-    async fn post(&self, path: &str, body: Value) -> reqwest::Response {
-        reqwest::Client::new()
-            .post(self.url(path))
-            .json(&body)
-            .send()
-            .await
-            .expect("POST request")
-    }
-
-    async fn get_json(&self, path: &str) -> Value {
-        let response = self.get(path).await;
-        assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
-        response.json().await.expect("decode GET body")
-    }
-
-    async fn list(&self) -> Value {
-        let response = self.get("/mcps").await;
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        response.json().await.expect("decode /mcps")
-    }
-
-    async fn wait_status(&self, path: &str, status: reqwest::StatusCode) {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            if self.get(path).await.status() == status {
-                return;
-            }
-            assert!(Instant::now() < deadline, "{path} did not answer {status}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    async fn wait_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if reqwest::get(self.url("/mcps")).await.is_ok() {
-                return;
-            }
-            if let Some(status) = self.child.try_wait().expect("poll server") {
-                panic!(
-                    "server exited with {status}: {}",
-                    std::fs::read_to_string(&self.log).unwrap_or_default()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "server did not become ready: {}",
-            std::fs::read_to_string(&self.log).unwrap_or_default()
-        );
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("reserve a port")
-        .local_addr()
-        .expect("read the reserved address")
-        .port()
-}
-
-fn write_mcp_json(home: &Path, servers: Value) {
-    let agents = home.join(".agents");
-    std::fs::create_dir_all(&agents).expect("create .agents");
-    let document = json!({ "$schema": SCHEMA, "mcpServers": servers });
-    std::fs::write(agents.join("mcp.json"), document.to_string()).expect("write mcp.json");
-}
+use harness::{Dir, SCHEMA, Server, write_mcp_json};
 
 fn ids(document: &Value) -> BTreeSet<String> {
     document["mcpServers"]
         .as_object()
         .map(|servers| servers.keys().cloned().collect())
         .unwrap_or_default()
-}
-
-async fn register(server: &Server, id: &str, root: &Path) {
-    let body = json!({ "id": id, "root": root.to_string_lossy() });
-    let response = server.post("/workspaces", body).await;
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::CREATED,
-        "register workspace {id}"
-    );
 }
 
 #[derive(Clone)]
@@ -225,7 +78,7 @@ mod load {
 
     #[tokio::test]
     async fn discovers() {
-        let home = TempDir::new("load");
+        let home = Dir::new("load");
         write_mcp_json(
             home.path(),
             json!({
@@ -233,24 +86,24 @@ mod load {
                 "deployment-api": { "type": "streamable-http", "url": "http://127.0.0.1:9/mcp" },
             }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(
-            ids(&server.list().await),
+            ids(&server.get_json("/mcps").await),
             BTreeSet::from(["deployment-api".to_owned(), "validator".to_owned()])
         );
     }
 
     #[tokio::test]
     async fn reloads() {
-        let home = TempDir::new("reload");
+        let home = Dir::new("reload");
         write_mcp_json(
             home.path(),
             json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
         assert_eq!(
-            ids(&server.list().await),
+            ids(&server.get_json("/mcps").await),
             BTreeSet::from(["alpha".to_owned()])
         );
 
@@ -261,7 +114,7 @@ mod load {
 
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            if ids(&server.list().await) == BTreeSet::from(["beta".to_owned()]) {
+            if ids(&server.get_json("/mcps").await) == BTreeSet::from(["beta".to_owned()]) {
                 break;
             }
             assert!(
@@ -277,14 +130,14 @@ mod load {
     /// only the MCP mount is affected.
     #[tokio::test]
     async fn broken() {
-        let home = TempDir::new("broken");
+        let home = Dir::new("broken");
         write_mcp_json(
             home.path(),
             json!({ "validator": { "type": "stdio", "command": "./bin/validator" } }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
         assert_eq!(
-            ids(&server.list().await),
+            ids(&server.get_json("/mcps").await),
             BTreeSet::from(["validator".to_owned()])
         );
 
@@ -315,9 +168,9 @@ mod proxy {
 
     #[tokio::test]
     async fn not_found() {
-        let home = TempDir::new("proxy-missing");
+        let home = Dir::new("proxy-missing");
         write_mcp_json(home.path(), json!({}));
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         let response = reqwest::Client::new()
             .post(server.url("/mcps/missing"))
@@ -334,12 +187,12 @@ mod proxy {
     #[tokio::test]
     async fn remote() {
         let upstream = start_upstream(&[]).await;
-        let home = TempDir::new("proxy-remote");
+        let home = Dir::new("proxy-remote");
         write_mcp_json(
             home.path(),
             json!({ "echo": { "type": "streamable-http", "url": upstream } }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         let client = ()
             .serve(StreamableHttpClientTransport::from_uri(
@@ -360,7 +213,7 @@ mod proxy {
 
     #[tokio::test]
     async fn stdio() {
-        let home = TempDir::new("proxy-stdio");
+        let home = Dir::new("proxy-stdio");
         write_mcp_json(
             home.path(),
             json!({
@@ -371,7 +224,7 @@ mod proxy {
                 }
             }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         // The child is not an MCP server, so the handshake fails; that the child
         // ran at all is what proves it was launched with the reserved variables.
@@ -401,15 +254,15 @@ mod query {
 
     #[tokio::test]
     async fn manifest() {
-        let home = TempDir::new("query-shape");
+        let home = Dir::new("query-shape");
         write_mcp_json(
             home.path(),
             json!({ "validator": { "type": "stdio", "command": "./bin/validator" } }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         assert_eq!(
-            server.list().await,
+            server.get_json("/mcps").await,
             json!({
                 "$schema": SCHEMA,
                 "mcpServers": {
@@ -424,12 +277,12 @@ mod query {
 
     #[tokio::test]
     async fn workspace() {
-        let home = TempDir::new("query-workspace");
+        let home = Dir::new("query-workspace");
         write_mcp_json(
             home.path(),
             json!({ "validator": { "type": "stdio", "command": "./bin/validator" } }),
         );
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         let document: Value = server
             .get("/workspaces/global/mcps")
@@ -446,9 +299,9 @@ mod query {
 
     #[tokio::test]
     async fn unknown_workspace() {
-        let home = TempDir::new("query-missing");
+        let home = Dir::new("query-missing");
         write_mcp_json(home.path(), json!({}));
-        let server = Server::start(home.path()).await;
+        let server = Server::start(&home).await;
 
         let response = server.get("/workspaces/missing/mcps").await;
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
@@ -460,7 +313,7 @@ mod merge {
 
     #[tokio::test]
     async fn includes_global() {
-        let home = TempDir::new("merge-includes");
+        let home = Dir::new("merge-includes");
         write_mcp_json(
             home.path(),
             json!({ "global-only": { "type": "stdio", "command": "global" } }),
@@ -471,8 +324,8 @@ mod merge {
             json!({ "workspace-only": { "type": "stdio", "command": "workspace" } }),
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "ws", &root).await;
+        let server = Server::start(&home).await;
+        server.register("ws", &root).await;
 
         assert_eq!(
             ids(&server.get_json("/workspaces/ws/mcps").await),
@@ -485,7 +338,7 @@ mod merge {
         let global = start_upstream(&["global-tool"]).await;
         let local = start_upstream(&["workspace-tool"]).await;
 
-        let home = TempDir::new("merge-wins");
+        let home = Dir::new("merge-wins");
         write_mcp_json(
             home.path(),
             json!({ "echo": { "type": "streamable-http", "url": global } }),
@@ -496,8 +349,8 @@ mod merge {
             json!({ "echo": { "type": "streamable-http", "url": local } }),
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "ws", &root).await;
+        let server = Server::start(&home).await;
+        server.register("ws", &root).await;
 
         let client = ()
             .serve(StreamableHttpClientTransport::from_uri(
@@ -523,15 +376,15 @@ mod merge {
 
     #[tokio::test]
     async fn absent_workspace() {
-        let home = TempDir::new("merge-absent");
+        let home = Dir::new("merge-absent");
         write_mcp_json(
             home.path(),
             json!({ "global-only": { "type": "stdio", "command": "global" } }),
         );
         let root = workspace_root(&home);
 
-        let server = Server::start(home.path()).await;
-        register(&server, "ws", &root).await;
+        let server = Server::start(&home).await;
+        server.register("ws", &root).await;
 
         assert_eq!(
             ids(&server.get_json("/workspaces/ws/mcps").await),
@@ -543,7 +396,7 @@ mod merge {
     /// down with it, even while global's entries are intact.
     #[tokio::test]
     async fn broken() {
-        let home = TempDir::new("merge-broken");
+        let home = Dir::new("merge-broken");
         write_mcp_json(
             home.path(),
             json!({ "global-only": { "type": "stdio", "command": "global" } }),
@@ -554,8 +407,8 @@ mod merge {
             json!({ "workspace-only": { "type": "stdio", "command": "workspace" } }),
         );
 
-        let server = Server::start(home.path()).await;
-        register(&server, "ws", &root).await;
+        let server = Server::start(&home).await;
+        server.register("ws", &root).await;
         assert_eq!(
             ids(&server.get_json("/workspaces/ws/mcps").await),
             BTreeSet::from(["global-only".to_owned(), "workspace-only".to_owned()])
@@ -568,7 +421,7 @@ mod merge {
             .await;
     }
 
-    fn workspace_root(home: &TempDir) -> PathBuf {
+    fn workspace_root(home: &Dir) -> PathBuf {
         let root = home.path().join("ws");
         std::fs::create_dir_all(&root).expect("create the workspace root");
         root
