@@ -1,29 +1,35 @@
 use std::os::unix::fs::MetadataExt;
 use std::time::SystemTime;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct PathRequest {
     pub path: String,
 }
 
 /// The `depth` field: a level count, or `"infinity"` for every level below.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, TS)]
 #[serde(untagged)]
+#[ts(export)]
 pub enum Depth {
     Count(u64),
     Infinity(Infinite),
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub enum Infinite {
     #[serde(rename = "infinity")]
     Yes,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct ListRequest {
     pub path: String,
     pub depth: Option<Depth>,
@@ -31,7 +37,8 @@ pub struct ListRequest {
     pub limit: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct GlobRequest {
     pub path: String,
     pub pattern: String,
@@ -41,14 +48,16 @@ pub struct GlobRequest {
     pub limit: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct LinesRequest {
     pub path: String,
     pub offset: Option<u64>,
     pub limit: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct AccessRequest {
     pub path: String,
     pub ok: Option<bool>,
@@ -56,20 +65,23 @@ pub struct AccessRequest {
     pub writable: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct WatchRequest {
     pub path: String,
     pub recursive: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct Content {
     pub path: String,
     pub content: String,
     pub size: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct Stat {
     pub kind: &'static str,
     pub size: u64,
@@ -125,12 +137,14 @@ fn timestamp(time: SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct Entries {
     pub entries: Vec<Entry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct Entry {
     pub path: String,
 }
@@ -142,19 +156,22 @@ impl Entries {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct Lines {
     pub lines: Vec<String>,
     pub truncated: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct RealPath {
     pub path: String,
 }
 
 /// One line of a `watch` response; `event` is `create`, `update` or `remove`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct Change {
     pub event: &'static str,
     pub path: String,
