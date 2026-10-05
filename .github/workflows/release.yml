@@ -1,0 +1,405 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+# One version for both artifacts. Merging the version pull request publishes the
+# npm package, releases the prebuilt server under the same `v<version>` tag and
+# pushes the container images, so that pull request is the only release entry
+# point.
+#
+# One-time setup: allow Actions to create pull requests (Actions > General) and
+# configure npm trusted publishing for the published package with this filename
+# and the `release` environment; the first publish of a package cannot use
+# trusted publishing and is done by hand. The first image push creates the GHCR
+# package as private, so make it public to let anyone pull it.
+jobs:
+  # One push to `main` either has changesets to turn into a version pull request
+  # or is at a version whose artifacts still have to reach the registries.
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.select-mode.outputs.mode }}
+      publish-plan-artifact-id: ${{ steps.select-mode.outputs.publish-plan-artifact-id }}
+      version: ${{ steps.version.outputs.version }}
+      released: ${{ steps.released.outputs.released }}
+      image: ${{ steps.image.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@v1.21.1
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      - run: vp install
+
+      - name: Select the changesets mode
+        id: select-mode
+        uses: changesets/action/select-mode@v2
+
+      - name: Read the release version
+        id: version
+        run: echo "version=$(node tools/release/version.mjs --print)" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether that version is already released
+        id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # GHCR rejects the owner's casing, and a digest push is not a tag that
+      # metadata-action could sanitise.
+      - name: Resolve the image reference
+        id: image
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+  version:
+    needs: plan
+    if: needs.plan.outputs.mode == 'version'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@v1.21.1
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      - run: vp install
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Version the package and the crate
+        uses: changesets/action/version@v2
+        with:
+          script: vp run release:version
+          commit-message: "chore(release): version packages"
+          pr-title: "chore(release): version packages"
+
+  # Packing is a separate job so that no build runs with the OIDC token that
+  # publishing exchanges for registry credentials.
+  pack:
+    needs: plan
+    if: needs.plan.outputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pack-dir-artifact-id: ${{ steps.pack.outputs.pack-dir-artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@v1.21.1
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      - run: vp install
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Generate the TypeScript bindings
+        run: vp run rust:bindings
+
+      - name: Build the packages
+        run: vp run -r build
+
+      - name: Pack the packages
+        id: pack
+        uses: changesets/action/pack@v2
+        with:
+          publish-plan-artifact-id: ${{ needs.plan.outputs.publish-plan-artifact-id }}
+
+  publish:
+    needs: pack
+    runs-on: ubuntu-latest
+    # Gates the release behind the environment's reviewers, when the repository
+    # defines them. npm trusted publishing is configured for this filename and
+    # environment.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: voidzero-dev/setup-vp@v1.21.1
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      - run: vp install
+
+      - name: Publish to npm
+        uses: changesets/action/publish@v2
+        with:
+          pack-dir-artifact-id: ${{ needs.pack.outputs.pack-dir-artifact-id }}
+          push-git-tags: false
+          create-github-releases: false
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+
+  # Decides once whether binaries have to follow this push. An unpublished
+  # version releases them only after npm accepted it, so a denied or failed
+  # publish stops the whole release; a push whose version is not tagged yet
+  # finishes one that stopped halfway.
+  gate:
+    needs: [plan, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      - id: decide
+        env:
+          RELEASE: ${{ needs.plan.outputs.released == 'false' && ((needs.plan.outputs.mode == 'publish' && needs.publish.result == 'success') || needs.plan.outputs.mode == 'none') }}
+        run: echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+
+  # The server ships as a prebuilt binary for the Linux platforms it runs on.
+  # Building on Debian 11 puts the glibc floor at 2.31, so one binary covers
+  # Ubuntu 20.04, Debian 11 and everything newer.
+  binaries:
+    needs: [plan, gate]
+    if: needs.gate.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    container: rust:1.97-bullseye
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            target
+            /usr/local/cargo/registry
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ matrix.target }}-
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path crates/sandbox-toolkit/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          asset="sbxtkt-${{ needs.plan.outputs.version }}-${{ matrix.target }}"
+          tar -C target/${{ matrix.target }}/release -czf "$asset.tar.gz" sbxtkt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbxtkt-${{ matrix.target }}
+          path: sbxtkt-*.tar.gz
+          if-no-files-found: error
+
+  # amd64 on an x86_64 runner and arm64 on an arm64 one: the binaries come from
+  # the job above, and emulating a platform would only make its `apt` install
+  # slower. Each platform is pushed as a digest and only the merged manifest list
+  # is tagged, so a tag never names a single architecture.
+  images:
+    needs: [plan, gate, binaries]
+    if: needs.gate.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sbxtkt-${{ matrix.target }}
+          path: dist
+
+      # The context holds the one binary BuildKit resolves TARGETARCH to, so the
+      # checkout never reaches the builder.
+      - run: |
+          mkdir -p context/linux/${{ matrix.arch }}
+          tar -xzf dist/sbxtkt-*.tar.gz -C context/linux/${{ matrix.arch }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the labels are used here: the tags belong to the manifest list.
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.plan.outputs.image }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.plan.outputs.version }}
+
+      - name: Build the runtime image
+        id: latest
+        uses: docker/build-push-action@v7
+        with:
+          context: context
+          file: Containerfile
+          target: latest
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ needs.plan.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build the carrier image
+        id: bin
+        uses: docker/build-push-action@v7
+        with:
+          context: context
+          file: Containerfile
+          target: bin
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ needs.plan.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+      - run: |
+          mkdir digests
+          echo "${{ steps.latest.outputs.digest }}" > "digests/latest-${{ matrix.arch }}"
+          echo "${{ steps.bin.outputs.digest }}" > "digests/bin-${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+
+  # Both tags of a variant name the same manifest list, the rolling one and the
+  # immutable one matching the release's version.
+  manifests:
+    needs: [plan, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digests-*
+          path: digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.plan.outputs.image }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.plan.outputs.version }}
+
+      - id: meta-bin
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.plan.outputs.image }}
+          tags: |
+            type=raw,value=bin
+            type=raw,value=${{ needs.plan.outputs.version }}-bin
+
+      - name: Tag the runtime manifest list
+        working-directory: digests
+        env:
+          TAGS: ${{ steps.meta.outputs.json }}
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$TAGS") \
+            $(printf -- '${{ needs.plan.outputs.image }}@%s ' $(cat latest-*))
+
+      - name: Tag the carrier manifest list
+        working-directory: digests
+        env:
+          TAGS: ${{ steps.meta-bin.outputs.json }}
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$TAGS") \
+            $(printf -- '${{ needs.plan.outputs.image }}@%s ' $(cat bin-*))
+
+  release:
+    needs: [plan, gate, binaries]
+    if: needs.gate.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      # Scoped: this run also carries the changesets artifacts.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sbxtkt-*
+          path: dist
+          merge-multiple: true
+
+      # One checksum file covers every artifact, and signing that file is what
+      # a downloader verifies. Signing is keyless: the certificate comes from the
+      # workflow's OIDC identity, so there is no key to keep or rotate.
+      - uses: sigstore/cosign-installer@v4
+
+      - name: Sign the checksums
+        run: |
+          cd dist
+          sha256sum sbxtkt-* > checksums.txt
+          cosign sign-blob --yes --bundle checksums.txt.bundle checksums.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: v${{ needs.plan.outputs.version }}
+          tag_name: v${{ needs.plan.outputs.version }}
+          # The tag has to point at the commit being released, not at whatever
+          # `main` is when the release is created.
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: dist/*

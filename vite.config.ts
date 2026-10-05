@@ -109,7 +109,20 @@ export default defineConfig({
         cache: false,
       },
       check: {
-        command: ["vp run rust:check", "vp check"],
+        // `vp check` type-checks the package sources, which import the ts-rs
+        // bindings the crate exports; nothing else produces them on a fresh
+        // checkout.
+        command: ["vp run rust:bindings", "vp run rust:check", "vp check"],
+        cache: false,
+      },
+      // The version pull request: changesets moves the packages to the next
+      // version and the crate follows them, so one release ships one number.
+      "release:version": {
+        command: [
+          "pnpm exec changeset version",
+          "node tools/release/version.mjs",
+          "cargo update --workspace",
+        ],
         cache: false,
       },
     },
