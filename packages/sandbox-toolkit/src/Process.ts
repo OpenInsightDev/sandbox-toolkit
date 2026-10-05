@@ -327,21 +327,6 @@ export const make = Effect.fn("Process.make")(function* (
   });
 });
 
-/**
- * The process service over a workspace, where `cwd` is a workspace-relative
- * path.
- */
-export const layerForWorkspace = ({
-  workspace,
-  baseUrl,
-}: {
-  workspace: WorkspaceHandle;
-  baseUrl?: string | URL | undefined;
-}) =>
-  Layer.effect(Process, make({ workspace: workspace.id })).pipe(
-    Layer.provide(clientLayer({ baseUrl })),
-  );
-
 /** The process service in direct mode, where `cwd` is an absolute path. */
 export const layer = (config: { readonly baseUrl?: string | URL | undefined } = {}) =>
   Layer.effect(Process, make()).pipe(Layer.provide(clientLayer(config)));

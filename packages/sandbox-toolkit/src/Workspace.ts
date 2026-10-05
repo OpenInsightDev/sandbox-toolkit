@@ -2,8 +2,8 @@ import { Context, Data, Effect, Layer, type Scope } from "effect";
 import { HttpClientRequest } from "effect/unstable/http";
 
 import type { CreateWorkspaceRequest } from "./generated/CreateWorkspaceRequest.ts";
+import type { Metadata } from "./generated/Metadata.ts";
 import type { WorkspaceAccess } from "./generated/WorkspaceAccess.ts";
-import type { WorkspaceHandle } from "./generated/WorkspaceHandle.ts";
 import type { WorkspaceList } from "./generated/WorkspaceList.ts";
 import { Client, layer as clientLayer, type ClientError } from "./internal/client.ts";
 import {
@@ -15,12 +15,7 @@ import {
   validateWorkspaceId,
   validateWorkspaceRef,
 } from "./internal/workspace.ts";
-
-export type { WorkspaceAccess } from "./generated/WorkspaceAccess.ts";
-
-export type { WorkspaceHandle } from "./generated/WorkspaceHandle.ts";
-
-export type { WorkspaceProperties } from "./generated/WorkspaceProperties.ts";
+import { make as makeSkill, type Skill } from "./Skill.ts";
 
 /** A reference outside the id charset: registered `[a-z0-9-]`, derived with `.`. */
 export class InvalidWorkspaceId extends Data.TaggedError("InvalidWorkspaceId")<{
@@ -66,10 +61,13 @@ export interface CreateWorkspaceOptions {
 }
 
 /**
- * A registered workspace as the service surfaces it, carrying the wire handle's
- * fields so derived fields can be layered on without touching the protocol.
+ * A registered workspace as the service surfaces it, carrying the wire
+ * metadata plus the services bound to the workspace's own mount points.
  */
-export interface Workspace extends WorkspaceHandle {}
+export interface Workspace extends Metadata {
+  /** The skill service over this workspace's `/skills` mount. */
+  readonly skill: Skill;
+}
 
 export interface WorkspaceService {
   /**
@@ -116,33 +114,45 @@ export const Workspace: Context.Service<WorkspaceService, WorkspaceService> =
 export const make = Effect.fn("Workspace.make")(function* () {
   const client = yield* Client;
 
+  const withSkill = (metadata: Metadata): Effect.Effect<Workspace> =>
+    makeSkill({ workspace: metadata.id }).pipe(
+      Effect.provideService(Client, client),
+      Effect.map((skill) => ({ ...metadata, skill })),
+    );
+
   const create = Effect.fn("Workspace.create")(function* (options: CreateWorkspaceOptions) {
     const id = yield* validateWorkspaceId(options.id);
 
     const body: CreateWorkspaceRequest = {
       id,
       root: options.root,
-      properties: { access: options.access ?? "read-write" },
+      access: options.access ?? "read-write",
     };
 
     return yield* client
-      .json<Workspace>(
+      .json<Metadata>(
         HttpClientRequest.post(collectionUrl).pipe(HttpClientRequest.bodyJsonUnsafe(body)),
       )
-      .pipe(Effect.mapError((error) => toCreateError(id, error)));
+      .pipe(
+        Effect.flatMap(withSkill),
+        Effect.mapError((error) => toCreateError(id, error)),
+      );
   }) satisfies WorkspaceService["create"];
 
   const list = (() =>
     client
       .json<WorkspaceList>(HttpClientRequest.get(collectionUrl))
-      .pipe(Effect.map((response) => response.workspaces))) satisfies WorkspaceService["list"];
+      .pipe(
+        Effect.flatMap((workspaces) => Effect.forEach(workspaces, withSkill)),
+      )) satisfies WorkspaceService["list"];
 
   const get = Effect.fn("Workspace.get")(function* (workspace: string) {
     const id = yield* validateWorkspaceRef(workspace);
 
-    return yield* client
-      .json<Workspace>(HttpClientRequest.get(itemUrl(id)))
-      .pipe(Effect.mapError((error) => toLookupError(id, error)));
+    return yield* client.json<Metadata>(HttpClientRequest.get(itemUrl(id))).pipe(
+      Effect.flatMap(withSkill),
+      Effect.mapError((error) => toLookupError(id, error)),
+    );
   }) satisfies WorkspaceService["get"];
 
   const remove = Effect.fn("Workspace.remove")(function* (workspace: string) {

@@ -4,7 +4,6 @@ import { HttpClientRequest } from "effect/unstable/http";
 import type { SkillList as SkillListResponse } from "./generated/SkillList.ts";
 import { Client, layer as clientLayer, type ClientError } from "./internal/client.ts";
 import { itemUrl, listUrl, toMetadata, toReadError, validateSkillId } from "./internal/skill.ts";
-import type { WorkspaceHandle } from "./Workspace.ts";
 
 /**
  * A skill id outside the Agent Skills charset: `[a-z0-9-]`, at most 64
@@ -98,21 +97,6 @@ export const make = Effect.fn("Skill.make")(function* (
 
   return Skill.of({ list, read });
 });
-
-/**
- * The skill service over the mount point of a workspace, discovered under its
- * `.agents/skills` directory.
- */
-export const layerForWorkspace = ({
-  workspace,
-  baseUrl,
-}: {
-  workspace: WorkspaceHandle;
-  baseUrl?: string | URL | undefined;
-}) =>
-  Layer.effect(Skill, make({ workspace: workspace.id })).pipe(
-    Layer.provide(clientLayer({ baseUrl })),
-  );
 
 /** The skill service over the global mount point. */
 export const layer = (config: { readonly baseUrl?: string | URL | undefined } = {}) =>
