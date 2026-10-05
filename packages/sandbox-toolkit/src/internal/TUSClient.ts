@@ -8,9 +8,7 @@ import {
   type UploadOptions as TusUploadOptions,
 } from "tus-js-client";
 
-import { Client, layer as clientLayer } from "./internal/client.ts";
-import { route } from "./internal/prelude.ts";
-import type { WorkspaceHandle } from "./Workspace.ts";
+import { Client, layer as clientLayer } from "./client.ts";
 
 /** An upload that could not be created, transferred, or terminated. */
 export class UploadError extends Data.TaggedError("UploadError")<{
@@ -71,8 +69,8 @@ export interface UploadOptions {
    */
   readonly uploadUrl?: string | undefined;
   /**
-   * Upload endpoint overriding the one derived from the layer's addressing
-   * mode and the client base URL.
+   * Upload endpoint overriding the one derived from the client base URL and the
+   * server's mount point.
    */
   readonly endpoint?: string | undefined;
 }
@@ -151,13 +149,14 @@ const absoluteUrl = (value: string): Effect.Effect<string, UploadError> =>
       }),
   });
 
-export const make = Effect.fn("TUSClient.make")(function* (
-  options: { workspace?: string | undefined } = {},
-) {
+/** The server's one upload mount point, which no workspace prefix changes. */
+const UPLOAD_PATH = "/tus";
+
+export const make = Effect.fn("TUSClient.make")(function* () {
   const client = yield* Client;
 
   const endpoint = (override: string | undefined): Effect.Effect<string, UploadError> =>
-    absoluteUrl(override ?? `${client.baseUrl}${route(options.workspace, "/upload")}`);
+    absoluteUrl(override ?? `${client.baseUrl}${UPLOAD_PATH}`);
 
   const upload = ((uploadOptions: UploadOptions) =>
     Stream.unwrap(
@@ -262,21 +261,6 @@ export const make = Effect.fn("TUSClient.make")(function* (
   return TUSClient.of({ upload, uploadResult, terminate });
 });
 
-/**
- * The tus service over a workspace, uploading to
- * `/workspaces/{id}/upload`.
- */
-export const layerForWorkspace = ({
-  workspace,
-  baseUrl,
-}: {
-  workspace: WorkspaceHandle;
-  baseUrl?: string | URL | undefined;
-}) =>
-  Layer.effect(TUSClient, make({ workspace: workspace.id })).pipe(
-    Layer.provide(clientLayer({ baseUrl })),
-  );
-
-/** The tus service in direct mode, uploading to `/upload`. */
+/** The tus service over the server's upload mount point. */
 export const layer = (config: { readonly baseUrl?: string | URL | undefined } = {}) =>
   Layer.effect(TUSClient, make()).pipe(Layer.provide(clientLayer(config)));

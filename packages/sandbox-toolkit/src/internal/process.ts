@@ -22,6 +22,8 @@ export const execRequest = (command: Command): ExecRequest => ({
   format: "exec",
   command: command.command,
   args: [...command.args],
+  script: null,
+  shell: null,
   cwd: command.options?.cwd ?? null,
   env: targetEnv(command.options?.env),
   wait: command.options?.wait ?? 0,
@@ -32,6 +34,8 @@ export const shellRequest = (
   options: ShellCommandOptions | undefined,
 ): ExecRequest => ({
   format: "shell",
+  command: null,
+  args: [],
   script,
   shell: options?.shell ?? null,
   cwd: options?.cwd ?? null,
@@ -122,7 +126,7 @@ const EMPTY = new Uint8Array(0);
 const statusSchema = Schema.fromJsonString(
   Schema.Union([
     Schema.Struct({ status: Schema.Literal("exited"), exit_code: Schema.Number }),
-    Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
+    Schema.Struct({ status: Schema.Literal("signaled"), signal: Schema.Number }),
   ]),
 );
 
@@ -258,7 +262,11 @@ const exitCodeOf = (status: Status): Effect.Effect<ExitCode, CommandFailed> =>
   Match.value(status).pipe(
     Match.discriminatorsExhaustive("status")({
       exited: ({ exit_code }) => Effect.succeed(ExitCode(exit_code)),
-      failed: ({ message }) => Effect.fail(new CommandFailed({ message })),
+      // A signaled command never exited, so it has no exit code to report.
+      signaled: ({ signal }) =>
+        Effect.fail(
+          new CommandFailed({ message: `the command was terminated by signal ${signal}` }),
+        ),
     }),
   );
 

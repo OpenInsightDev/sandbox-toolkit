@@ -29,7 +29,7 @@ export class ApiError extends Data.TaggedError("ApiError")<{
 
 export type ClientError = TransportError | ApiError;
 
-/** Request body of the shared error envelope, see the FileSystem error protocol. */
+/** Request body of the shared error envelope, when a response carries one. */
 const errorResponseSchema = Schema.Struct({
   error: Schema.Struct({
     code: Schema.String,

@@ -5,7 +5,9 @@ import type { CreateWorkspaceRequest } from "./generated/CreateWorkspaceRequest.
 import type { Metadata } from "./generated/Metadata.ts";
 import type { WorkspaceAccess } from "./generated/WorkspaceAccess.ts";
 import type { WorkspaceList } from "./generated/WorkspaceList.ts";
-import { Client, layer as clientLayer, type ClientError } from "./internal/client.ts";
+import { FileSystem, make as makeFs } from "./FileSystem.ts";
+import { Client, type ClientError, layer as clientLayer } from "./internal/client.ts";
+import { layer as http2WebSocket } from "./internal/Http2WebSocket.ts";
 import {
   collectionUrl,
   itemUrl,
@@ -15,7 +17,16 @@ import {
   validateWorkspaceId,
   validateWorkspaceRef,
 } from "./internal/workspace.ts";
-import { make as makeSkill, type Skill } from "./Skill.ts";
+import { Mcp, make as makeMcp } from "./Mcp.ts";
+import { Plugin, make as makePlugin } from "./Plugin.ts";
+import { Process, make as makeProcess } from "./Process.ts";
+import { Skill, make as makeSkill } from "./Skill.ts";
+import {
+  Terminal,
+  type TerminalError,
+  type TerminalOptions,
+  make as makeTerminal,
+} from "./Terminal.ts";
 
 /** A reference outside the id charset: registered `[a-z0-9-]`, derived with `.`. */
 export class InvalidWorkspaceId extends Data.TaggedError("InvalidWorkspaceId")<{
@@ -61,17 +72,29 @@ export interface CreateWorkspaceOptions {
 }
 
 /**
- * A registered workspace as the service surfaces it, carrying the wire
- * metadata plus the services bound to the workspace's own mount points.
+ * A registered workspace as the service surfaces it: the wire metadata plus the
+ * features bound to the workspace prefix the id addresses.
  */
 export interface Workspace extends Metadata {
-  /** The skill service over this workspace's `/skills` mount. */
+  /** Files and directories, addressed relative to the workspace root. */
+  readonly fs: FileSystem;
+  readonly mcp: Mcp;
+  readonly plugin: Plugin;
+  /** Commands and processes, with `cwd` relative to the workspace root. */
+  readonly process: Process["Service"];
   readonly skill: Skill;
+  /**
+   * Opens a pty session in the workspace; the session lives as long as the
+   * surrounding scope.
+   */
+  readonly terminal: (
+    options?: TerminalOptions,
+  ) => Effect.Effect<Terminal, TerminalError, Scope.Scope>;
 }
 
 export interface WorkspaceService {
   /**
-   * Register a remote absolute directory under an id and return its handle.
+   * Register a remote absolute directory under an id and return the workspace.
    *
    * **Details**
    *
@@ -95,7 +118,7 @@ export interface WorkspaceService {
   /** Every registered workspace, in id order. */
   readonly list: () => Effect.Effect<ReadonlyArray<Workspace>, WorkspaceError>;
 
-  /** The handle of one registered workspace. */
+  /** One registered workspace, with the services its mounts expose. */
   readonly get: (workspace: string) => Effect.Effect<Workspace, WorkspaceError>;
 
   /**
@@ -114,11 +137,31 @@ export const Workspace: Context.Service<WorkspaceService, WorkspaceService> =
 export const make = Effect.fn("Workspace.make")(function* () {
   const client = yield* Client;
 
-  const withSkill = (metadata: Metadata): Effect.Effect<Workspace> =>
-    makeSkill({ workspace: metadata.id }).pipe(
+  // The features a workspace prefixes are built against the client the service
+  // was layered with, so callers get them without providing `Client` again.
+  const bind = Effect.fn("Workspace.bind")(function* (metadata: Metadata) {
+    const id = metadata.id;
+
+    const fs = yield* makeFs({ workspace: id }).pipe(Effect.provideService(Client, client));
+
+    const mcp = yield* makeMcp({ workspace: id }).pipe(Effect.provideService(Client, client));
+
+    const plugin = yield* makePlugin({ workspace: id }).pipe(Effect.provideService(Client, client));
+
+    const process = yield* makeProcess({ workspace: id }).pipe(
       Effect.provideService(Client, client),
-      Effect.map((skill) => ({ ...metadata, skill })),
     );
+
+    const skill = yield* makeSkill({ workspace: id }).pipe(Effect.provideService(Client, client));
+
+    const terminal = (options?: TerminalOptions) =>
+      makeTerminal({ workspace: id, ...options }).pipe(
+        Effect.provideService(Client, client),
+        Effect.provide(http2WebSocket),
+      );
+
+    return { ...metadata, fs, mcp, plugin, process, skill, terminal } satisfies Workspace;
+  });
 
   const create = Effect.fn("Workspace.create")(function* (options: CreateWorkspaceOptions) {
     const id = yield* validateWorkspaceId(options.id);
@@ -134,7 +177,7 @@ export const make = Effect.fn("Workspace.make")(function* () {
         HttpClientRequest.post(collectionUrl).pipe(HttpClientRequest.bodyJsonUnsafe(body)),
       )
       .pipe(
-        Effect.flatMap(withSkill),
+        Effect.flatMap(bind),
         Effect.mapError((error) => toCreateError(id, error)),
       );
   }) satisfies WorkspaceService["create"];
@@ -143,14 +186,14 @@ export const make = Effect.fn("Workspace.make")(function* () {
     client
       .json<WorkspaceList>(HttpClientRequest.get(collectionUrl))
       .pipe(
-        Effect.flatMap((workspaces) => Effect.forEach(workspaces, withSkill)),
+        Effect.flatMap((workspaces) => Effect.forEach(workspaces, bind)),
       )) satisfies WorkspaceService["list"];
 
   const get = Effect.fn("Workspace.get")(function* (workspace: string) {
     const id = yield* validateWorkspaceRef(workspace);
 
     return yield* client.json<Metadata>(HttpClientRequest.get(itemUrl(id))).pipe(
-      Effect.flatMap(withSkill),
+      Effect.flatMap(bind),
       Effect.mapError((error) => toLookupError(id, error)),
     );
   }) satisfies WorkspaceService["get"];
@@ -164,8 +207,8 @@ export const make = Effect.fn("Workspace.make")(function* () {
   }) satisfies WorkspaceService["remove"];
 
   const createScoped = ((options: CreateWorkspaceOptions) =>
-    Effect.acquireRelease(create(options), (handle) =>
-      remove(handle.id).pipe(
+    Effect.acquireRelease(create(options), (workspace) =>
+      remove(workspace.id).pipe(
         Effect.catchTag("WorkspaceNotFound", () => Effect.void),
         Effect.orDie,
       ),

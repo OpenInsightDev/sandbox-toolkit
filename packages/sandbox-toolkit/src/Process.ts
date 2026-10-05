@@ -16,7 +16,6 @@ import {
   takeLines,
 } from "./internal/process.ts";
 import { route } from "./internal/prelude.ts";
-import type { WorkspaceHandle } from "./Workspace.ts";
 
 /** A command that could not run, or was terminated before it could exit. */
 export class CommandFailed extends Data.TaggedError("CommandFailed")<{

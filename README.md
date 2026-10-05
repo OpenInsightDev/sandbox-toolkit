@@ -47,31 +47,30 @@ A workspace is the enforced boundary: every path is canonicalized and must resol
 
 ## TypeScript SDK
 
-Effect-based services (`Workspace`, `FileSystem`, `Process`, `Skill`, `Terminal`) with typed errors and streaming.
+Effect-based services (`Workspace`, `FileSystem`, `Mcp`, `Plugin`, `Process`, `Skill`, `Terminal`) with typed errors and streaming. A registered workspace carries the services bound to its own mount prefix, so `docs.process` runs against `/workspaces/docs/exec` without any further wiring.
 
 ```ts
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 
-import * as FileSystem from "./src/FileSystem.ts";
-
-const workspace = { id: "docs", properties: { access: "read-write" } } as const;
+import * as Workspace from "./src/Workspace.ts";
 
 const program = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  return yield* fs.readFileString("notes.md");
+  const workspaces = yield* Workspace.Workspace;
+  const docs = yield* workspaces.create({ id: "docs", root: "/srv/project" });
+
+  return yield* docs.process.$`rg --files`;
 });
 
 await Effect.runPromise(
   Effect.provide(
     program,
-    FileSystem.layerForWorkspace({
-      workspace,
-      baseUrl: "http://127.0.0.1:3000",
-    }).pipe(Layer.provide(FetchHttpClient.layer)),
+    Workspace.layer({ baseUrl: "http://127.0.0.1:3000" }).pipe(Layer.provide(FetchHttpClient.layer)),
   ),
 );
 ```
+
+Each service also has a `layer` of its own for its global mount point, where paths and mount points are not workspace-relative.
 
 ## Configuration
 

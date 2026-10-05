@@ -39,8 +39,7 @@ export interface SkillMetadata {
   readonly uri: string;
   /**
    * Id of the read-only workspace holding the skill's other files; resolve it
-   * with the workspace service before opening it with
-   * `FileSystem.layerForWorkspace`.
+   * with the workspace service.
    */
   readonly workspace: string;
 }

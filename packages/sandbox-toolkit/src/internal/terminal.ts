@@ -1,9 +1,10 @@
 import { Data, Option, Schema } from "effect";
 
+import type { PtySize } from "../generated/PtySize.ts";
 import type { Status } from "../generated/Status.ts";
-import type { TerminalSize } from "../generated/TerminalSize.ts";
 
-/** Discriminants are wire identifiers, see `Process.md`; reordering changes the format. */
+// The channel numbering exec's frame stream and pty's messages share: 0 stdin,
+// 1 stdout, 2 stderr, 3 error, 4 resize.
 const STDIN = 0;
 
 const STDOUT = 1;
@@ -20,7 +21,7 @@ export type Frame = Data.TaggedEnum<{
   Stdin: { readonly data: Uint8Array };
   Stdout: { readonly data: Uint8Array };
   Exit: { readonly status: Status };
-  Resize: { readonly size: TerminalSize };
+  Resize: { readonly size: PtySize };
 }>;
 
 export const Frame = Data.taggedEnum<Frame>();
@@ -30,11 +31,11 @@ const encoder = new TextEncoder();
 const statusSchema = Schema.fromJsonString(
   Schema.Union([
     Schema.Struct({ status: Schema.Literal("exited"), exit_code: Schema.Number }),
-    Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
+    Schema.Struct({ status: Schema.Literal("signaled"), signal: Schema.Number }),
   ]),
 );
 
-const resizeBytes = (size: TerminalSize): Uint8Array =>
+const resizeBytes = (size: PtySize): Uint8Array =>
   new Uint8Array([size.rows >> 8, size.rows & 0xff, size.cols >> 8, size.cols & 0xff]);
 
 const join = (channel: number, payload: Uint8Array): Uint8Array => {

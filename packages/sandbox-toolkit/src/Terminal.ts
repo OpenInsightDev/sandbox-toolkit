@@ -6,12 +6,11 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import type { PtyRequest } from "./generated/PtyRequest.ts";
 import type { PtySession } from "./generated/PtySession.ts";
-import { layer as http2WebSocket } from "./Http2WebSocket.ts";
-import { Client, layer as clientLayer } from "./internal/client.ts";
+import { Client, type ClientError, layer as clientLayer } from "./internal/client.ts";
+import { layer as http2WebSocket } from "./internal/Http2WebSocket.ts";
 import { endLines, takeLines } from "./internal/process.ts";
 import { route, targetEnv } from "./internal/prelude.ts";
 import { Frame, decodeFrame, encodeFrame, webSocketUrl } from "./internal/terminal.ts";
-import type { WorkspaceHandle } from "./Workspace.ts";
 
 export interface Terminal {
   /**
@@ -38,6 +37,9 @@ export interface Terminal {
 }
 
 export const Terminal: Context.Service<Terminal, Terminal> = Context.Service("effect/Terminal");
+
+/** Failure creating the session, or attaching the socket that carries it. */
+export type TerminalError = ClientError | Socket.SocketError;
 
 export interface TerminalOptions {
   /**
@@ -193,23 +195,6 @@ export const make = Effect.fn("Terminal.make")(function* (
     display,
   });
 });
-
-/**
- * The terminal service over a workspace, where `cwd` is a workspace-relative
- * path.
- */
-export const layerForWorkspace = ({
-  workspace,
-  baseUrl,
-  ...options
-}: {
-  workspace: WorkspaceHandle;
-  baseUrl?: string | URL | undefined;
-} & TerminalOptions) =>
-  Layer.effect(Terminal, make({ workspace: workspace.id, ...options })).pipe(
-    Layer.provide(http2WebSocket),
-    Layer.provide(clientLayer({ baseUrl })),
-  );
 
 /** The terminal service in direct mode, where `cwd` is an absolute path. */
 export const layer = ({

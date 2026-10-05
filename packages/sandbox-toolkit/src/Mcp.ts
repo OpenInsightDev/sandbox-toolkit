@@ -1,4 +1,9 @@
-import { Schema } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
+import { HttpClientRequest } from "effect/unstable/http";
+
+import type { StreamableHttpServerMcpConfig } from "./generated/StreamableHttpServerMcpConfig.ts";
+import { Client, layer as clientLayer, type ClientError } from "./internal/client.ts";
+import { route } from "./internal/prelude.ts";
 
 /**
  * Agent Plugins `mcp.json` 1.0.0, following
@@ -69,3 +74,29 @@ export const McpConfig = Schema.Struct({
   $schema: Schema.Literal(MCP_SCHEMA_1_0_0),
   mcpServers: Schema.Record(Schema.String, Server),
 });
+
+export type McpError = ClientError;
+
+export interface Mcp {
+  /** The MCP servers the mount point serves, as `GET /mcps` answers with them. */
+  readonly servers: () => Effect.Effect<StreamableHttpServerMcpConfig, McpError>;
+}
+
+export const Mcp: Context.Service<Mcp, Mcp> = Context.Service("mcp");
+
+export const make = Effect.fn("Mcp.make")(function* (
+  mount: { workspace?: string | undefined } = {},
+) {
+  const client = yield* Client;
+
+  const servers = (() =>
+    client.json<StreamableHttpServerMcpConfig>(
+      HttpClientRequest.get(route(mount.workspace, "/mcps")),
+    )) satisfies Mcp["servers"];
+
+  return Mcp.of({ servers });
+});
+
+/** The MCP service over the global mount point. */
+export const layer = (config: { readonly baseUrl?: string | URL | undefined } = {}) =>
+  Layer.effect(Mcp, make()).pipe(Layer.provide(clientLayer(config)));
