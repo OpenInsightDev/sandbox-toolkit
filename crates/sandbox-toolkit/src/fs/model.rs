@@ -72,6 +72,68 @@ pub struct WatchRequest {
     pub recursive: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct WriteRequest {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct MakeDirectoryRequest {
+    pub path: String,
+    pub recursive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct SymlinkRequest {
+    pub path: String,
+    pub target: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct MetadataRequest {
+    pub path: String,
+    pub mode: Option<String>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub atime: Option<String>,
+    pub mtime: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct TextPatchRequest {
+    pub path: String,
+    pub format: String,
+    pub patch: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct TruncateRequest {
+    pub path: String,
+    pub length: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct TransferRequest {
+    pub path: String,
+    pub destination: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct RemoveRequest {
+    pub path: String,
+    pub recursive: Option<bool>,
+    pub force: Option<bool>,
+}
+
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct Content {
@@ -183,6 +245,8 @@ pub enum FsError {
     NotFound(String),
     #[error("permission denied on `{0}`")]
     PermissionDenied(String),
+    #[error("`{0}` is in the way")]
+    Conflict(String),
     #[error("`{0}` is not valid UTF-8")]
     NotUtf8(String),
     #[error("{0}")]

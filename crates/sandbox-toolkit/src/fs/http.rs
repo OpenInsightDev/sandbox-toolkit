@@ -11,7 +11,7 @@ use notify::EventKind;
 use salvo::extract::JsonBody;
 use salvo::http::body::ResBody;
 use salvo::http::header::HeaderValue;
-use salvo::http::{StatusCode, header};
+use salvo::http::{Method, StatusCode, header};
 use salvo::prelude::*;
 use sandbox_toolkit_utils::watch::{Watch, WatchEvent};
 use tokio::sync::broadcast::Receiver;
@@ -24,6 +24,7 @@ use super::model::{
     AccessRequest, Change, Content, Depth, Entries, FsError, GlobRequest, Infinite, Lines,
     LinesRequest, ListRequest, PathRequest, RealPath, Stat, WatchRequest,
 };
+use super::{create, modify, paths};
 
 /// The page a `lines` read returns when the request names none.
 const DEFAULT_LINES: u64 = 1000;
@@ -31,7 +32,7 @@ const DEFAULT_LINES: u64 = 1000;
 /// Whether the mount names a workspace or is the unscoped global one, which also
 /// decides how a request path and an entry path are written.
 #[derive(Debug, Clone, Copy)]
-pub enum Scope {
+pub(super) enum Scope {
     Global,
     Workspace,
 }
@@ -39,7 +40,7 @@ pub enum Scope {
 /// The addressing a request and its response paths share: a workspace resolves a
 /// request path against its root, the global mount takes it as it is.
 #[derive(Debug, Clone)]
-pub struct Target {
+pub(super) struct Target {
     root: PathBuf,
     scope: Scope,
 }
@@ -49,7 +50,7 @@ impl Target {
         Self { root, scope }
     }
 
-    fn resolve(&self, path: &str) -> PathBuf {
+    pub(super) fn resolve(&self, path: &str) -> PathBuf {
         if path.is_empty() {
             return self.root.clone();
         }
@@ -60,7 +61,7 @@ impl Target {
         }
     }
 
-    fn render(&self, path: &Path) -> String {
+    pub(super) fn render(&self, path: &Path) -> String {
         match self.scope {
             Scope::Workspace => path
                 .strip_prefix(&self.root)
@@ -73,7 +74,12 @@ impl Target {
 }
 
 pub fn routes() -> Router {
-    Router::new().query(handle)
+    Router::new()
+        .query(handle)
+        .put(handle)
+        .patch(handle)
+        .post(handle)
+        .delete(handle)
 }
 
 #[handler]
@@ -83,9 +89,6 @@ async fn handle(
     req: &mut Request,
     res: &mut Response,
 ) -> Result<(), StatusError> {
-    let kind = req
-        .query::<String>("type")
-        .ok_or_else(|| StatusError::bad_request().brief("`type` is required"))?;
     // A mount carrying `{workspace_id}` addresses the workspace root; the
     // unscoped mount addresses absolute paths.
     let scope = match req.param::<String>("workspace_id") {
@@ -94,7 +97,24 @@ async fn handle(
     };
     let target = Target::new(workspace.metadata().await.root, scope);
 
-    dispatch(&target, &kind, body.0, res).await
+    // `DELETE` is the one write whose method alone names the operation, so it is
+    // the one request that carries no `type`.
+    let method = req.method().clone();
+    if method == Method::DELETE {
+        return paths::remove(&target, body.0, res).await;
+    }
+
+    let kind = req
+        .query::<String>("type")
+        .ok_or_else(|| StatusError::bad_request().brief("`type` is required"))?;
+
+    match method {
+        Method::QUERY => dispatch(&target, &kind, body.0, res).await,
+        Method::PUT => create::dispatch(&target, &kind, body.0, res).await,
+        Method::PATCH => modify::dispatch(&target, &kind, body.0, res).await,
+        Method::POST => paths::dispatch(&target, &kind, body.0, res).await,
+        _ => Err(StatusError::method_not_allowed()),
+    }
 }
 
 async fn dispatch(
@@ -117,7 +137,7 @@ async fn dispatch(
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(body: serde_json::Value) -> Result<T, FsError> {
+pub(super) fn decode<T: serde::de::DeserializeOwned>(body: serde_json::Value) -> Result<T, FsError> {
     serde_json::from_value(body).map_err(|error| FsError::Invalid(error.to_string()))
 }
 
@@ -466,16 +486,21 @@ fn excluded(relative: &Path, excludes: &[GlobMatcher]) -> bool {
         .any(|ancestor| excludes.iter().any(|exclude| exclude.is_match(ancestor)))
 }
 
-async fn read(path: &Path) -> Result<Vec<u8>, FsError> {
+pub(super) async fn read(path: &Path) -> Result<Vec<u8>, FsError> {
     tokio::fs::read(path)
         .await
         .map_err(|error| io_error(&path.to_string_lossy(), error))
 }
 
-fn io_error(path: &str, error: std::io::Error) -> FsError {
+pub(super) fn io_error(path: &str, error: std::io::Error) -> FsError {
     match error.kind() {
         std::io::ErrorKind::NotFound => FsError::NotFound(path.to_owned()),
         std::io::ErrorKind::PermissionDenied => FsError::PermissionDenied(path.to_owned()),
+        // `EEXIST` and `ENOTEMPTY` both mean the state on disk forbids the write,
+        // which is the same answer to the caller either way.
+        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty => {
+            FsError::Conflict(path.to_owned())
+        }
         _ => FsError::Io(error),
     }
 }
@@ -487,6 +512,7 @@ impl From<FsError> for StatusError {
         let status = match &error {
             FsError::NotFound(_) => StatusCode::NOT_FOUND,
             FsError::PermissionDenied(_) => StatusCode::FORBIDDEN,
+            FsError::Conflict(_) => StatusCode::CONFLICT,
             FsError::NotUtf8(_) => StatusCode::UNPROCESSABLE_ENTITY,
             FsError::Invalid(_) => StatusCode::BAD_REQUEST,
             FsError::Io(_) | FsError::Watch(_) => StatusCode::INTERNAL_SERVER_ERROR,
