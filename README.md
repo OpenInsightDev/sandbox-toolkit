@@ -97,9 +97,10 @@ vp run rust:build    # build the server binary the end-to-end tests spawn
 The end-to-end suite drives the server and the processes it spawns, so it runs
 inside a Linux container: `docker` on CI, Apple's `container` on macOS, and
 `SBXTKT_TEST_RUNTIME` picks one where neither is right. The image is
-`rust:1.97-bookworm`, overridable with `SBXTKT_TEST_IMAGE`, and the container's
-build caches land in `target/{linux,cargo-home}`, so only the first run pays for
-a full compile. `cargo test` runs the suite by hand, and needs the same
+`rust:1.97-bookworm`, overridable with `SBXTKT_TEST_IMAGE`. Its build caches live
+in `${XDG_CACHE_HOME:-$HOME/.cache}/sandbox-toolkit`, overridable with
+`SBXTKT_TEST_CACHE`, and every worktree shares them, so only the first run pays
+for a full compile. `cargo test` runs the suite by hand, and needs the same
 container.
 
 With [`sccache`](https://github.com/mozilla/sccache) on `PATH`, every checkout

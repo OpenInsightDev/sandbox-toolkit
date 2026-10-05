@@ -2,7 +2,9 @@
 # Runs the end-to-end suite in a Linux container: CI has docker, macOS has
 # `container`.
 #
-# The caches live under `target/`, so a second run only compiles what changed.
+# The container always sees the repository at /w, so the paths it compiles are
+# the same whatever checkout is mounted: one cache directory outside the
+# worktrees is reused by all of them instead of one copy per checkout.
 # Arguments are passed on to `cargo test`.
 set -eu
 
@@ -13,6 +15,7 @@ esac
 
 runtime=${SBXTKT_TEST_RUNTIME:-$default_runtime}
 image=${SBXTKT_TEST_IMAGE:-rust:1.97-bookworm}
+cache=${SBXTKT_TEST_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sandbox-toolkit}
 
 case "$runtime" in
 docker) flags='' ;;
@@ -36,13 +39,16 @@ done
 # Linux processes. Its home is writable whatever user it runs as.
 command="mkdir -p \"\$HOME\" && exec cargo test -p sandbox-toolkit$targets \"\$@\""
 
+mkdir -p "$cache/cargo-home" "$cache/target"
+
 # shellcheck disable=SC2086
 "$runtime" run --rm $flags \
     -v "$repo:/w" \
+    -v "$cache:/cache" \
     -w /w \
     -e HOME=/tmp/home \
-    -e CARGO_HOME=/w/target/cargo-home \
-    -e CARGO_TARGET_DIR=/w/target/linux \
+    -e CARGO_HOME=/cache/cargo-home \
+    -e CARGO_TARGET_DIR=/cache/target \
     -u "$(id -u):$(id -g)" \
     "$image" \
     sh -c "$command" e2e "$@"
