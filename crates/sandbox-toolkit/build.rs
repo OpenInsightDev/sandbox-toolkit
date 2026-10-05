@@ -76,7 +76,7 @@ fn sources(target: &str) -> Vec<Source> {
                 "https://github.com/BurntSushi/ripgrep/releases/download/{}",
                 RG.0
             ),
-            format!("ripgrep-{}-{target}.tar.gz", RG.0),
+            rg_asset(target),
             &[RG.1],
         ),
         Source::archive(
@@ -98,6 +98,17 @@ fn sources(target: &str) -> Vec<Source> {
             &[TUSD.1],
         ),
     ]
+}
+
+/// ripgrep builds x86_64 Linux only against musl, so that is the asset to embed
+/// on a glibc target as well: it is statically linked and needs no libc.
+fn rg_asset(target: &str) -> String {
+    let release = match target {
+        "x86_64-unknown-linux-gnu" => "x86_64-unknown-linux-musl",
+        target => target,
+    };
+
+    format!("ripgrep-{}-{release}.tar.gz", RG.0)
 }
 
 /// tusd is a Go program, so its release assets are named by `GOOS`/`GOARCH`
