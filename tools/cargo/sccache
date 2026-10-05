@@ -1,0 +1,19 @@
+#!/bin/sh
+# No-op unless sccache is installed, so container images and machines without it
+# still build.
+#
+# Named `sccache` on purpose: the `cc` crate only routes C and C++ compilations
+# through `RUSTC_WRAPPER` when the file stem is a known cache tool.
+#
+# The daemon resolves its temp dir once, when the first client starts it, and
+# keeps it for its whole life; a shell that hands out a temp dir it deletes when
+# the command ends leaves that daemon stranded, failing every later compile. Pin
+# one that does not move.
+set -eu
+
+if command -v sccache >/dev/null 2>&1; then
+  tmp="${SCCACHE_TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sccache-tmp}"
+  mkdir -p "$tmp"
+  TMPDIR="$tmp" exec sccache "$@"
+fi
+exec "$@"

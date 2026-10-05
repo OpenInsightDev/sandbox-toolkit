@@ -102,6 +102,17 @@ build caches land in `target/{linux,cargo-home}`, so only the first run pays for
 a full compile. `cargo test` runs the suite by hand, and needs the same
 container.
 
+With [`sccache`](https://github.com/mozilla/sccache) on `PATH`, every checkout
+compiles into one shared cache, so a new git worktree no longer pays for the
+dependency graph again; without it the build falls back to plain `rustc`.
+
+```bash
+brew install sccache   # or: cargo binstall sccache
+```
+
+`SCCACHE_DIR` moves the cache off the boot volume and `SCCACHE_CACHE_SIZE`
+(default 10 GiB) caps it.
+
 The PTY crate keeps its own tests (`cargo test -p pty`).
 
 ## License

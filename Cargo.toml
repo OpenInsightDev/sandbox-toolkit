@@ -13,6 +13,11 @@ fn_params_excessive_bools = "warn"
 tokio = { version = "1.53.1", features = ["full"] }
 thiserror = "2.0.21"
 
+# sccache cannot cache incremental compilations, and they are the largest
+# artifact a checkout writes.
+[profile.dev]
+incremental = false
+
 # The build script inflates the upstream archives, hashes their payloads and
 # compresses them for embedding; at the dev profile's `opt-level = 0` the crates doing
 # that work run several times slower, which dominated every build.
