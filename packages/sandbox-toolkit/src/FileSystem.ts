@@ -19,9 +19,16 @@ import type { GlobRequest } from "./generated/GlobRequest.ts";
 import type { Lines } from "./generated/Lines.ts";
 import type { LinesRequest } from "./generated/LinesRequest.ts";
 import type { ListRequest } from "./generated/ListRequest.ts";
+import type { MakeDirectoryRequest } from "./generated/MakeDirectoryRequest.ts";
+import type { MetadataRequest } from "./generated/MetadataRequest.ts";
 import type { RealPath } from "./generated/RealPath.ts";
+import type { RemoveRequest } from "./generated/RemoveRequest.ts";
 import type { Stat } from "./generated/Stat.ts";
+import type { SymlinkRequest } from "./generated/SymlinkRequest.ts";
+import type { TransferRequest } from "./generated/TransferRequest.ts";
+import type { TruncateRequest } from "./generated/TruncateRequest.ts";
 import type { WatchRequest } from "./generated/WatchRequest.ts";
+import type { WriteRequest } from "./generated/WriteRequest.ts";
 import { Client, layer as clientLayer } from "./internal/client.ts";
 import {
   isNotFound,
@@ -34,13 +41,32 @@ import { endLines, takeLines } from "./internal/process.ts";
 
 export type FileSystemError = PlatformError.PlatformError;
 
+/** The HTTP methods the mount accepts; each names one handler group. */
+type Method = "query" | "put" | "patch" | "post" | "delete";
+
+const methods: Readonly<Record<Method, (url: string) => HttpClientRequest.HttpClientRequest>> = {
+  query: HttpClientRequest.query,
+  put: HttpClientRequest.put,
+  patch: HttpClientRequest.patch,
+  post: HttpClientRequest.post,
+  delete: HttpClientRequest.delete,
+};
+
+/** Every request body names a path; a transfer names its destination too. */
+interface Addressing {
+  readonly path: string;
+  readonly destination?: string | undefined;
+}
+
 /**
- * One file system request: `operation` names the caller in errors, `type` is the
- * handler the query string selects, and `body` carries the document.
+ * One file system request: `operation` names the caller in errors, `method` and
+ * `type` select the handler, and `body` carries the document.
  */
-interface Query<Body extends { readonly path: string }> {
+interface Query<Body extends Addressing> {
   readonly operation: string;
-  readonly type: string;
+  /** The mount's read method unless a write names its own. */
+  readonly method?: Method | undefined;
+  readonly type: string | undefined;
   readonly body: Body;
 }
 
@@ -200,42 +226,56 @@ export const FileSystem: Context.Service<FileSystem, FileSystem> =
 
 const isUtf8 = (encoding: string): boolean => encoding.replaceAll("-", "").toLowerCase() === "utf8";
 
+/** The mount's timestamp patch takes RFC 3339. */
+const timestamp = (value: Date | number): string => new Date(value).toISOString();
+
 export const make = Effect.fn("FileSystem.make")(function* (
   options: { workspace?: string | undefined } = {},
 ) {
   const client = yield* Client;
 
-  const endpoint = (type: string): string =>
-    options.workspace === undefined
-      ? `/fs?type=${type}`
-      : `/workspaces/${options.workspace}/fs?type=${type}`;
+  // `DELETE` names its operation by method alone, so it carries no `type`.
+  const endpoint = (type: string | undefined): string => {
+    const mount = options.workspace === undefined ? "/fs" : `/workspaces/${options.workspace}/fs`;
+
+    return type === undefined ? mount : `${mount}?type=${type}`;
+  };
 
   // The direct mount addresses absolute paths, so a relative one is rejected
   // before the request rather than resolved against the server's own cwd.
-  const guardPath = ({
-    operation,
-    body,
-  }: Query<{ readonly path: string }>): Effect.Effect<void, FileSystemError> =>
-    options.workspace === undefined && !body.path.startsWith("/")
-      ? Effect.fail(
+  const guardPaths = (
+    operation: string,
+    body: Addressing,
+  ): Effect.Effect<void, FileSystemError> => {
+    if (options.workspace !== undefined) {
+      return Effect.void;
+    }
+
+    const paths = body.destination === undefined ? [body.path] : [body.path, body.destination];
+    const relative = paths.find((path) => !path.startsWith("/"));
+
+    return relative === undefined
+      ? Effect.void
+      : Effect.fail(
           PlatformError.badArgument({
             module: "FileSystem",
             method: operation,
-            description: `path must be absolute: ${body.path}`,
+            description: `path must be absolute: ${relative}`,
           }),
-        )
-      : Effect.void;
+        );
+  };
 
-  const wire = <Body extends { readonly path: string }>({
+  const wire = <Body extends Addressing>({
+    method = "query",
     type,
     body,
   }: Query<Body>): HttpClientRequest.HttpClientRequest =>
-    HttpClientRequest.query(endpoint(type)).pipe(HttpClientRequest.bodyJsonUnsafe(body));
+    methods[method](endpoint(type)).pipe(HttpClientRequest.bodyJsonUnsafe(body));
 
-  const queryJson = <A, Body extends { readonly path: string } = { readonly path: string }>(
+  const queryJson = <A, Body extends Addressing = Addressing>(
     query: Query<Body>,
   ): Effect.Effect<A, FileSystemError> =>
-    guardPath(query).pipe(
+    guardPaths(query.operation, query.body).pipe(
       Effect.flatMap(() =>
         client
           .json<A>(wire(query))
@@ -243,10 +283,10 @@ export const make = Effect.fn("FileSystem.make")(function* (
       ),
     );
 
-  const queryBytes = (
-    query: Query<{ readonly path: string }>,
+  const queryBytes = <Body extends Addressing>(
+    query: Query<Body>,
   ): Effect.Effect<Uint8Array, FileSystemError> =>
-    guardPath(query).pipe(
+    guardPaths(query.operation, query.body).pipe(
       Effect.flatMap(() =>
         client
           .bytes(wire(query))
@@ -254,10 +294,10 @@ export const make = Effect.fn("FileSystem.make")(function* (
       ),
     );
 
-  const queryVoid = (
-    query: Query<{ readonly path: string }>,
+  const queryVoid = <Body extends Addressing>(
+    query: Query<Body>,
   ): Effect.Effect<void, FileSystemError> =>
-    guardPath(query).pipe(
+    guardPaths(query.operation, query.body).pipe(
       Effect.flatMap(() =>
         client
           .void(wire(query))
@@ -265,11 +305,11 @@ export const make = Effect.fn("FileSystem.make")(function* (
       ),
     );
 
-  const queryStream = (
-    query: Query<{ readonly path: string }>,
+  const queryStream = <Body extends Addressing>(
+    query: Query<Body>,
   ): Stream.Stream<Uint8Array, FileSystemError> =>
     Stream.unwrap(
-      guardPath(query).pipe(
+      guardPaths(query.operation, query.body).pipe(
         Effect.map(() =>
           client
             .stream(wire(query))
@@ -398,18 +438,172 @@ export const make = Effect.fn("FileSystem.make")(function* (
     );
   }) satisfies FileSystem["watch"];
 
+  const transfer = (
+    operation: string,
+    type: string,
+    path: string,
+    destination: string,
+  ): Effect.Effect<void, FileSystemError> =>
+    queryVoid({
+      operation,
+      method: "post",
+      type,
+      body: { path, destination } satisfies TransferRequest,
+    });
+
+  const copy = ((fromPath: string, toPath: string, copyOptions) => {
+    if (copyOptions?.overwrite === false) {
+      return Effect.fail(unsupported("copy(overwrite=false)"));
+    }
+
+    if (copyOptions?.preserveTimestamps === true) {
+      return Effect.fail(unsupported("copy(preserveTimestamps)"));
+    }
+
+    return transfer("copy", "copy", fromPath, toPath);
+  }) satisfies FileSystem["copy"];
+
+  const copyFile = ((fromPath: string, toPath: string) =>
+    transfer("copyFile", "copy", fromPath, toPath)) satisfies FileSystem["copyFile"];
+
+  const rename = ((oldPath: string, newPath: string) =>
+    transfer("rename", "move", oldPath, newPath)) satisfies FileSystem["rename"];
+
+  // The mount's metadata patch writes only the fields it is given, so an
+  // untouched attribute is sent as `null`.
+  const chmod = ((path: string, mode: number) =>
+    queryVoid({
+      operation: "chmod",
+      method: "patch",
+      type: "metadata",
+      body: {
+        path,
+        mode: mode.toString(8),
+        uid: null,
+        gid: null,
+        atime: null,
+        mtime: null,
+      } satisfies MetadataRequest,
+    })) satisfies FileSystem["chmod"];
+
+  const utimes = ((path: string, atime: Date | number, mtime: Date | number) =>
+    queryVoid({
+      operation: "utimes",
+      method: "patch",
+      type: "metadata",
+      body: {
+        path,
+        mode: null,
+        uid: null,
+        gid: null,
+        atime: timestamp(atime),
+        mtime: timestamp(mtime),
+      } satisfies MetadataRequest,
+    })) satisfies FileSystem["utimes"];
+
+  const truncate = ((path: string, length?: number) =>
+    queryVoid({
+      operation: "truncate",
+      method: "patch",
+      type: "truncate",
+      body: { path, length: length ?? null } satisfies TruncateRequest,
+    })) satisfies FileSystem["truncate"];
+
+  const symlink = ((fromPath: string, toPath: string) =>
+    queryVoid({
+      operation: "symlink",
+      method: "put",
+      type: "symlink",
+      // The link is created at `toPath` and points at `fromPath`.
+      body: { path: toPath, target: fromPath } satisfies SymlinkRequest,
+    })) satisfies FileSystem["symlink"];
+
+  const makeDirectory = ((path: string, makeOptions) =>
+    queryVoid({
+      operation: "makeDirectory",
+      method: "put",
+      type: "directory",
+      body: { path, recursive: makeOptions?.recursive ?? null } satisfies MakeDirectoryRequest,
+    })) satisfies FileSystem["makeDirectory"];
+
+  const remove = ((path: string, removeOptions) =>
+    queryVoid({
+      operation: "remove",
+      method: "delete",
+      type: undefined,
+      body: {
+        path,
+        recursive: removeOptions?.recursive ?? null,
+        force: removeOptions?.force ?? null,
+      } satisfies RemoveRequest,
+    })) satisfies FileSystem["remove"];
+
+  // The mount's file write is `open("w")`: it always creates or truncates and
+  // leaves the mode to the process umask, so any other flag or an explicit mode
+  // is a request the endpoint cannot honor.
+  const guardWrite = (
+    method: string,
+    writeOptions?: { readonly flag?: OpenFlag | undefined; readonly mode?: number | undefined },
+  ): Effect.Effect<void, FileSystemError> => {
+    if (writeOptions?.flag !== undefined && writeOptions.flag !== "w") {
+      return Effect.fail(unsupported(`${method}(flag)`));
+    }
+
+    if (writeOptions?.mode !== undefined) {
+      return Effect.fail(unsupported(`${method}(mode)`));
+    }
+
+    return Effect.void;
+  };
+
+  const writeContent = (
+    operation: string,
+    path: string,
+    content: string,
+  ): Effect.Effect<void, FileSystemError> =>
+    queryVoid({
+      operation,
+      method: "put",
+      type: "content",
+      body: { path, content } satisfies WriteRequest,
+    });
+
+  const writeFileString = ((path: string, data: string, writeOptions) =>
+    guardWrite("writeFileString", writeOptions).pipe(
+      Effect.flatMap(() => writeContent("writeFileString", path, data)),
+    )) satisfies FileSystem["writeFileString"];
+
+  // The mount stores text, so bytes are written only when they decode as UTF-8;
+  // a binary write belongs on the upload mount rather than here.
+  const writeFile = ((path: string, data: Uint8Array, writeOptions) =>
+    guardWrite("writeFile", writeOptions).pipe(
+      Effect.flatMap(() =>
+        Effect.try({
+          try: () => new TextDecoder("utf-8", { fatal: true }).decode(data),
+          catch: (cause) =>
+            PlatformError.badArgument({
+              module: "FileSystem",
+              method: "writeFile",
+              description: `content is not UTF-8: ${path}`,
+              cause,
+            }),
+        }),
+      ),
+      Effect.flatMap((content) => writeContent("writeFile", path, content)),
+    )) satisfies FileSystem["writeFile"];
+
   const fails = (method: string): Effect.Effect<never, FileSystemError> =>
     Effect.fail(unsupported(method));
 
   return FileSystem.of({
     access,
-    copy: () => fails("copy"),
-    copyFile: () => fails("copyFile"),
-    chmod: () => fails("chmod"),
+    chmod,
+    copy,
+    copyFile,
     glob,
     exists,
-    symlink: () => fails("symlink"),
-    makeDirectory: () => fails("makeDirectory"),
+    symlink,
+    makeDirectory,
     makeTempDirectory: () => fails("makeTempDirectory"),
     makeTempDirectoryScoped: () => fails("makeTempDirectoryScoped"),
     makeTempFile: () => fails("makeTempFile"),
@@ -420,16 +614,16 @@ export const make = Effect.fn("FileSystem.make")(function* (
     readFileString,
     readLink: () => fails("readLink"),
     realPath,
-    remove: () => fails("remove"),
-    rename: () => fails("rename"),
+    remove,
+    rename,
     sink: () => Sink.fail(unsupported("sink")),
     stat,
     stream,
-    truncate: () => fails("truncate"),
-    utimes: () => fails("utimes"),
+    truncate,
+    utimes,
     watch,
-    writeFile: () => fails("writeFile"),
-    writeFileString: () => fails("writeFileString"),
+    writeFile,
+    writeFileString,
   });
 });
 
