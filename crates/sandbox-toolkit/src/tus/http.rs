@@ -1,4 +1,6 @@
-use salvo::http::StatusCode;
+use salvo::http::body::ResBody;
+use salvo::http::uri::Uri;
+use salvo::http::{ReqBody, StatusCode};
 use salvo::prelude::*;
 
 use crate::http::app_state;
@@ -14,13 +16,14 @@ pub fn routes() -> Router {
 #[handler]
 async fn proxy(req: &mut Request, depot: &mut Depot, res: &mut Response) -> Result<(), StatusError> {
     let state = app_state(depot)?;
-    let request = req
-        .strip_to_hyper::<hyper::body::Incoming>()
-        .map_err(|_| StatusError::internal_server_error())?;
 
-    match state.tus.forward(origin_form(request)).await {
+    match state.tus.forward(upstream_request(req)).await {
         Ok(response) => {
-            res.merge_hyper(response);
+            let (parts, body) = response.into_parts();
+            *res.version_mut() = parts.version;
+            res.status_code(parts.status);
+            res.set_headers(parts.headers);
+            res.body(ResBody::from(body));
 
             Ok(())
         }
@@ -33,12 +36,25 @@ async fn proxy(req: &mut Request, depot: &mut Depot, res: &mut Response) -> Resu
     }
 }
 
-/// The path and query of `request`, which is what an origin-form request line
-/// carries upstream.
-fn origin_form(mut request: hyper::Request<hyper::body::Incoming>) -> hyper::Request<hyper::body::Incoming> {
-    let parts = request.uri().clone().into_parts();
-    let uri = hyper::Uri::from_parts(parts).expect("a path taken from a URI is a valid URI");
-    *request.uri_mut() = uri;
+/// The request tusd is reached with: the caller's method, version and headers,
+/// its body still streaming, under the URI an origin-form request line carries.
+fn upstream_request(req: &mut Request) -> hyper::Request<ReqBody> {
+    let body = req.take_body();
+    let mut request = hyper::Request::new(body);
+    *request.method_mut() = req.method().clone();
+    *request.uri_mut() = origin_form(req.uri());
+    *request.version_mut() = req.version();
+    *request.headers_mut() = std::mem::take(req.headers_mut());
 
     request
+}
+
+/// The path and query of `uri`, dropping the scheme and authority a request line
+/// does not carry.
+fn origin_form(uri: &Uri) -> Uri {
+    let mut parts = uri.clone().into_parts();
+    parts.scheme = None;
+    parts.authority = None;
+
+    Uri::from_parts(parts).expect("a path taken from a URI is a valid URI")
 }

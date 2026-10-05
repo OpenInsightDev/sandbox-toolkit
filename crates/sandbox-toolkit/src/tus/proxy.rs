@@ -5,7 +5,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use salvo::http::header::{self, HeaderName, HeaderValue};
-use salvo::http::HeaderMap;
+use salvo::http::{HeaderMap, ReqBody};
 use thiserror::Error;
 use tokio::net::UnixStream;
 
@@ -48,10 +48,10 @@ impl Upstream {
     }
 
     /// Relays `request` and answers with the response, both streamed.
-    pub async fn forward(&self, request: Request<Incoming>) -> Result<Response<Incoming>, Error> {
+    pub async fn forward(&self, request: Request<ReqBody>) -> Result<Response<Incoming>, Error> {
         let stream = UnixStream::connect(&self.socket).await?;
         let (mut sender, connection) =
-            hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+            hyper::client::conn::http1::handshake::<_, ReqBody>(TokioIo::new(stream)).await?;
         // The connection has to be driven while the response body is read. Let
         // go of the sender here and it ends by itself, once that body is done.
         tokio::spawn(async move {
@@ -66,7 +66,7 @@ impl Upstream {
 
 /// The headers tusd is reached with: the hop-by-hop ones dropped, and the origin
 /// the client saw described in the ones it builds absolute URLs from.
-fn upstream_request(request: Request<Incoming>) -> Request<Incoming> {
+fn upstream_request(request: Request<ReqBody>) -> Request<ReqBody> {
     let (mut parts, body) = request.into_parts();
     let (scheme, host) = origin_parts(&parts.uri, &parts.headers);
 
