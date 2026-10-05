@@ -10,6 +10,7 @@ use salvo::prelude::*;
 use salvo::Extractible;
 
 use crate::exec;
+use crate::fs;
 use crate::mcp;
 use crate::pty;
 use crate::skill;
@@ -151,11 +152,15 @@ pub fn router(state: AppState) -> Router {
         .hoop(salvo::affix_state::inject(Arc::new(state)))
         .hoop(salvo::logging::Logger::new())
         .push(Router::with_path("tus").push(tus::http::routes()))
+        .push(Router::with_path("fs").push(fs::http::routes()))
         .push(Router::with_path("exec").push(exec::http::routes()))
         .push(Router::with_path("pty").push(pty::http::routes()))
         .push(Router::with_path("mcps").push(mcp::http::routes()))
         .push(Router::with_path("skills").push(skill::http::routes()))
         .push(Router::with_path("workspaces").push(crate::workspace::http::routes()))
+        .push(
+            Router::with_path("workspaces/{workspace_id}/fs").push(fs::http::routes()),
+        )
         .push(
             Router::with_path("workspaces/{workspace_id}/exec").push(exec::http::routes()),
         )

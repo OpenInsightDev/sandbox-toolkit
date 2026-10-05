@@ -4,6 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 mod binary;
 mod exec;
+mod fs;
 mod http;
 mod mcp;
 mod path;
