@@ -1,12 +1,7 @@
 use std::collections::BTreeMap;
 
-use axum::Json;
-use axum::Router;
-use axum::extract::{FromRequestParts, OriginalUri, Path};
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use serde::Deserialize;
+use salvo::http::{HeaderValue, header};
+use salvo::prelude::*;
 
 use crate::http::origin;
 
@@ -62,29 +57,15 @@ pub struct Scoped {
     pub skill: Skill,
 }
 
-/// Named rather than positional: sibling captures such as `{workspace_id}` on the
-/// enclosing mount land in the same set.
-#[derive(Debug, Deserialize)]
-struct SkillPath {
-    skill_id: String,
-}
-
-pub fn routes<S>() -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-    ExtractSkills: FromRequestParts<S>,
-{
+pub fn routes() -> Router {
     Router::new()
-        .route("/", get(list))
-        .route("/{skill_id}", get(body))
+        .get(list)
+        .push(Router::with_path("{skill_id}").get(body))
 }
 
-async fn list(
-    skills: ExtractSkills,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-) -> Response {
-    let base = format!("{}{}", origin(&uri, &headers), uri.path());
+#[handler]
+async fn list(skills: ExtractSkills, req: &mut Request) -> Result<Json<SkillList>, StatusError> {
+    let base = format!("{}{}", origin(req.uri(), req.headers()), req.uri().path());
     let skills = skills
         .merged()
         .await
@@ -92,15 +73,26 @@ async fn list(
         .map(|scoped| SkillMetadata::new(&scoped.scope, &scoped.skill, &base))
         .collect();
 
-    Json(SkillList { skills }).into_response()
+    Ok(Json(SkillList { skills }))
 }
 
-async fn body(skills: ExtractSkills, Path(path): Path<SkillPath>) -> Response {
-    match skills.get(&path.skill_id).await {
-        Some(skill) => ([(header::CONTENT_TYPE, MARKDOWN)], skill.body).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+#[handler]
+async fn body(req: &mut Request, skills: ExtractSkills, res: &mut Response) -> Result<(), StatusError> {
+    let id = req
+        .param::<String>("skill_id")
+        .ok_or_else(StatusError::not_found)?;
+
+    match skills.get(&id).await {
+        Some(skill) => {
+            // The body is the `SKILL.md` text as written, so it serves as Markdown.
+            res.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(MARKDOWN));
+            res.body(skill.body);
+
+            Ok(())
+        }
+        None => Err(StatusError::not_found()),
     }
 }
 
-/// The body is the `SKILL.md` text as written, so it serves as Markdown.
 const MARKDOWN: &str = "text/markdown";

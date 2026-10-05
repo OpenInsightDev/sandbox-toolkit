@@ -22,7 +22,7 @@ dirs = "7"
 futures-util = "0.3"
 globset = "0.4.20"
 httpdate = "1.0.3"
-hyper = { version = "1", features = ["client", "http1"] }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 mime_guess = "2.0.5"
@@ -34,6 +34,18 @@ rmcp = { version = "3.4.1", features = [
     "transport-streamable-http-client-reqwest",
     "transport-streamable-http-server",
 ] }
+salvo = { version = "1.0.1", default-features = false, features = [
+    "affix-state",
+    "cookie",
+    "fix-http1-request-uri",
+    "http1",
+    "http2",
+    "logging",
+    "matched-path",
+    "server",
+    "server-handle",
+    "tower-compat",
+] }
 schemars = "1.0.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -42,9 +54,8 @@ ropey = "1.6"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
+tokio-tungstenite = "0.29"
 tokio-util = { version = "0.7.19", features = ["codec", "io-util", "rt"] }
-tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ts-rs = "12.0.1"
@@ -54,18 +65,13 @@ regex = "1.13.1"
 zstd = "0.13"
 
 pty = { path = "../pty" }
-axum = { path = "../axum/axum", features = ["http2", "ws"] }
 sandbox-toolkit-utils = { path = "../utils" }
 
 [dev-dependencies]
 # Plain HTTP for the end-to-end tests; already in the tree through `rmcp`.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
-# The pty end-to-end tests dial WebSockets over HTTP/2 extended CONNECT; all of
-# these are already in the tree through `axum`.
+# The pty end-to-end tests build the HTTP/2 extended CONNECT handshake by hand.
 http-body-util = "0.1"
-hyper = { version = "1", features = ["client", "http2"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-tokio-tungstenite = "0.29"
 
 [build-dependencies]
 blake3 = "1.8"

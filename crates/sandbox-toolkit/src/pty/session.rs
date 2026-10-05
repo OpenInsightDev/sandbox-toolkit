@@ -4,10 +4,12 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use std::time::Instant;
 
-use axum::extract::ws::Message;
-use axum::extract::ws::WebSocket;
 use futures_util::SinkExt;
 use futures_util::StreamExt;
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
 use pty::ProcessExit;
 use pty::ProcessHandle;
 use pty::SpawnedProcess;
@@ -145,7 +147,7 @@ impl Session {
         self.process.terminate();
     }
 
-    pub async fn run(&self, socket: WebSocket, attachment: Attachment) {
+    pub async fn run(&self, socket: WebSocketStream<TokioIo<Upgraded>>, attachment: Attachment) {
         let (mut sink, mut stream) = socket.split();
         let Attachment {
             mut output,

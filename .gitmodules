@@ -1,3 +1,0 @@
-[submodule "crates/axum"]
-	path = crates/axum
-	url = https://github.com/tokio-rs/axum

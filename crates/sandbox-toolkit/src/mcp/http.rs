@@ -1,19 +1,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::Router;
-use axum::body::Body;
-use axum::extract::{FromRequestParts, OriginalUri, Path, Request};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use serde::Deserialize;
-use tower::Service;
+use salvo::http::ReqBody;
+use salvo::prelude::*;
 
 use crate::http::origin;
 
 use super::model::{StreamableHttpMcpServer, StreamableHttpServerMcpConfig};
+use super::proxy::Service;
 use super::runtime::Runtime;
 
 pub struct ExtractRuntime {
@@ -69,32 +63,18 @@ impl ExtractRuntime {
     }
 }
 
-/// Named rather than positional: sibling captures such as `{workspace_id}` on the
-/// enclosing mount land in the same set, and a tuple would fail on the count.
-#[derive(Debug, Deserialize)]
-struct McpPath {
-    mcp_id: String,
-}
-
-pub fn routes<S>() -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-    ExtractRuntime: FromRequestParts<S>,
-{
+pub fn routes() -> Router {
     Router::new()
-        .route("/", get(list))
-        .route("/{mcp_id}", get(proxy).post(proxy).delete(proxy))
+        .get(list)
+        .push(Router::with_path("{mcp_id}").get(proxy).post(proxy).delete(proxy))
 }
 
-async fn list(
-    runtime: ExtractRuntime,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-) -> Response {
-    let base = format!("{}{}", origin(&uri, &headers), uri.path());
+#[handler]
+async fn list(runtime: ExtractRuntime, req: &mut Request) -> Result<Json<StreamableHttpServerMcpConfig>, StatusError> {
+    let base = format!("{}{}", origin(req.uri(), req.headers()), req.uri().path());
     // A scope that stopped parsing its `mcp.json` presents nothing.
     let Some(ids) = runtime.ids().await else {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(StatusError::not_found());
     };
 
     let servers = ids
@@ -105,16 +85,29 @@ async fn list(
         })
         .collect();
 
-    Json(StreamableHttpServerMcpConfig::new(servers)).into_response()
+    Ok(Json(StreamableHttpServerMcpConfig::new(servers)))
 }
 
-async fn proxy(runtime: ExtractRuntime, Path(path): Path<McpPath>, request: Request) -> Response {
-    let Some(mut service) = runtime.get(&path.mcp_id).await else {
-        return StatusCode::NOT_FOUND.into_response();
+#[handler]
+async fn proxy(
+    req: &mut Request,
+    depot: &mut Depot,
+    runtime: ExtractRuntime,
+    res: &mut Response,
+    ctrl: &mut FlowCtrl,
+) -> Result<(), StatusError> {
+    let id = req
+        .param::<String>("mcp_id")
+        .ok_or_else(StatusError::not_found)?;
+    let Some(service) = runtime.get(&id).await else {
+        return Err(StatusError::not_found());
     };
 
-    match service.call(request).await {
-        Ok(response) => response.map(Body::new),
-        Err(never) => match never {},
-    }
+    // The rmcp service accepts any request body, so inference cannot pick the
+    // adapter's body type on its own; pin it to salvo's `ReqBody`.
+    <Service as TowerServiceCompat<ReqBody, _, _, _>>::compat(service)
+        .handle(req, depot, res, ctrl)
+        .await;
+
+    Ok(())
 }

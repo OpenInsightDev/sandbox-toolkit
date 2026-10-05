@@ -1,44 +1,44 @@
-use axum::Router;
-use axum::extract::{OriginalUri, Request, State};
-use axum::http::{StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
-use axum::routing::any;
+use salvo::http::StatusCode;
+use salvo::prelude::*;
 
-use crate::http::AppState;
+use crate::http::app_state;
 
 /// The mount and everything below it are the same proxy, so the upload URL tusd
 /// answers with is reachable where the client was told it is.
-pub fn routes() -> Router<AppState> {
+pub fn routes() -> Router {
     Router::new()
-        .route("/", any(proxy))
-        .route("/{*rest}", any(proxy))
+        .goal(proxy)
+        .push(Router::with_path("{**rest}").goal(proxy))
 }
 
-async fn proxy(
-    State(state): State<AppState>,
-    OriginalUri(original): OriginalUri,
-    mut request: Request,
-) -> Response {
-    // Routing a nested mount takes the prefix off the path, which would leave
-    // tusd serving a mount that is not the one the client asked for.
-    *request.uri_mut() = origin_form(original);
+#[handler]
+async fn proxy(req: &mut Request, depot: &mut Depot, res: &mut Response) -> Result<(), StatusError> {
+    let state = app_state(depot)?;
+    let request = req
+        .strip_to_hyper::<hyper::body::Incoming>()
+        .map_err(|_| StatusError::internal_server_error())?;
 
-    match state.tus.forward(request).await {
-        Ok(response) => response,
+    match state.tus.forward(origin_form(request)).await {
+        Ok(response) => {
+            res.merge_hyper(response);
+
+            Ok(())
+        }
         Err(error) => {
             tracing::debug!(%error, "the tus sidecar is unreachable");
 
-            StatusCode::BAD_GATEWAY.into_response()
+            Err(StatusError::from_code(StatusCode::BAD_GATEWAY)
+                .unwrap_or_else(StatusError::internal_server_error))
         }
     }
 }
 
-/// The path and query of `uri`, which is what an origin-form request line
+/// The path and query of `request`, which is what an origin-form request line
 /// carries upstream.
-fn origin_form(uri: Uri) -> Uri {
-    let mut parts = uri.into_parts();
-    parts.scheme = None;
-    parts.authority = None;
+fn origin_form(mut request: hyper::Request<hyper::body::Incoming>) -> hyper::Request<hyper::body::Incoming> {
+    let parts = request.uri().clone().into_parts();
+    let uri = hyper::Uri::from_parts(parts).expect("a path taken from a URI is a valid URI");
+    *request.uri_mut() = uri;
 
-    Uri::from_parts(parts).expect("a path taken from a URI is a valid URI")
+    request
 }

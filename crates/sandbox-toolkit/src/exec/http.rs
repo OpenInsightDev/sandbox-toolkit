@@ -1,43 +1,38 @@
-use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::Json;
-use axum::Router;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use axum::routing::post;
 use bytes::BytesMut;
+use salvo::extract::JsonBody;
+use salvo::http::body::ResBody;
+use salvo::http::{HeaderValue, header};
+use salvo::prelude::*;
 use tokio_stream::StreamExt;
 
 use crate::exec::frame;
 use crate::exec::model::{ExecError, ExecRequest, ExecResult};
 use crate::exec::runtime::{Event, Execution};
-use crate::http::{AppState, ExtractWorkspace};
+use crate::http::{ExtractWorkspace, app_state};
 
-pub fn routes() -> Router<AppState> {
-    Router::new().route("/", post(exec))
+pub fn routes() -> Router {
+    Router::new().post(exec)
 }
 
+#[handler]
 async fn exec(
-    State(state): State<AppState>,
     workspace: ExtractWorkspace,
-    Json(request): Json<ExecRequest>,
-) -> Response {
+    body: JsonBody<ExecRequest>,
+    depot: &mut Depot,
+    res: &mut Response,
+) -> Result<(), StatusError> {
+    let state = app_state(depot)?;
+    let request = body.0;
     let metadata = workspace.metadata().await;
 
-    let (program, args) = match request.resolve() {
-        Ok(resolved) => resolved,
-        Err(error) => return error.into_response(),
-    };
+    let (program, args) = request.resolve().map_err(StatusError::from)?;
     let cwd = request.cwd.clone().unwrap_or_else(|| metadata.root.clone());
     let env = metadata.child_env(&state.bin, &request.env);
 
-    let mut execution = match Execution::spawn(&program, &args, &cwd, &env) {
-        Ok(execution) => execution,
-        Err(source) => return ExecError::Spawn { program, source }.into_response(),
-    };
+    let mut execution = Execution::spawn(&program, &args, &cwd, &env)
+        .map_err(|source| StatusError::from(ExecError::Spawn { program, source }))?;
 
     // A `wait` of zero never waits: the `200` carries the frame stream from its
     // first byte.
@@ -47,8 +42,22 @@ async fn exec(
     };
 
     match result {
-        Some(result) => Json(result).into_response(),
-        None => stream(consumed, execution),
+        Some(result) => {
+            res.render(Json(result));
+
+            Ok(())
+        }
+        None => {
+            let frames = tokio_stream::iter(consumed)
+                .chain(execution.into_stream())
+                .map(|event| Ok::<_, salvo::Error>(frame::encode(event)));
+
+            res.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(frame::CONTENT_TYPE));
+            res.body(ResBody::stream(frames));
+
+            Ok(())
+        }
     }
 }
 
@@ -98,18 +107,6 @@ fn direct(events: &[Event]) -> Option<ExecResult> {
     Some(ExecResult::new(status?, text(&stdout), text(&stderr)))
 }
 
-fn stream(consumed: Vec<Event>, execution: Execution) -> Response {
-    let frames = tokio_stream::iter(consumed)
-        .chain(execution.into_stream())
-        .map(|event| Ok::<_, Infallible>(frame::encode(event)));
-
-    (
-        [(header::CONTENT_TYPE, frame::CONTENT_TYPE)],
-        Body::from_stream(frames),
-    )
-        .into_response()
-}
-
 /// Output is captured as text, so bytes that are not UTF-8 are replaced.
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -117,8 +114,8 @@ fn text(bytes: &[u8]) -> String {
 
 /// The payload is the caller's to fix, whether it was incomplete or named a
 /// program that could not be started.
-impl IntoResponse for ExecError {
-    fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, self.to_string()).into_response()
+impl From<ExecError> for StatusError {
+    fn from(error: ExecError) -> Self {
+        StatusError::bad_request().brief(error.to_string())
     }
 }

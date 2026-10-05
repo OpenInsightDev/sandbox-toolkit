@@ -5,8 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::Router;
-use axum::routing::any_service;
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 use rmcp::model::{ErrorData, ListToolsResult, PaginatedRequestParams, ServerConfig, Tool};
@@ -15,6 +13,8 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::{
     StreamableHttpClientTransport, StreamableHttpServerConfig, StreamableHttpService,
 };
+use salvo::http::ReqBody;
+use salvo::prelude::*;
 use serde_json::{Value, json};
 
 use harness::{Dir, SCHEMA, Server, manifest, write_mcp_json, write_plugin, write_plugin_mcp};
@@ -60,14 +60,18 @@ async fn start_upstream(names: &[&'static str]) -> String {
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
     );
-    let router = Router::new().route("/mcp", any_service(service));
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("bind the upstream");
+    let upstream = <StreamableHttpService<Upstream, LocalSessionManager> as TowerServiceCompat<
+        ReqBody,
+        _,
+        _,
+        _,
+    >>::compat(service);
+    let router = Router::new().push(Router::with_path("mcp").goal(upstream));
+    let acceptor = TcpListener::new("127.0.0.1:0").bind().await;
 
-    let address = listener.local_addr().expect("read the upstream address");
+    let address = acceptor.local_addr().expect("read the upstream address");
     tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
+        salvo::Server::new(acceptor).serve(router).await;
     });
 
     format!("http://{address}/mcp")

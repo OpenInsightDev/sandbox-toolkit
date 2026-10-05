@@ -1,87 +1,95 @@
-use axum::Json;
-use axum::Router;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use serde::Deserialize;
+use salvo::extract::JsonBody;
+use salvo::http::StatusCode;
+use salvo::prelude::*;
 
-use crate::http::AppState;
+use crate::http::app_state;
 use crate::workspace::{
     CreateWorkspaceRequest, Metadata, UpdateWorkspaceRequest, Workspace, WorkspaceError,
     WorkspaceList,
 };
 
-/// Named rather than positional: a sibling capture on the enclosing mount would
-/// otherwise shift the fields.
-#[derive(Debug, Deserialize)]
-struct WorkspacePath {
-    workspace_id: String,
-}
-
-pub fn routes() -> Router<AppState> {
+pub fn routes() -> Router {
     Router::new()
-        .route("/", get(list).post(create))
-        .route("/{workspace_id}", get(one).patch(update).delete(remove))
+        .get(list)
+        .post(create)
+        .push(Router::with_path("{workspace_id}").get(one).patch(update).delete(remove))
 }
 
+#[handler]
 async fn create(
-    State(state): State<AppState>,
-    Json(request): Json<CreateWorkspaceRequest>,
-) -> Response {
-    let metadata = match Metadata::new(request).await {
-        Ok(metadata) => metadata,
-        Err(error) => return error.into_response(),
-    };
-
+    depot: &mut Depot,
+    body: JsonBody<CreateWorkspaceRequest>,
+) -> Result<(StatusCode, Json<Metadata>), StatusError> {
+    let state = app_state(depot)?;
+    let metadata = Metadata::new(body.0).await.map_err(StatusError::from)?;
     let created = metadata.clone();
-    let workspace = match Workspace::new(metadata).await {
-        Ok(workspace) => workspace,
-        Err(error) => return error.into_response(),
+    let workspace = Workspace::new(metadata).await.map_err(StatusError::from)?;
+
+    state
+        .registry
+        .register(workspace)
+        .await
+        .map_err(StatusError::from)?;
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[handler]
+async fn list(depot: &mut Depot) -> Result<Json<WorkspaceList>, StatusError> {
+    let state = app_state(depot)?;
+
+    Ok(Json(WorkspaceList::new(state.registry.list().await)))
+}
+
+#[handler]
+async fn one(req: &mut Request, depot: &mut Depot) -> Result<Json<Metadata>, StatusError> {
+    let state = app_state(depot)?;
+    let id = workspace_id(req)?;
+    let Some(workspace) = state.registry.resolve(&id).await else {
+        return Err(StatusError::not_found());
     };
 
-    match state.registry.register(workspace).await {
-        Ok(()) => (StatusCode::CREATED, Json(created)).into_response(),
-        Err(error) => error.into_response(),
-    }
+    Ok(Json(workspace.metadata().await))
 }
 
-async fn list(State(state): State<AppState>) -> Json<WorkspaceList> {
-    Json(WorkspaceList::new(state.registry.list().await))
-}
-
-async fn one(State(state): State<AppState>, Path(path): Path<WorkspacePath>) -> Response {
-    match state.registry.resolve(&path.workspace_id).await {
-        Some(workspace) => Json(workspace.metadata().await).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
+#[handler]
 async fn update(
-    State(state): State<AppState>,
-    Path(path): Path<WorkspacePath>,
-    Json(request): Json<UpdateWorkspaceRequest>,
-) -> Response {
-    match state
+    req: &mut Request,
+    depot: &mut Depot,
+    body: JsonBody<UpdateWorkspaceRequest>,
+) -> Result<Json<Metadata>, StatusError> {
+    let state = app_state(depot)?;
+    let id = workspace_id(req)?;
+
+    state
         .registry
-        .update_access(&path.workspace_id, request.access)
+        .update_access(&id, body.0.access)
         .await
-    {
-        Ok(metadata) => Json(metadata).into_response(),
-        Err(error) => error.into_response(),
-    }
+        .map(Json)
+        .map_err(StatusError::from)
 }
 
-async fn remove(State(state): State<AppState>, Path(path): Path<WorkspacePath>) -> Response {
-    match state.registry.remove(&path.workspace_id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => error.into_response(),
-    }
+#[handler]
+async fn remove(req: &mut Request, depot: &mut Depot) -> Result<StatusCode, StatusError> {
+    let state = app_state(depot)?;
+    let id = workspace_id(req)?;
+
+    state
+        .registry
+        .remove(&id)
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(StatusError::from)
 }
 
-impl IntoResponse for WorkspaceError {
-    fn into_response(self) -> Response {
-        let status = match self {
+fn workspace_id(req: &Request) -> Result<String, StatusError> {
+    req.param::<String>("workspace_id")
+        .ok_or_else(StatusError::not_found)
+}
+
+impl From<WorkspaceError> for StatusError {
+    fn from(error: WorkspaceError) -> Self {
+        let status = match &error {
             WorkspaceError::InvalidId { .. } | WorkspaceError::InvalidRoot { .. } => {
                 StatusCode::BAD_REQUEST
             }
@@ -93,6 +101,8 @@ impl IntoResponse for WorkspaceError {
             WorkspaceError::Watch(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
-        (status, self.to_string()).into_response()
+        StatusError::from_code(status)
+            .unwrap_or_else(StatusError::internal_server_error)
+            .brief(error.to_string())
     }
 }

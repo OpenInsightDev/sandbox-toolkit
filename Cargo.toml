@@ -1,9 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# The vendored axum submodule is its own upstream workspace; the toolkit pulls it
-# in as a path dependency only.
-exclude = ["crates/axum"]
 
 [workspace.lints.clippy]
 # Allow-by-default pedantic lint; its threshold lives in `clippy.toml`.

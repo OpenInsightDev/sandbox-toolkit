@@ -93,10 +93,10 @@ impl ProxyHandler {
                     PluginMcpServer::StreamableHttp(remote) => {
                         let mut custom_headers = HashMap::new();
                         for (name, value) in &remote.headers {
-                            let name = axum::http::HeaderName::from_bytes(name.as_bytes())
+                            let name = salvo::http::HeaderName::from_bytes(name.as_bytes())
                                 .map_err(internal)?;
                             let value =
-                                axum::http::HeaderValue::from_str(value).map_err(internal)?;
+                                salvo::http::HeaderValue::from_str(value).map_err(internal)?;
                             custom_headers.insert(name, value);
                         }
                         let transport = StreamableHttpClientTransport::from_config(

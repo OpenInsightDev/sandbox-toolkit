@@ -1,17 +1,13 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::Router;
-use axum::extract::{FromRequestParts, Path};
-use axum::http::StatusCode;
-use axum::http::header;
-use axum::http::request::Parts;
-use axum::http::{HeaderMap, HeaderValue, Uri};
-use axum::response::{IntoResponse, Response};
-use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
+use salvo::Server;
+use salvo::extract::Metadata;
+use salvo::http::uri::Uri;
+use salvo::http::{HeaderMap, HeaderValue, header};
+use salvo::prelude::*;
+use salvo::Extractible;
 
 use crate::exec;
 use crate::mcp;
@@ -42,31 +38,36 @@ impl AppState {
     }
 }
 
+/// The state every handler resolves through, injected into the depot by
+/// [`router`].
+pub(crate) fn app_state(depot: &Depot) -> Result<&Arc<AppState>, StatusError> {
+    depot
+        .get_typed::<Arc<AppState>>()
+        .map_err(|_| StatusError::internal_server_error())
+}
+
 pub type ExtractWorkspace = Resolved;
 
-impl FromRequestParts<AppState> for Resolved {
-    type Rejection = Response;
+impl<'ex> Extractible<'ex> for Resolved {
+    fn metadata() -> &'static Metadata {
+        static METADATA: Metadata = Metadata::new("Resolved");
+        &METADATA
+    }
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
+    #[allow(refining_impl_trait)]
+    async fn extract(req: &'ex mut Request, depot: &'ex mut Depot) -> Result<Self, StatusError> {
+        let state = Arc::clone(app_state(depot)?);
         // A mount without `{workspace_id}` is unscoped, so it resolves to the global
-        // workspace. Captures are read through a map because a struct extractor fails
-        // to deserialize an absent capture instead of reporting it as optional.
-        let Path(captures) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
-            .await
-            .map_err(|rejection| rejection.into_response())?;
-        let workspace_id = captures
-            .get("workspace_id")
-            .cloned()
+        // workspace.
+        let workspace_id = req
+            .param::<String>("workspace_id")
             .unwrap_or_else(|| GLOBAL_WORKSPACE_ID.to_owned());
 
         state
             .registry
             .resolve(&workspace_id)
             .await
-            .ok_or_else(|| StatusCode::NOT_FOUND.into_response())
+            .ok_or_else(StatusError::not_found)
     }
 }
 
@@ -75,14 +76,16 @@ pub struct ExtractResources {
     scoped: Option<Arc<Resources>>,
 }
 
-impl FromRequestParts<AppState> for ExtractResources {
-    type Rejection = Response;
+impl<'ex> Extractible<'ex> for ExtractResources {
+    fn metadata() -> &'static Metadata {
+        static METADATA: Metadata = Metadata::new("ExtractResources");
+        &METADATA
+    }
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let workspace = ExtractWorkspace::from_request_parts(parts, state).await?;
+    #[allow(refining_impl_trait)]
+    async fn extract(req: &'ex mut Request, depot: &'ex mut Depot) -> Result<Self, StatusError> {
+        let workspace = Resolved::extract(req, depot).await?;
+        let state = Arc::clone(app_state(depot)?);
         let scoped = workspace.resources().await;
         let global = match state.registry.get(GLOBAL_WORKSPACE_ID).await {
             Some(global) => global.resources().await,
@@ -90,21 +93,22 @@ impl FromRequestParts<AppState> for ExtractResources {
         };
 
         if global.is_none() && scoped.is_none() {
-            return Err(StatusCode::NOT_FOUND.into_response());
+            return Err(StatusError::not_found());
         }
 
         Ok(Self { global, scoped })
     }
 }
 
-impl FromRequestParts<AppState> for mcp::http::ExtractRuntime {
-    type Rejection = Response;
+impl<'ex> Extractible<'ex> for mcp::http::ExtractRuntime {
+    fn metadata() -> &'static Metadata {
+        static METADATA: Metadata = Metadata::new("ExtractRuntime");
+        &METADATA
+    }
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let resources = ExtractResources::from_request_parts(parts, state).await?;
+    #[allow(refining_impl_trait)]
+    async fn extract(req: &'ex mut Request, depot: &'ex mut Depot) -> Result<Self, StatusError> {
+        let resources = ExtractResources::extract(req, depot).await?;
 
         Ok(Self::new(
             resources
@@ -119,14 +123,15 @@ impl FromRequestParts<AppState> for mcp::http::ExtractRuntime {
     }
 }
 
-impl FromRequestParts<AppState> for skill::http::ExtractSkills {
-    type Rejection = Response;
+impl<'ex> Extractible<'ex> for skill::http::ExtractSkills {
+    fn metadata() -> &'static Metadata {
+        static METADATA: Metadata = Metadata::new("ExtractSkills");
+        &METADATA
+    }
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let resources = ExtractResources::from_request_parts(parts, state).await?;
+    #[allow(refining_impl_trait)]
+    async fn extract(req: &'ex mut Request, depot: &'ex mut Depot) -> Result<Self, StatusError> {
+        let resources = ExtractResources::extract(req, depot).await?;
 
         Ok(Self::new(
             resources
@@ -143,37 +148,52 @@ impl FromRequestParts<AppState> for skill::http::ExtractSkills {
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .nest("/tus", tus::http::routes())
-        .nest("/exec", exec::http::routes())
-        .nest("/pty", pty::http::routes())
-        .nest("/mcps", mcp::http::routes())
-        .nest("/skills", skill::http::routes())
-        .nest("/workspaces/{workspace_id}/exec", exec::http::routes())
-        .nest("/workspaces/{workspace_id}/pty", pty::http::routes())
-        .nest("/workspaces/{workspace_id}/mcps", mcp::http::routes())
-        .nest("/workspaces/{workspace_id}/skills", skill::http::routes())
-        .nest("/workspaces", crate::workspace::http::routes())
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .hoop(salvo::affix_state::inject(Arc::new(state)))
+        .hoop(salvo::logging::Logger::new())
+        .push(Router::with_path("tus").push(tus::http::routes()))
+        .push(Router::with_path("exec").push(exec::http::routes()))
+        .push(Router::with_path("pty").push(pty::http::routes()))
+        .push(Router::with_path("mcps").push(mcp::http::routes()))
+        .push(Router::with_path("skills").push(skill::http::routes()))
+        .push(Router::with_path("workspaces").push(crate::workspace::http::routes()))
+        .push(
+            Router::with_path("workspaces/{workspace_id}/exec").push(exec::http::routes()),
+        )
+        .push(Router::with_path("workspaces/{workspace_id}/pty").push(pty::http::routes()))
+        .push(Router::with_path("workspaces/{workspace_id}/mcps").push(mcp::http::routes()))
+        .push(
+            Router::with_path("workspaces/{workspace_id}/skills").push(skill::http::routes()),
+        )
 }
 
 /// Serves until `shutdown` resolves and the requests in flight have been
 /// answered.
 pub async fn serve(
-    listener: TcpListener,
+    address: (String, u16),
     state: AppState,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) {
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown)
-        .await
+    let acceptor = TcpListener::new(format!("{}:{}", address.0, address.1))
+        .bind()
+        .await;
+    let mut server = Server::new(acceptor);
+    // The pty attach is an HTTP/2 extended CONNECT, which hyper only accepts
+    // once this is on.
+    server.http2_mut().enable_connect_protocol();
+
+    let handle = server.handle();
+    tokio::spawn(async move {
+        shutdown.await;
+        handle.stop_graceful(None);
+    });
+
+    server.serve(router(state)).await;
 }
 
-/// The external scheme and host the request reached us through, resolved like
-/// axum's `Scheme`/`Host` extractors: a forwarded header, then the request URI
-/// (h2 carries scheme and authority there; an h1 origin-form request only the
-/// path, so `Host` stands in). They stay header values, which is the form the
-/// proxy forwards them in.
+/// The external scheme and host the request reached us through: a forwarded
+/// header, then the request URI (h2 carries scheme and authority there; an h1
+/// origin-form request only the path, so `Host` stands in). They stay header
+/// values, which is the form the proxy forwards them in.
 pub(crate) fn origin_parts(uri: &Uri, headers: &HeaderMap) -> (HeaderValue, HeaderValue) {
     let scheme = headers
         .get("x-forwarded-proto")

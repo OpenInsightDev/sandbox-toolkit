@@ -1,11 +1,11 @@
 use std::io;
 use std::path::PathBuf;
 
-use axum::body::Body;
-use axum::extract::Request;
-use axum::http::header::{self, HeaderName, HeaderValue};
-use axum::http::{HeaderMap, Response};
+use hyper::body::Incoming;
+use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use salvo::http::header::{self, HeaderName, HeaderValue};
+use salvo::http::HeaderMap;
 use thiserror::Error;
 use tokio::net::UnixStream;
 
@@ -48,7 +48,7 @@ impl Upstream {
     }
 
     /// Relays `request` and answers with the response, both streamed.
-    pub async fn forward(&self, request: Request) -> Result<Response<Body>, Error> {
+    pub async fn forward(&self, request: Request<Incoming>) -> Result<Response<Incoming>, Error> {
         let stream = UnixStream::connect(&self.socket).await?;
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
@@ -66,7 +66,7 @@ impl Upstream {
 
 /// The headers tusd is reached with: the hop-by-hop ones dropped, and the origin
 /// the client saw described in the ones it builds absolute URLs from.
-fn upstream_request(request: Request) -> Request {
+fn upstream_request(request: Request<Incoming>) -> Request<Incoming> {
     let (mut parts, body) = request.into_parts();
     let (scheme, host) = origin_parts(&parts.uri, &parts.headers);
 
@@ -82,11 +82,11 @@ fn upstream_request(request: Request) -> Request {
     Request::from_parts(parts, body)
 }
 
-fn client_response(response: Response<hyper::body::Incoming>) -> Response<Body> {
+fn client_response(response: Response<Incoming>) -> Response<Incoming> {
     let (mut parts, body) = response.into_parts();
     parts.headers = relayed(&parts.headers);
 
-    Response::from_parts(parts, Body::new(body))
+    Response::from_parts(parts, body)
 }
 
 fn relayed(headers: &HeaderMap) -> HeaderMap {

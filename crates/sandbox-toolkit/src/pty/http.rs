@@ -1,90 +1,91 @@
-use std::sync::Arc;
+use hyper_util::rt::TokioIo;
+use salvo::extract::JsonBody;
+use salvo::http::uri::Uri;
+use salvo::http::{Method, StatusCode};
+use salvo::prelude::*;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::protocol::Role;
 
-use axum::Json;
-use axum::Router;
-use axum::extract::OriginalUri;
-use axum::extract::Path;
-use axum::extract::State;
-use axum::extract::ws::WebSocketUpgrade;
-use axum::http::StatusCode;
-use axum::http::Uri;
-use axum::response::IntoResponse;
-use axum::response::Response;
-use axum::routing::connect;
-use axum::routing::post;
-use serde::Deserialize;
+use crate::http::{ExtractWorkspace, app_state};
+use crate::pty::{PtyError, PtyRequest, PtySession, Session};
 
-use crate::http::AppState;
-use crate::http::ExtractWorkspace;
-use crate::pty::PtyError;
-use crate::pty::PtyRequest;
-use crate::pty::PtySession;
-use crate::pty::Session;
-
-/// Named rather than positional: a sibling capture such as `{workspace_id}` on
-/// the enclosing mount lands in the same set.
-#[derive(Debug, Deserialize)]
-struct PtyPath {
-    session_id: String,
-}
-
-pub fn routes() -> Router<AppState> {
+pub fn routes() -> Router {
     Router::new()
-        .route("/", post(create))
-        // Attaching is an HTTP/2 extended CONNECT (RFC 8441), so only that
-        // method routes here; the upgrade extractor runs its handshake.
-        .route("/{session_id}", connect(attach))
+        .post(create)
+        // Attaching is an HTTP/2 extended CONNECT (RFC 8441), which only that
+        // method reaches; the handler runs its own upgrade.
+        .push(Router::with_path("{session_id}").goal(attach))
 }
 
+#[handler]
 async fn create(
-    State(state): State<AppState>,
     workspace: ExtractWorkspace,
-    OriginalUri(uri): OriginalUri,
-    Json(request): Json<PtyRequest>,
-) -> Response {
+    body: JsonBody<PtyRequest>,
+    req: &mut Request,
+    depot: &mut Depot,
+) -> Result<(StatusCode, Json<PtySession>), StatusError> {
+    let state = app_state(depot)?;
     let metadata = workspace.metadata().await;
 
-    let process = match request.resolve(&metadata, &state.bin) {
-        Ok(process) => process,
-        Err(error) => return error.into_response(),
-    };
-
-    let session = match Session::spawn(&metadata.id, &process).await {
-        Ok(session) => session,
-        Err(source) => {
-            return PtyError::Spawn {
-                program: process.program,
-                source,
-            }
-            .into_response();
-        }
-    };
+    let process = body.0.resolve(&metadata, &state.bin).map_err(StatusError::from)?;
+    let session = Session::spawn(&metadata.id, &process)
+        .await
+        .map_err(|source| StatusError::from(PtyError::Spawn { program: process.program, source }))?;
 
     let id = state.pty.create(session).await;
     // A session is attached under the mount that created it, which this request
     // names itself.
-    let endpoint = format!("{}/{id}", mount(&uri));
+    let endpoint = format!("{}/{id}", mount(req.uri()));
 
-    (StatusCode::CREATED, Json(PtySession { id, endpoint })).into_response()
+    Ok((StatusCode::CREATED, Json(PtySession { id, endpoint })))
 }
 
+#[handler]
 async fn attach(
-    State(state): State<AppState>,
     workspace: ExtractWorkspace,
-    Path(path): Path<PtyPath>,
-    ws: WebSocketUpgrade,
-) -> Response {
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+) -> Result<(), StatusError> {
+    let state = app_state(depot)?;
+    let protocol = req.extensions().get::<hyper::ext::Protocol>();
+    if req.method() != Method::CONNECT || protocol.map(|p| p.as_str()) != Some("websocket") {
+        return Err(StatusError::not_found());
+    }
+
+    let session_id = req
+        .param::<String>("session_id")
+        .ok_or_else(StatusError::not_found)?;
     let scope = workspace.metadata().await.id;
-    let Some((session, attachment)) = state.pty.attach(&scope, &path.session_id).await else {
-        return StatusCode::NOT_FOUND.into_response();
+    let Some((session, attachment)) = state.pty.attach(&scope, &session_id).await else {
+        return Err(StatusError::not_found());
     };
 
-    // An upgrade that never completes leaves a session no client can end, so it
-    // is reclaimed through the failure hook instead of waiting out its idle
-    // deadline. The attachment goes with it.
-    let unattached = Arc::clone(&session);
-    ws.on_failed_upgrade(move |_| unattached.reclaim())
-        .on_upgrade(move |socket| async move { session.run(socket, attachment).await })
+    let on_upgrade = req
+        .extensions_mut()
+        .remove::<hyper::upgrade::OnUpgrade>()
+        .ok_or_else(|| StatusError::internal_server_error().cause("connection is not upgradable"))?;
+
+    // RFC 8441 marks a successful extended CONNECT with a 2xx status, not 101.
+    res.status_code(StatusCode::OK);
+    tokio::spawn(async move {
+        match on_upgrade.await {
+            Ok(upgraded) => {
+                let socket = WebSocketStream::from_raw_socket(
+                    TokioIo::new(upgraded),
+                    Role::Server,
+                    None,
+                )
+                .await;
+                session.run(socket, attachment).await;
+            }
+            // An upgrade that never completes leaves a session no client can
+            // end, so it is reclaimed instead of waiting out its idle deadline.
+            Err(_) => session.reclaim(),
+        }
+    });
+
+    Ok(())
 }
 
 fn mount(uri: &Uri) -> &str {
@@ -93,8 +94,8 @@ fn mount(uri: &Uri) -> &str {
 
 /// The payload is the caller's to fix, whether it was incomplete or named a
 /// program that could not be started.
-impl IntoResponse for PtyError {
-    fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, self.to_string()).into_response()
+impl From<PtyError> for StatusError {
+    fn from(error: PtyError) -> Self {
+        StatusError::bad_request().brief(error.to_string())
     }
 }

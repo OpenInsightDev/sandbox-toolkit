@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use sandbox_toolkit_utils::shutdown;
-use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 mod binary;
@@ -42,14 +41,11 @@ async fn main() -> anyhow::Result<()> {
             // the first request on.
             let tus = tus::Sidecar::start(&bin).await?;
 
-            let listener = TcpListener::bind((host.as_str(), port)).await?;
-            tracing::info!(address = %listener.local_addr()?, "listening");
-
             let registry = workspace::Registry::new().await?;
             let state = http::AppState::new(registry, bin, tus.upstream());
             // Serving comes to rest before the sidecar does, so a request that
             // is still running is answered by a tusd that is still up.
-            http::serve(listener, state, shutdown::requested()).await;
+            http::serve((host, port), state, shutdown::requested()).await;
             tus.stop().await?;
         }
     }

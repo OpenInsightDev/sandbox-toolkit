@@ -1,6 +1,6 @@
-use axum::extract::ws::Message;
 use bytes::Bytes;
 use pty::TerminalSize;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::exec::frame::{ERROR, MAX_PAYLOAD_LEN, RESIZE, STDIN, STDOUT, Status};
 
