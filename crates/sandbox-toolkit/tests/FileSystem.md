@@ -6,7 +6,7 @@ FileSystem 挂载在 `/fs`，在工作区内提供文件与目录操作：读取
 
 端点固定，操作由方法与查询串里的 `type` 共同决定；参数通过 JSON 请求体传入。文件上传一律走 `/tus`（见 [Tus 设计](./Tus.md)）。写操作成功只报结果：回 `204`，不带响应体。
 
-各 `type` 的字段与行为见下文，状态码与错误码另行定义。
+各 `type` 的字段与行为见下文，状态码见「请求」一节。
 
 ## 挂载
 
@@ -51,6 +51,16 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 | `POST` | `copy` | 复制 | `path`、`destination` |
 | `POST` | `move` | 移动 / 重命名 | `path`、`destination` |
 | `DELETE` | — | 删除 | `path`、`recursive`、`force` |
+
+| 状态码 | 语义 | 触发条件 |
+| --- | --- | --- |
+| 200 | 成功 | 读操作返回结果 |
+| 204 | 无内容 | 写操作成功 |
+| 400 | 请求错误 | `type` 未知，或字段非法 |
+| 403 | 拒绝 | 权限不足 |
+| 404 | 未找到 | 目标路径不存在 |
+| 409 | 冲突 | 目标已存在，或目录非空且未 `recursive` |
+| 422 | 无法处理 | 内容不是合法 UTF-8 |
 
 ### 测试
 
@@ -344,11 +354,12 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 
 输出：无内容（`204`）。
 
-- `path` 已存在时报错；`target` 不必存在。
+- `path` 已存在时报 `409`；`target` 不必存在。
 
 ### 测试
 
 - `symlink::creates`：创建链接后 `QUERY ?type=metadata` 报 `kind` 为 `symlink`。
+- `symlink::exists`：`path` 已存在时返回 `409`。
 
 ## `PATCH ?type=metadata`
 
@@ -367,11 +378,13 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 
 输出：无内容（`204`）。
 
-- 只改写给出的字段，其余不动。
+- 只改写给出的字段，其余不动；
+- 改写的是 `path` 指向的文件：符号链接被跟随。
 
 ### 测试
 
 - `metadata::patched`：改写 `mode` 后 `QUERY ?type=metadata` 反映新值。
+- `metadata::follows_symlink`：改写符号链接的元数据，改的是它指向的文件。
 
 ## `PATCH ?type=patch`
 
@@ -423,11 +436,13 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 
 输出：无内容（`204`）。
 
-- 目标已存在时覆盖。
+- 目标已存在时覆盖；
+- 源是目录时整棵子树被复制，合并进已存在的目标目录，符号链接按目标复制。
 
 ### 测试
 
 - `copy::copies`：复制到新目标，目标已存在时覆盖。
+- `copy::directory`：复制目录后整棵子树出现在目标下。
 
 ## `POST ?type=move`
 
@@ -442,7 +457,8 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 
 输出：无内容（`204`）。
 
-- 目标已存在时覆盖；同一目录内即重命名。
+- 目标已存在时覆盖；同一目录内即重命名；
+- 跨设备时不做复制兜底，失败。
 
 ### 测试
 
@@ -462,9 +478,10 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 
 输出：无内容（`204`）。
 
-- 目录非空且未 `recursive` 时报错。
+- 目录非空且未 `recursive` 时报 `409`。
 
 ### 测试
 
 - `delete::removes`：删除文件后回 `204`。
 - `delete::recursive`：`recursive` 为真时删除整棵子树。
+- `delete::non_empty`：目录非空且未 `recursive` 时返回 `409`。

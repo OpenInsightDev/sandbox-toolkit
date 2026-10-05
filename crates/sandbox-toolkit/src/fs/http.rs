@@ -137,7 +137,9 @@ async fn dispatch(
     }
 }
 
-pub(super) fn decode<T: serde::de::DeserializeOwned>(body: serde_json::Value) -> Result<T, FsError> {
+pub(super) fn decode<T: serde::de::DeserializeOwned>(
+    body: serde_json::Value,
+) -> Result<T, FsError> {
     serde_json::from_value(body).map_err(|error| FsError::Invalid(error.to_string()))
 }
 

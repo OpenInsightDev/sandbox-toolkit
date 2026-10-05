@@ -370,6 +370,39 @@ mod metadata {
 
         assert_eq!(metadata["mode"], "600");
     }
+
+    #[tokio::test]
+    async fn follows_symlink() {
+        let home = Dir::new("metadata-follows-home");
+        let root = Dir::new("metadata-follows-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+        std::os::unix::fs::symlink("notes.txt", root.path().join("link.txt"))
+            .expect("seed the symlink");
+
+        let patched = write(
+            &server,
+            Method::PATCH,
+            "metadata",
+            json!({ "path": "link.txt", "mode": "600" }),
+        )
+        .await;
+        assert_eq!(patched.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let metadata = query(
+            &server,
+            "/workspaces/w/fs",
+            "metadata",
+            json!({ "path": "notes.txt" }),
+        )
+        .await
+        .json::<Value>()
+        .await
+        .expect("decode the metadata");
+
+        assert_eq!(metadata["mode"], "600", "the referent was rewritten");
+    }
 }
 
 mod list {
@@ -780,6 +813,30 @@ mod symlink {
 
         assert_eq!(metadata["kind"], "symlink");
     }
+
+    #[tokio::test]
+    async fn exists() {
+        let home = Dir::new("symlink-exists-home");
+        let root = Dir::new("symlink-exists-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::PUT,
+            "symlink",
+            json!({ "path": "notes.txt", "target": "elsewhere.txt" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("notes.txt")).expect("read the file"),
+            "hello\n",
+            "the file at `path` is left alone"
+        );
+    }
 }
 
 mod patch {
@@ -883,6 +940,30 @@ mod copy {
             assert_eq!(content, "hello\n", "{name}");
         }
     }
+
+    #[tokio::test]
+    async fn directory() {
+        let home = Dir::new("copy-directory-home");
+        let root = Dir::new("copy-directory-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::create_dir_all(root.path().join("tree/nested")).expect("seed the tree");
+        std::fs::write(root.path().join("tree/nested/deep.txt"), "deep")
+            .expect("seed the file");
+
+        let response = write(
+            &server,
+            Method::POST,
+            "copy",
+            json!({ "path": "tree", "destination": "copied" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        let copied = std::fs::read_to_string(root.path().join("copied/nested/deep.txt"))
+            .expect("read the copy");
+        assert_eq!(copied, "deep", "the subtree lands under the destination");
+    }
 }
 
 mod r#move {
@@ -947,5 +1028,24 @@ mod delete {
 
         assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
         assert!(!root.path().join("tree").exists(), "the tree is gone");
+    }
+
+    #[tokio::test]
+    async fn non_empty() {
+        let home = Dir::new("delete-non-empty-home");
+        let root = Dir::new("delete-non-empty-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::create_dir(root.path().join("tree")).expect("seed the directory");
+        std::fs::write(root.path().join("tree/deep.txt"), "deep").expect("seed the file");
+
+        let response =
+            delete(&server, json!({ "path": "tree", "recursive": null, "force": null })).await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert!(
+            root.path().join("tree/deep.txt").exists(),
+            "the tree is left alone"
+        );
     }
 }
