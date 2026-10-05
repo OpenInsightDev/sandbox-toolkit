@@ -36,6 +36,10 @@ Work from the repository root.
 - `node_modules` missing means `vp install` first (README, “Development”); the
   package test suite cannot run without it, which blocks landing.
 
+## Screen comments
+
+Run `clear-comments` before staging.
+
 ## Commit
 
 - Stage the landed paths explicitly. Generated bindings
