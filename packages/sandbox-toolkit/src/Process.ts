@@ -105,91 +105,90 @@ export type Command = Readonly<{
   options?: CommandOptions;
 }>;
 
-export class Process extends Context.Service<
-  Process,
-  {
-    /**
-     * Run a command and return its result, collecting the command's output
-     * into a single value.
-     *
-     * **Details**
-     *
-     * Both response shapes are handled: the multiplexed frame stream is drained
-     * when the server upgrades to it, and the direct result is used otherwise.
-     */
-    result(command: Command): Effect.Effect<ProcessResult, ProcessError>;
+export interface Process {
+  /**
+   * Run a command and return its result, collecting the command's output
+   * into a single value.
+   *
+   * **Details**
+   *
+   * Both response shapes are handled: the multiplexed frame stream is drained
+   * when the server upgrades to it, and the direct result is used otherwise.
+   */
+  readonly result: (command: Command) => Effect.Effect<ProcessResult, ProcessError>;
 
-    /**
-     * Run a command and stream its multiplexed output: the `Stdout` and
-     * `Stderr` chunks as they arrive, ending with a single `Exit` event.
-     *
-     * **Details**
-     *
-     * Both response shapes are handled: the frame stream is decoded when the
-     * server upgrades to it, and the events are synthesized from the direct
-     * result otherwise. A command that could not run, or a stream that is
-     * truncated or malformed, fails the stream.
-     */
-    stream(command: Command): Stream.Stream<ProcessEvent, ProcessError>;
+  /**
+   * Run a command and stream its multiplexed output: the `Stdout` and
+   * `Stderr` chunks as they arrive, ending with a single `Exit` event.
+   *
+   * **Details**
+   *
+   * Both response shapes are handled: the frame stream is decoded when the
+   * server upgrades to it, and the events are synthesized from the direct
+   * result otherwise. A command that could not run, or a stream that is
+   * truncated or malformed, fails the stream.
+   */
+  readonly stream: (command: Command) => Stream.Stream<ProcessEvent, ProcessError>;
 
-    /**
-     * Run a command and hand back whichever shape the server answered with:
-     * the collected result for a direct response, the multiplexed event
-     * stream for an upgraded one.
-     */
-    exec(
-      command: Command,
-    ): Effect.Effect<ProcessResult | Stream.Stream<ProcessEvent, ProcessError>, ProcessError>;
+  /**
+   * Run a command and hand back whichever shape the server answered with:
+   * the collected result for a direct response, the multiplexed event
+   * stream for an upgraded one.
+   */
+  readonly exec: (
+    command: Command,
+  ) => Effect.Effect<ProcessResult | Stream.Stream<ProcessEvent, ProcessError>, ProcessError>;
 
-    /**
-     * Run a shell script and return its standard output.
-     *
-     * **Details**
-     *
-     * Interpolated values are inlined verbatim. A command that exits with a
-     * non-zero code fails with a `CommandExitError` carrying the script, its
-     * exit code, and both output streams, rather than discarding them.
-     */
-    $: {
-      (
-        strings: TemplateStringsArray,
-        ...values: ReadonlyArray<TemplateExpression>
-      ): Effect.Effect<string, ProcessError>;
-      (
-        options: ShellCommandOptions,
-      ): (
-        strings: TemplateStringsArray,
-        ...values: ReadonlyArray<TemplateExpression>
-      ) => Effect.Effect<string, ProcessError>;
-    };
-
-    /**
-     * Run a command and return its exit code.
-     */
-    exitCode(command: Command): Effect.Effect<ExitCode, ProcessError>;
-
-    /**
-     * Run a command and stream the lines of its output, without their line
-     * endings.
-     */
-    lines(
-      command: Command,
-      options?: {
-        readonly includeStderr?: boolean | undefined;
-      },
-    ): Stream.Stream<string, ProcessError>;
-
-    /**
-     * Run a command and return its output as a string.
-     */
-    string(
-      command: Command,
-      options?: {
-        readonly includeStderr?: boolean | undefined;
-      },
+  /**
+   * Run a shell script and return its standard output.
+   *
+   * **Details**
+   *
+   * Interpolated values are inlined verbatim. A command that exits with a
+   * non-zero code fails with a `CommandExitError` carrying the script, its
+   * exit code, and both output streams, rather than discarding them.
+   */
+  readonly $: {
+    (
+      strings: TemplateStringsArray,
+      ...values: ReadonlyArray<TemplateExpression>
     ): Effect.Effect<string, ProcessError>;
-  }
->()("process") {}
+    (
+      options: ShellCommandOptions,
+    ): (
+      strings: TemplateStringsArray,
+      ...values: ReadonlyArray<TemplateExpression>
+    ) => Effect.Effect<string, ProcessError>;
+  };
+
+  /**
+   * Run a command and return its exit code.
+   */
+  readonly exitCode: (command: Command) => Effect.Effect<ExitCode, ProcessError>;
+
+  /**
+   * Run a command and stream the lines of its output, without their line
+   * endings.
+   */
+  readonly lines: (
+    command: Command,
+    options?: {
+      readonly includeStderr?: boolean | undefined;
+    },
+  ) => Stream.Stream<string, ProcessError>;
+
+  /**
+   * Run a command and return its output as a string.
+   */
+  readonly string: (
+    command: Command,
+    options?: {
+      readonly includeStderr?: boolean | undefined;
+    },
+  ) => Effect.Effect<string, ProcessError>;
+}
+
+export const Process: Context.Service<Process, Process> = Context.Service("process");
 
 /**
  * The `wait` used by the operations that expect a direct result when the caller
@@ -223,16 +222,15 @@ export const make = Effect.fn("Process.make")(function* (
     Effect.flatMap(
       client.execute(execHttpRequest(withWait(command, DEFAULT_WAIT))),
       responseResult,
-    )) satisfies Process["Service"]["result"];
+    )) satisfies Process["result"];
 
   const exec = ((command) =>
     Effect.flatMap(
       client.execute(execHttpRequest(withWait(command, DEFAULT_WAIT))),
       responseExec,
-    )) satisfies Process["Service"]["exec"];
+    )) satisfies Process["exec"];
 
-  const stream = ((command) =>
-    eventStream(withWait(command, 0))) satisfies Process["Service"]["stream"];
+  const stream = ((command) => eventStream(withWait(command, 0))) satisfies Process["stream"];
 
   const runShell = (
     shellOptions: ShellCommandOptions,
@@ -305,15 +303,15 @@ export const make = Effect.fn("Process.make")(function* (
     Effect.flatMap(
       result(command),
       (collected) => collected.exitCode,
-    )) satisfies Process["Service"]["exitCode"];
+    )) satisfies Process["exitCode"];
 
   const string = ((command, stringOptions) =>
-    Stream.mkString(outputText(command, stringOptions))) satisfies Process["Service"]["string"];
+    Stream.mkString(outputText(command, stringOptions))) satisfies Process["string"];
 
   const lines = ((command, linesOptions) =>
     outputText(command, linesOptions).pipe(
       Stream.mapAccum(() => "", takeLines, { onHalt: endLines }),
-    )) satisfies Process["Service"]["lines"];
+    )) satisfies Process["lines"];
 
   return Process.of({
     result,

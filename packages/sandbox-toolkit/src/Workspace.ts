@@ -82,7 +82,11 @@ export interface Workspace extends Metadata {
   readonly mcp: Mcp;
   readonly plugin: Plugin;
   /** Commands and processes, with `cwd` relative to the workspace root. */
-  readonly process: Process["Service"];
+  readonly process: Process;
+  /** Run a shell script in the workspace. */
+  readonly $: Process["$"];
+  /** Run a command in the workspace. */
+  readonly exec: Process["exec"];
   readonly skill: Skill;
   /**
    * Opens a pty session in the workspace; the session lives as long as the
@@ -165,7 +169,17 @@ export const make = Effect.fn("Workspace.make")(function* () {
         Effect.provide(http2WebSocket),
       );
 
-    return { ...metadata, fs, mcp, plugin, process, skill, terminal } satisfies Workspace;
+    return {
+      ...metadata,
+      fs,
+      mcp,
+      plugin,
+      process,
+      skill,
+      terminal,
+      $: process.$,
+      exec: process.exec,
+    } satisfies Workspace;
   });
 
   const create = Effect.fn("Workspace.create")(function* (options: CreateWorkspaceOptions) {
