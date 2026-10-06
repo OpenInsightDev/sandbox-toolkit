@@ -8,7 +8,7 @@ One HTTP API that gives programs and AI agents safe access to a directory: read 
 cargo install --path crates/sandbox-toolkit
 ```
 
-The build fetches pinned tool binaries and embeds them into the server: `fd`, `rg`, `uv`/`uvx` and `deno`. They materialize on startup, so anything the server spawns can call them by name with no host install and no network.
+The build fetches pinned tool binaries and embeds them into the server: `fd`, `rg`, `curl`, `uv`/`uvx` and `deno`. They materialize on startup, so anything the server spawns can call them by name with no host install and no network.
 
 ## Usage
 

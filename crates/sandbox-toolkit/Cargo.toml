@@ -77,6 +77,8 @@ http-body-util = "0.1"
 [build-dependencies]
 blake3 = "1.8"
 flate2 = "1.1"
+# `curl`'s asset is a `.tar.xz`; the vendored build keeps it off the host.
+liblzma = { version = "0.4", default-features = false, features = ["static"] }
 # The build needs HTTPS to fetch the pinned release assets.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tar = "0.4"

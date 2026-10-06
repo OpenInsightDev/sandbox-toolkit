@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 
 const FD: (&str, &str) = ("10.5.0", "fd");
 const RG: (&str, &str) = ("15.2.0", "rg");
+const CURL: (&str, &str) = ("8.22.0", "curl");
 const UV: (&str, &str) = ("0.12.16", "uv");
 const DENO: (&str, &str) = ("2.9.7", "deno");
 const TUSD: (&str, &str) = ("2.10.1", "tusd");
@@ -80,6 +81,14 @@ fn sources(target: &str) -> Vec<Source> {
             &[RG.1],
         ),
         Source::archive(
+            format!(
+                "https://github.com/stunnel/static-curl/releases/download/{}",
+                CURL.0
+            ),
+            curl_asset(target),
+            &[CURL.1],
+        ),
+        Source::archive(
             format!("https://github.com/astral-sh/uv/releases/download/{}", UV.0),
             format!("uv-{target}.tar.gz"),
             &["uv", "uvx"],
@@ -109,6 +118,18 @@ fn rg_asset(target: &str) -> String {
     };
 
     format!("ripgrep-{}-{release}.tar.gz", RG.0)
+}
+
+/// static-curl names its assets by `uname -m` and offers a musl and a glibc
+/// build; the musl one is statically linked and needs no libc, matching `rg`'s.
+fn curl_asset(target: &str) -> String {
+    let arch = match target {
+        "x86_64-unknown-linux-gnu" => "x86_64",
+        "aarch64-unknown-linux-gnu" => "aarch64",
+        target => panic!("static curl is not embedded for {target}"),
+    };
+
+    format!("curl-linux-{arch}-musl-{}.tar.xz", CURL.0)
 }
 
 /// tusd is a Go program, so its release assets are named by `GOOS`/`GOARCH`
@@ -200,41 +221,60 @@ async fn download(client: &reqwest::Client, url: &str, destination: &Path) -> Re
 fn extract(archive: &Path, name: &str) -> Vec<u8> {
     let file =
         fs::File::open(archive).unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
-    if archive.extension().and_then(|x| x.to_str()) == Some("zip") {
-        let mut zip = zip::ZipArchive::new(file)
-            .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
-        for index in 0..zip.len() {
-            let mut entry = zip
-                .by_index(index)
-                .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
-            if !entry.is_dir() && entry.name().rsplit('/').next() == Some(name) {
-                let mut bytes = Vec::new();
-                entry
-                    .read_to_end(&mut bytes)
-                    .unwrap_or_else(|error| panic!("{name}: {error}"));
-                return bytes;
-            }
-        }
-    } else {
-        let mut tar = tar::Archive::new(GzDecoder::new(file));
-        for entry in tar
-            .entries()
-            .unwrap_or_else(|error| panic!("{}: {error}", archive.display()))
-        {
-            let mut entry = entry.unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
-            let matches = entry
-                .path()
-                .ok()
-                .map(|path| path.file_name().and_then(|name| name.to_str()) == Some(name))
-                .unwrap_or(false);
-            if matches {
-                let mut bytes = Vec::new();
-                entry
-                    .read_to_end(&mut bytes)
-                    .unwrap_or_else(|error| panic!("{name}: {error}"));
-                return bytes;
-            }
+    let bytes = match archive.extension().and_then(|x| x.to_str()) {
+        Some("zip") => from_zip(
+            zip::ZipArchive::new(file)
+                .unwrap_or_else(|error| panic!("{}: {error}", archive.display())),
+            name,
+            archive,
+        ),
+        Some("xz") => from_tar(
+            tar::Archive::new(liblzma::read::XzDecoder::new(file)),
+            name,
+            archive,
+        ),
+        _ => from_tar(tar::Archive::new(GzDecoder::new(file)), name, archive),
+    };
+
+    bytes.unwrap_or_else(|| panic!("{} does not contain `{name}`", archive.display()))
+}
+
+fn from_tar<R: Read>(mut tar: tar::Archive<R>, name: &str, archive: &Path) -> Option<Vec<u8>> {
+    for entry in tar
+        .entries()
+        .unwrap_or_else(|error| panic!("{}: {error}", archive.display()))
+    {
+        let mut entry = entry.unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
+        let matches = entry
+            .path()
+            .ok()
+            .map(|path| path.file_name().and_then(|name| name.to_str()) == Some(name))
+            .unwrap_or(false);
+        if matches {
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            return Some(bytes);
         }
     }
-    panic!("{} does not contain `{name}`", archive.display());
+
+    None
+}
+
+fn from_zip(mut zip: zip::ZipArchive<fs::File>, name: &str, archive: &Path) -> Option<Vec<u8>> {
+    for index in 0..zip.len() {
+        let mut entry = zip
+            .by_index(index)
+            .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
+        if !entry.is_dir() && entry.name().rsplit('/').next() == Some(name) {
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            return Some(bytes);
+        }
+    }
+
+    None
 }
