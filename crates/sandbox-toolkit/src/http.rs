@@ -1,20 +1,26 @@
+use std::convert::Infallible;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use salvo::Server;
 use salvo::extract::Metadata;
+use salvo::http::body::ResBody;
 use salvo::http::uri::Uri;
 use salvo::http::{HeaderMap, HeaderValue, header};
 use salvo::prelude::*;
 use salvo::Extractible;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
+use crate::events::{self, Event};
 use crate::exec;
 use crate::fs;
 use crate::mcp;
 use crate::plugin;
 use crate::pty;
-use crate::skill;
+use crate::skill::{self, Skills};
 use crate::tus;
 use crate::workspace::{GLOBAL_WORKSPACE_ID, Registry, Resolved, Resources};
 
@@ -129,6 +135,7 @@ impl<'ex> Extractible<'ex> for mcp::http::ExtractRuntime {
                 .scoped
                 .as_ref()
                 .map(|resources| Arc::clone(&resources.mcps)),
+            resources.scoped.as_ref().map(scope_events),
         ))
     }
 }
@@ -146,8 +153,15 @@ impl<'ex> Extractible<'ex> for plugin::http::ExtractPlugins {
         Ok(Self::new(
             rescanned(resources.global.as_ref()).map_err(unloadable)?,
             rescanned(resources.scoped.as_ref()).map_err(unloadable)?,
+            resources.scoped.as_ref().map(scope_events),
         ))
     }
+}
+
+/// The observer of the workspace a mount is scoped to, which owns every event
+/// stream that mount answers.
+fn scope_events(resources: &Arc<Resources>) -> Arc<events::Observer> {
+    Arc::clone(&resources.events)
 }
 
 /// A scope's plugin directory as this request finds it: `Ok(None)` when the
@@ -181,15 +195,20 @@ impl<'ex> Extractible<'ex> for skill::http::ExtractSkills {
         let resources = ExtractResources::extract(req, depot).await?;
 
         Ok(Self::new(
-            resources
-                .global
-                .as_ref()
-                .map(|resources| resources.skills.clone()),
-            resources
-                .scoped
-                .as_ref()
-                .map(|resources| resources.skills.clone()),
+            rescanned_skills(resources.global.as_ref()).map_err(unloadable)?,
+            rescanned_skills(resources.scoped.as_ref()).map_err(unloadable)?,
+            resources.scoped.as_ref().map(scope_events),
         ))
+    }
+}
+
+/// A scope's skills as this request finds them, the ones its plugins ship
+/// included; `Ok(None)` when the scope holds no resources, and an error when
+/// those plugins no longer load.
+fn rescanned_skills(resources: Option<&Arc<Resources>>) -> Result<Option<Skills>, plugin::Error> {
+    match resources {
+        Some(resources) => resources.skills.rescan().map(Some),
+        None => Ok(None),
     }
 }
 
@@ -279,4 +298,45 @@ pub(crate) fn origin(uri: &Uri, headers: &HeaderMap) -> String {
     let text = |value: &HeaderValue| value.to_str().unwrap_or_default().to_owned();
 
     format!("{}://{}", text(&scheme), text(&host))
+}
+
+const EVENT_STREAM: &str = "text/event-stream";
+
+/// Whether the request asked for a mount's event stream instead of its
+/// document.
+pub(crate) fn wants_events(req: &Request) -> bool {
+    req.headers()
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains(EVENT_STREAM))
+}
+
+/// Answers a mount's event stream: the SSE content type, and a body that frames
+/// every event reported after this subscription. `frame` shapes the payload, so
+/// a resource's own mount and the workspace summary differ only there.
+pub(crate) fn respond_events(
+    res: &mut Response,
+    events: broadcast::Receiver<Event>,
+    frame: fn(&Event) -> Bytes,
+) {
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(EVENT_STREAM));
+    res.body(ResBody::stream(frames(events, frame)));
+}
+
+/// Frames a source's later events as they arrive. A subscriber the broadcaster
+/// outran skips what it missed instead of ending the stream.
+fn frames(
+    events: broadcast::Receiver<Event>,
+    frame: fn(&Event) -> Bytes,
+) -> impl futures_util::Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
+    futures_util::stream::unfold(events, move |mut events| async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => return Some((Ok(frame(&event)), events)),
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    })
 }

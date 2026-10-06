@@ -1,3 +1,4 @@
+use crate::events::Digest;
 use crate::path::{AGENTS_DIR, DATA_DIR, MCP_JSON};
 use crate::plugin::Plugins;
 use agent_plugins::{
@@ -36,6 +37,8 @@ pub struct Entry {
     /// Whether the launched child carries the reserved variables. Only a
     /// plugin's entry does, so a scope's own `mcp.json` cannot leak them.
     pub reserved: bool,
+    /// The `mcp.json` it was declared in, as content.
+    pub digest: Digest,
 }
 
 /// The servers a scope serves: its own `mcp.json`, then its plugins'.
@@ -54,6 +57,7 @@ pub async fn entries(root: &Path, plugins: &Plugins) -> Result<Vec<Entry>, Error
                 server: server.clone(),
                 anchors: anchors.clone(),
                 reserved: true,
+                digest: plugin.mcp_digest,
             });
         }
     }
@@ -71,6 +75,7 @@ async fn scope_entries(root: &Path) -> Result<Vec<Entry>, Error> {
     };
 
     let (config, _) = McpConfig::parse(&bytes, SpecVersion::V1_0_0)?;
+    let digest = crate::events::digest(&bytes);
 
     let mut entries = Vec::new();
     for ServerEntry { server, name, .. } in config.servers {
@@ -87,6 +92,7 @@ async fn scope_entries(root: &Path) -> Result<Vec<Entry>, Error> {
             server,
             anchors,
             reserved: false,
+            digest,
         });
     }
 

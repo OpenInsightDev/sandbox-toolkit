@@ -3,6 +3,7 @@ use sandbox_toolkit_utils::shutdown;
 use tracing_subscriber::EnvFilter;
 
 mod binary;
+mod events;
 mod exec;
 mod fs;
 mod http;
