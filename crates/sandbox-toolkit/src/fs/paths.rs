@@ -5,17 +5,20 @@ use salvo::http::StatusCode;
 use salvo::prelude::*;
 
 use super::http::{Target, decode, io_error};
-use super::model::{FsError, RemoveRequest, TransferRequest};
+use super::model::{CommitRequest, FsError, RemoveRequest, TransferRequest};
+use crate::tus::{CommitError, Uploads};
 
 pub(super) async fn dispatch(
     target: &Target,
     kind: &str,
     body: serde_json::Value,
+    uploads: &Uploads,
     res: &mut Response,
 ) -> Result<(), StatusError> {
     match kind {
         "copy" => copy(target, decode(body)?, res).await,
         "move" => r#move(target, decode(body)?, res).await,
+        "commit" => commit(target, uploads, decode(body)?, res).await,
         other => Err(StatusError::bad_request().brief(format!("unknown type `{other}`"))),
     }
 }
@@ -75,6 +78,37 @@ async fn r#move(
 
     res.status_code(StatusCode::NO_CONTENT);
     Ok(())
+}
+
+/// Places a staged upload at `path` by moving it out of the tus staging
+/// directory, which also spends the upload id.
+async fn commit(
+    target: &Target,
+    uploads: &Uploads,
+    request: CommitRequest,
+    res: &mut Response,
+) -> Result<(), StatusError> {
+    let path = target.resolve(&request.path);
+    uploads
+        .commit(&request.upload, &path)
+        .await
+        .map_err(placed)?;
+
+    res.status_code(StatusCode::NO_CONTENT);
+    Ok(())
+}
+
+/// A missing or spent upload is `404`, one still being filled is `409`.
+fn placed(error: CommitError) -> StatusError {
+    let status = match &error {
+        CommitError::NotFound(_) => StatusCode::NOT_FOUND,
+        CommitError::Incomplete(_) => StatusCode::CONFLICT,
+        CommitError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    StatusError::from_code(status)
+        .unwrap_or_else(StatusError::internal_server_error)
+        .brief(error.to_string())
 }
 
 /// Copies `from` onto `to`, replacing a file that is already there. A directory

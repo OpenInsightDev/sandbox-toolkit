@@ -128,6 +128,13 @@ pub struct TransferRequest {
 
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
+pub struct CommitRequest {
+    pub upload: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct RemoveRequest {
     pub path: String,
     pub recursive: Option<bool>,

@@ -18,7 +18,7 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::io::ReaderStream;
 
-use crate::http::ExtractWorkspace;
+use crate::http::{ExtractWorkspace, app_state};
 
 use super::model::{
     AccessRequest, Change, Content, Depth, Entries, FsError, GlobRequest, Infinite, Lines,
@@ -86,6 +86,7 @@ pub fn routes() -> Router {
 async fn handle(
     workspace: ExtractWorkspace,
     body: JsonBody<serde_json::Value>,
+    depot: &mut Depot,
     req: &mut Request,
     res: &mut Response,
 ) -> Result<(), StatusError> {
@@ -112,7 +113,10 @@ async fn handle(
         Method::QUERY => dispatch(&target, &kind, body.0, res).await,
         Method::PUT => create::dispatch(&target, &kind, body.0, res).await,
         Method::PATCH => modify::dispatch(&target, &kind, body.0, res).await,
-        Method::POST => paths::dispatch(&target, &kind, body.0, res).await,
+        Method::POST => {
+            let uploads = app_state(depot)?.uploads.clone();
+            paths::dispatch(&target, &kind, body.0, &uploads, res).await
+        }
         _ => Err(StatusError::method_not_allowed()),
     }
 }

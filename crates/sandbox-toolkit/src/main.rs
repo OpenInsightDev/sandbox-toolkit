@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
             let tus = tus::Sidecar::start(&bin).await?;
 
             let registry = workspace::Registry::new().await?;
-            let state = http::AppState::new(registry, bin, tus.upstream());
+            let state = http::AppState::new(registry, bin, tus.upstream(), tus.uploads());
             // Serving comes to rest before the sidecar does, so a request that
             // is still running is answered by a tusd that is still up.
             http::serve((host, port), state, shutdown::requested()).await;

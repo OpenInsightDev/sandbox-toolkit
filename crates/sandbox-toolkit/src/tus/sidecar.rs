@@ -10,6 +10,7 @@ use tokio::process::{Child, Command};
 use crate::binary::path;
 
 use super::Upstream;
+use super::uploads::Uploads;
 
 /// The materialized executable this sidecar runs.
 const BIN: &str = "tusd";
@@ -43,7 +44,7 @@ pub enum Error {
 /// The tusd the service runs beside itself.
 pub struct Sidecar {
     child: Child,
-    socket: PathBuf,
+    dir: PathBuf,
 }
 
 impl Sidecar {
@@ -69,7 +70,7 @@ impl Sidecar {
 
         Self::wait_listening(&socket, &mut child).await?;
 
-        Ok(Self { child, socket })
+        Ok(Self { child, dir })
     }
 
     /// tusd creates the socket it serves on before it accepts anything, so a
@@ -94,7 +95,13 @@ impl Sidecar {
 
     /// The endpoint the `/tus` mount proxies to.
     pub fn upstream(&self) -> Upstream {
-        Upstream::new(self.socket.clone())
+        Upstream::new(self.dir.join(SOCKET))
+    }
+
+    /// The uploads staged in the sidecar's upload directory, which
+    /// `POST ?type=commit` moves onto a path.
+    pub fn uploads(&self) -> Uploads {
+        Uploads::new(self.dir.join(UPLOADS))
     }
 
     /// Ends tusd, waiting at most `SHUTDOWN` for it to end by itself.

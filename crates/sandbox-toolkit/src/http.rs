@@ -27,15 +27,23 @@ pub struct AppState {
     pub pty: pty::Sessions,
     /// The tus sidecar's endpoint, which `/tus` relays to.
     pub tus: tus::Upstream,
+    /// The uploads tusd stages, which `POST ?type=commit` moves onto a path.
+    pub uploads: tus::Uploads,
 }
 
 impl AppState {
-    pub fn new(registry: Registry, bin: PathBuf, tus: tus::Upstream) -> Self {
+    pub fn new(
+        registry: Registry,
+        bin: PathBuf,
+        tus: tus::Upstream,
+        uploads: tus::Uploads,
+    ) -> Self {
         Self {
             registry: Arc::new(registry),
             bin,
             pty: pty::Sessions::new(),
             tus,
+            uploads,
         }
     }
 }
