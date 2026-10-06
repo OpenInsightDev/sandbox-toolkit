@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use harness::{Dir, Server};
 
-const TOOLS: [&str; 4] = ["fd", "rg", "uv", "deno"];
+const TOOLS: [&str; 5] = ["fd", "rg", "curl", "uv", "deno"];
 
 /// A directory the server's own `PATH` keeps, so `path::keeps` can tell an added
 /// entry from a `PATH` that was replaced.

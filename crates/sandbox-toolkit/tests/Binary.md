@@ -4,12 +4,13 @@
 
 构建期把常用命令行工具的预编译产物压缩内嵌进 sbxtkt 二进制；启动时物化成真实文件，并把所在目录挂进 PATH，容器内无需安装、无需联网即可按名字调用。
 
-内嵌四个工具，各取其上游 release 的预编译产物：
+内嵌五个工具，各取其上游 release 的预编译产物：
 
 | 工具 | 上游 |
 | --- | --- |
 | `fd` | sharkdp/fd |
 | `rg` | BurntSushi/ripgrep |
+| `curl` | stunnel/static-curl |
 | `uv` | astral-sh/uv |
 | `deno` | denoland/deno |
 
@@ -21,7 +22,7 @@ build.rs 在构建期从各上游 release 取与目标平台匹配的预编译�
 
 ### 测试
 
-- `embed::tools`：四个工具的数据都内嵌在服务二进制里，物化出的文件可直接执行。
+- `embed::tools`：五个工具的数据都内嵌在服务二进制里，物化出的文件可直接执行。
 
 ## 物化
 
@@ -33,15 +34,15 @@ build.rs 在构建期从各上游 release 取与目标平台匹配的预编译�
 
 ### 测试
 
-- `materialize::layout`：四个工具都落成 `$CACHE/sandbox-toolkit/bin` 下的真实可执行文件。
+- `materialize::layout`：五个工具都落成 `$CACHE/sandbox-toolkit/bin` 下的真实可执行文件。
 - `materialize::skip`：已落盘文件与清单一致时启动不重写。
 - `materialize::repair`：文件被改坏或删除后启动重新物化，内容回到与清单一致。
 
 ## PATH
 
-exec 模块部署 subprocess 时必须把物化路径添加到 PATH 中，确保 `fd`、`rg`、`uv`、`deno` 以及 `node` 均直接可用。`node` 不单独内嵌，由 `deno` 承担。
+exec 模块部署 subprocess 时必须把物化路径添加到 PATH 中，确保 `fd`、`rg`、`curl`、`uv`、`deno` 以及 `node` 均直接可用。`node` 不单独内嵌，由 `deno` 承担。
 
 ### 测试
 
-- `path::tools`：`/exec` 中 `fd`、`rg`、`uv`、`deno` 都按名字直接调用成功。
+- `path::tools`：`/exec` 中 `fd`、`rg`、`curl`、`uv`、`deno` 都按名字直接调用成功。
 - `path::keeps`：物化路径加进 PATH，原有条目保留。
