@@ -21,13 +21,14 @@ export class UploadError extends Data.TaggedError("UploadError")<{
 }> {}
 
 /**
- * The bytes to upload: a local path, an in-memory buffer, a readable stream,
- * or an explicit path range.
+ * The bytes to upload: a local path, an in-memory buffer, a Node or web
+ * readable stream, or an explicit path range.
  */
 export type UploadSource =
   | string
   | Uint8Array
   | Readable
+  | ReadableStream<Uint8Array>
   | {
       readonly path: string;
       readonly start?: number | undefined;

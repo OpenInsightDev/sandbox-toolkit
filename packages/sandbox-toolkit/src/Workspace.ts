@@ -8,6 +8,7 @@ import type { WorkspaceList } from "./generated/WorkspaceList.ts";
 import { FileSystem, make as makeFs } from "./FileSystem.ts";
 import { Client, type ClientError, layer as clientLayer } from "./internal/client.ts";
 import { layer as http2WebSocket } from "./internal/Http2WebSocket.ts";
+import { TUSClient, make as makeTus } from "./internal/TUSClient.ts";
 import {
   collectionUrl,
   itemUrl,
@@ -136,13 +137,17 @@ export const Workspace: Context.Service<WorkspaceService, WorkspaceService> =
 
 export const make = Effect.fn("Workspace.make")(function* () {
   const client = yield* Client;
+  const tus = yield* makeTus().pipe(Effect.provideService(Client, client));
 
   // The features a workspace prefixes are built against the client the service
   // was layered with, so callers get them without providing `Client` again.
   const bind = Effect.fn("Workspace.bind")(function* (metadata: Metadata) {
     const id = metadata.id;
 
-    const fs = yield* makeFs({ workspace: id }).pipe(Effect.provideService(Client, client));
+    const fs = yield* makeFs({ workspace: id }).pipe(
+      Effect.provideService(Client, client),
+      Effect.provideService(TUSClient, tus),
+    );
 
     const mcp = yield* makeMcp({ workspace: id }).pipe(Effect.provideService(Client, client));
 

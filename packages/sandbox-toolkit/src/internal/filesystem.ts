@@ -3,6 +3,7 @@ import type { File, WatchEvent } from "effect/FileSystem";
 
 import type { Stat } from "../generated/Stat.ts";
 import { ApiError, type ClientError } from "./client.ts";
+import type { UploadError } from "./TUSClient.ts";
 
 /** A `SystemError` reason without its tag, which the helper below supplies. */
 type SystemFailure = Omit<Parameters<typeof PlatformError.systemError>[0], "_tag">;
@@ -24,6 +25,32 @@ export const unsupported = (method: string): PlatformError.PlatformError =>
     description: "the sandbox file server does not implement this operation yet",
   });
 
+/** The platform error a response status classifies to; an absent status is unknown. */
+const statusError = (
+  status: number | undefined,
+  failure: SystemFailure,
+): PlatformError.PlatformError => {
+  switch (status) {
+    case 400:
+      return PlatformError.badArgument({
+        module: failure.module,
+        method: failure.method,
+        description: failure.description,
+        cause: failure.cause,
+      });
+    case 403:
+      return systemError("PermissionDenied", failure);
+    case 404:
+      return systemError("NotFound", failure);
+    case 409:
+      return systemError("AlreadyExists", failure);
+    case 422:
+      return systemError("BadResource", failure);
+    default:
+      return systemError("Unknown", failure);
+  }
+};
+
 /**
  * The mount answers a status and a human-readable brief rather than a coded error
  * document, so the status carries the classification.
@@ -39,29 +66,25 @@ export const toPlatformError =
       cause: error,
     };
 
-    if (!(error instanceof ApiError)) {
-      return systemError("Unknown", failure);
-    }
+    return statusError(error instanceof ApiError ? error.status : undefined, failure);
+  };
 
-    switch (error.status) {
-      case 400:
-        return PlatformError.badArgument({
-          module: failure.module,
-          method: failure.method,
-          description: failure.description,
-          cause: error,
-        });
-      case 403:
-        return systemError("PermissionDenied", failure);
-      case 404:
-        return systemError("NotFound", failure);
-      case 409:
-        return systemError("AlreadyExists", failure);
-      case 422:
-        return systemError("BadResource", failure);
-      default:
-        return systemError("Unknown", failure);
-    }
+/**
+ * The upload client reports failures of its own, carrying the status the mount
+ * answered with, so they classify through the same table as a mount request.
+ */
+export const toPlatformUploadError =
+  (method: string, path: string) =>
+  (error: UploadError): PlatformError.PlatformError => {
+    const failure: SystemFailure = {
+      module: "FileSystem",
+      method,
+      description: error.message,
+      pathOrDescriptor: path,
+      cause: error,
+    };
+
+    return statusError(error.status, failure);
   };
 
 /** A server timestamp as a `Date`, absent when the platform withheld it. */

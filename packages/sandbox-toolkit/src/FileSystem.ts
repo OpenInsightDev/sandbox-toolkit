@@ -13,6 +13,7 @@ import type { OpenFlag, File, WatchOptions, WatchEvent } from "effect/FileSystem
 import { HttpClientRequest } from "effect/unstable/http";
 
 import type { AccessRequest } from "./generated/AccessRequest.ts";
+import type { CommitRequest } from "./generated/CommitRequest.ts";
 import type { Content } from "./generated/Content.ts";
 import type { Entries } from "./generated/Entries.ts";
 import type { GlobRequest } from "./generated/GlobRequest.ts";
@@ -35,9 +36,11 @@ import {
   metadataInfo,
   parseWatchEvent,
   toPlatformError,
+  toPlatformUploadError,
   unsupported,
 } from "./internal/filesystem.ts";
 import { endLines, takeLines } from "./internal/process.ts";
+import { TUSClient, layer as tusLayer } from "./internal/TUSClient.ts";
 
 export type FileSystemError = PlatformError.PlatformError;
 
@@ -229,10 +232,20 @@ const isUtf8 = (encoding: string): boolean => encoding.replaceAll("-", "").toLow
 /** The mount's timestamp patch takes RFC 3339. */
 const timestamp = (value: Date | number): string => new Date(value).toISOString();
 
+/**
+ * The `PATCH` body size a streamed sink uploads in. tus requires a finite size
+ * for a stream source, and it bounds how much of the sink's input is in flight.
+ */
+const sinkChunkSize = 1024 * 1024;
+
+/** The upload id a tus URL ends in, which `commit` addresses the staged bytes by. */
+const uploadId = (url: string): string => url.slice(url.lastIndexOf("/") + 1);
+
 export const make = Effect.fn("FileSystem.make")(function* (
   options: { workspace?: string | undefined } = {},
 ) {
   const client = yield* Client;
+  const tus = yield* TUSClient;
 
   // `DELETE` names its operation by method alone, so it carries no `type`.
   const endpoint = (type: string | undefined): string => {
@@ -592,6 +605,44 @@ export const make = Effect.fn("FileSystem.make")(function* (
       Effect.flatMap((content) => writeContent("writeFile", path, content)),
     )) satisfies FileSystem["writeFile"];
 
+  // The mount stores text only, so bytes go through the upload mount, which
+  // stages them until `commit` moves them onto the path. The sink hands its
+  // input to the upload as a stream instead of buffering it, so memory stays
+  // bounded by the tus chunk size; the length is deferred because a sink does
+  // not know how many bytes it will receive, and a failed `commit` leaves the
+  // staged upload for a later one.
+  const sink = ((path: string, sinkOptions) =>
+    Sink.fromTransform<Uint8Array, void, FileSystemError, never>((upstream) =>
+      Effect.gen(function* () {
+        yield* guardWrite("sink", sinkOptions);
+        yield* guardPaths("sink", { path });
+
+        // A leading zero-length chunk keeps the source from ending before it
+        // holds any bytes: tus cannot slice such a stream, so an empty sink
+        // would fail instead of creating an empty upload.
+        const bytes = Stream.fromPull(Effect.succeed(upstream)).pipe(
+          Stream.prepend([new Uint8Array(0)]),
+        );
+
+        const upload = yield* tus
+          .uploadResult({
+            source: Stream.toReadableStream(bytes),
+            chunkSize: sinkChunkSize,
+            uploadLengthDeferred: true,
+          })
+          .pipe(Effect.mapError(toPlatformUploadError("sink", path)));
+
+        yield* queryVoid({
+          operation: "sink",
+          method: "post",
+          type: "commit",
+          body: { upload: uploadId(upload.url), path } satisfies CommitRequest,
+        });
+
+        return [undefined];
+      }),
+    )) satisfies FileSystem["sink"];
+
   const fails = (method: string): Effect.Effect<never, FileSystemError> =>
     Effect.fail(unsupported(method));
 
@@ -616,7 +667,7 @@ export const make = Effect.fn("FileSystem.make")(function* (
     realPath,
     remove,
     rename,
-    sink: () => Sink.fail(unsupported("sink")),
+    sink,
     stat,
     stream,
     truncate,
@@ -629,4 +680,6 @@ export const make = Effect.fn("FileSystem.make")(function* (
 
 /** The file system service in direct mode, where paths are absolute. */
 export const layer = (config: { readonly baseUrl?: string | URL | undefined } = {}) =>
-  Layer.effect(FileSystem, make()).pipe(Layer.provide(clientLayer(config)));
+  Layer.effect(FileSystem, make()).pipe(
+    Layer.provide(Layer.mergeAll(clientLayer(config), tusLayer(config))),
+  );
