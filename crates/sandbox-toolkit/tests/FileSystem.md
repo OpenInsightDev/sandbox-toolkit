@@ -4,7 +4,7 @@
 
 FileSystem 挂载在 `/fs`，在工作区内提供文件与目录操作：读取元数据、内容、目录、链接目标与通配匹配，写入文件与创建目录、符号链接，修改元数据、应用补丁、截断，复制、移动与删除。
 
-端点固定，操作由方法与查询串里的 `type` 共同决定；参数通过 JSON 请求体传入。文件上传一律走 `/tus`（见 [Tus 设计](./Tus.md)）。写操作成功只报结果：回 `204`，不带响应体。
+端点固定，操作由方法与查询串里的 `type` 共同决定；参数通过 JSON 请求体传入。文件上传一律走 `/tus`（见 [Tus 设计](./Tus.md)）。写操作成功只报结果：回 `204`，不带响应体；`PUT ?type=temp` 例外，它把创建出的路径放进响应体。
 
 各 `type` 的字段与行为见下文，状态码见「请求」一节。
 
@@ -46,6 +46,7 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 | `PUT` | `content` | 写入文件 | `path`、`content` |
 | `PUT` | `directory` | 创建目录 | `path`、`recursive` |
 | `PUT` | `symlink` | 创建符号链接 | `path`、`target` |
+| `PUT` | `temp` | 创建临时条目 | `kind`、`directory`、`prefix`、`suffix` |
 | `PATCH` | `metadata` | 修改元数据 | `path`、可变字段 |
 | `PATCH` | `patch` | 应用文本补丁 | `path`、`format`、`patch` |
 | `PATCH` | `truncate` | 截断文件 | `path`、`length` |
@@ -387,6 +388,41 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 
 - `symlink::creates`：创建链接后 `QUERY ?type=metadata` 报 `kind` 为 `symlink`。
 - `symlink::exists`：`path` 已存在时返回 `409`。
+
+## `PUT ?type=temp`
+
+创建一个临时条目，回它的绝对路径。挂载的寻址不参与：基目录是绝对路径，或服务端自己的临时目录。
+
+输入（JSON body）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `kind` | string | 必填，`directory` 建目录，`file` 建空文件 |
+| `directory` | string \| null | 可选，基目录，MUST 是绝对路径；缺省服务端临时目录 |
+| `prefix` | string \| null | 可选，名字前缀，缺省 `effect` |
+| `suffix` | string \| null | 可选，名字后缀，缺省空 |
+
+输出：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `path` | string | 新建条目的绝对路径 |
+
+- 名字是 `prefix` + 六个随机字符 + `suffix`，撞名重新取名；
+- `kind` 为 `directory` 时权限 `0700`，为 `file` 时权限 `0600` 且内容为空；
+- 两种寻址模式都回工作区之外的绝对路径；
+- `directory` 不是绝对路径报 `400`，不存在报 `404`，权限不足报 `403`。
+
+### 测试
+
+- `temp::directory`：给定基目录下建出权限 `0700` 的目录，回它的绝对路径。
+- `temp::file`：给定基目录下建出权限 `0600` 的空文件。
+- `temp::default_directory`：不给 `directory` 时条目落在服务端临时目录下。
+- `temp::name`：名字带 `prefix` 与 `suffix`。
+- `temp::distinct`：两次调用回不同的路径。
+- `temp::workspace`：工作区挂载下同样回工作区之外的绝对路径。
+- `temp::relative_directory`：`directory` 不是绝对路径时返回 `400`。
+- `temp::missing_directory`：`directory` 不存在时返回 `404`。
 
 ## `PATCH ?type=metadata`
 

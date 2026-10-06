@@ -901,6 +901,157 @@ mod symlink {
     }
 }
 
+mod temp {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// The permission bits of a path the mount created.
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::symlink_metadata(path)
+            .expect("stat the temp entry")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// Runs the temp write and returns the absolute path it answered with.
+    async fn created(server: &Server, body: Value) -> std::path::PathBuf {
+        let response = write(server, Method::PUT, "temp", body).await;
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "PUT temp");
+
+        let decoded = response.json::<Value>().await.expect("decode the path");
+        let path = std::path::PathBuf::from(decoded["path"].as_str().expect("a path"));
+        assert!(path.is_absolute(), "the path is absolute");
+
+        path
+    }
+
+    #[tokio::test]
+    async fn directory() {
+        let home = Dir::new("temp-directory-home");
+        let base = Dir::new("temp-directory-base");
+        let server = Server::start(&home).await;
+        server.register("w", base.path()).await;
+
+        let body = json!({ "kind": "directory", "directory": base.path().to_string_lossy() });
+        let path = created(&server, body).await;
+
+        assert!(path.is_dir(), "a directory is created");
+        assert!(path.starts_with(base.path()), "the entry sits under the base");
+        assert_eq!(mode(&path), 0o700);
+    }
+
+    #[tokio::test]
+    async fn file() {
+        let home = Dir::new("temp-file-home");
+        let base = Dir::new("temp-file-base");
+        let server = Server::start(&home).await;
+        server.register("w", base.path()).await;
+
+        let body = json!({ "kind": "file", "directory": base.path().to_string_lossy() });
+        let path = created(&server, body).await;
+
+        assert!(path.is_file(), "a file is created");
+        assert_eq!(std::fs::metadata(&path).expect("stat").len(), 0);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[tokio::test]
+    async fn default_directory() {
+        let home = Dir::new("temp-default-home");
+        let root = Dir::new("temp-default-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+
+        let path = created(&server, json!({ "kind": "directory" })).await;
+
+        assert_eq!(
+            path.parent(),
+            Some(std::env::temp_dir().as_path()),
+            "the entry falls back to the server's temp directory"
+        );
+        std::fs::remove_dir_all(&path).expect("clean up the temp directory");
+    }
+
+    #[tokio::test]
+    async fn name() {
+        let home = Dir::new("temp-name-home");
+        let base = Dir::new("temp-name-base");
+        let server = Server::start(&home).await;
+        server.register("w", base.path()).await;
+
+        let body = json!({
+            "kind": "file",
+            "directory": base.path().to_string_lossy(),
+            "prefix": "scratch-",
+            "suffix": ".txt",
+        });
+        let path = created(&server, body).await;
+
+        let name = path.file_name().expect("a name").to_string_lossy();
+        assert!(name.starts_with("scratch-"), "the prefix leads the name");
+        assert!(name.ends_with(".txt"), "the suffix ends the name");
+    }
+
+    #[tokio::test]
+    async fn distinct() {
+        let home = Dir::new("temp-distinct-home");
+        let base = Dir::new("temp-distinct-base");
+        let server = Server::start(&home).await;
+        server.register("w", base.path()).await;
+
+        let body = json!({ "kind": "directory", "directory": base.path().to_string_lossy() });
+        let first = created(&server, body.clone()).await;
+        let second = created(&server, body).await;
+
+        assert_ne!(first, second, "each call takes a fresh name");
+    }
+
+    #[tokio::test]
+    async fn workspace() {
+        let home = Dir::new("temp-workspace-home");
+        let root = Dir::new("temp-workspace-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+
+        let path = created(&server, json!({ "kind": "directory" })).await;
+
+        assert!(
+            !path.starts_with(root.path()),
+            "the entry is outside the workspace, not addressed by the mount"
+        );
+        std::fs::remove_dir_all(&path).expect("clean up the temp directory");
+    }
+
+    #[tokio::test]
+    async fn relative_directory() {
+        let home = Dir::new("temp-relative-home");
+        let root = Dir::new("temp-relative-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+
+        let body = json!({ "kind": "directory", "directory": "relative" });
+        let response = write(&server, Method::PUT, "temp", body).await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn missing_directory() {
+        let home = Dir::new("temp-missing-home");
+        let base = Dir::new("temp-missing-base");
+        let server = Server::start(&home).await;
+        server.register("w", base.path()).await;
+
+        let absent = base.path().join("absent");
+        let body = json!({ "kind": "directory", "directory": absent.to_string_lossy() });
+        let response = write(&server, Method::PUT, "temp", body).await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+}
+
 mod patch {
     use super::*;
 
