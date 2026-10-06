@@ -27,6 +27,8 @@ import type { RealPath } from "./generated/RealPath.ts";
 import type { RemoveRequest } from "./generated/RemoveRequest.ts";
 import type { Stat } from "./generated/Stat.ts";
 import type { SymlinkRequest } from "./generated/SymlinkRequest.ts";
+import type { TempPath } from "./generated/TempPath.ts";
+import type { TempRequest } from "./generated/TempRequest.ts";
 import type { TransferRequest } from "./generated/TransferRequest.ts";
 import type { TruncateRequest } from "./generated/TruncateRequest.ts";
 import type { WatchRequest } from "./generated/WatchRequest.ts";
@@ -66,7 +68,7 @@ interface Addressing {
  * One file system request: `operation` names the caller in errors, `method` and
  * `type` select the handler, and `body` carries the document.
  */
-interface Query<Body extends Addressing> {
+interface Query<Body> {
   readonly operation: string;
   /** The mount's read method unless a write names its own. */
   readonly method?: Method | undefined;
@@ -279,7 +281,7 @@ export const make = Effect.fn("FileSystem.make")(function* (
         );
   };
 
-  const wire = <Body extends Addressing>({
+  const wire = <Body>({
     method = "query",
     type,
     body,
@@ -557,6 +559,51 @@ export const make = Effect.fn("FileSystem.make")(function* (
       } satisfies RemoveRequest,
     })) satisfies FileSystem["remove"];
 
+  // The mount creates a temp entry beside the server, so the request names only
+  // a kind and a base; the path it answers with is absolute in either mount.
+  const temp = (
+    operation: string,
+    kind: TempRequest["kind"],
+    tempOptions?: {
+      readonly directory?: string | undefined;
+      readonly prefix?: string | undefined;
+      readonly suffix?: string | undefined;
+    },
+  ): Effect.Effect<string, FileSystemError> => {
+    const body: TempRequest = {
+      kind,
+      directory: tempOptions?.directory ?? null,
+      prefix: tempOptions?.prefix ?? null,
+      suffix: tempOptions?.suffix ?? null,
+    };
+
+    return client.json<TempPath>(wire({ operation, method: "put", type: "temp", body })).pipe(
+      Effect.map((created) => created.path),
+      Effect.mapError(toPlatformError(operation, tempOptions?.directory ?? "")),
+    );
+  };
+
+  const makeTempDirectory = ((tempOptions) =>
+    temp("makeTempDirectory", "directory", tempOptions)) satisfies FileSystem["makeTempDirectory"];
+
+  const makeTempFile = ((tempOptions) =>
+    temp("makeTempFile", "file", tempOptions)) satisfies FileSystem["makeTempFile"];
+
+  // A scoped temp entry is the plain one with its removal attached to the
+  // caller's scope, so the mount offers no scoped operation of its own.
+  const scoped = (
+    acquired: Effect.Effect<string, FileSystemError>,
+  ): Effect.Effect<string, FileSystemError, Scope.Scope> =>
+    Effect.acquireRelease(acquired, (path) =>
+      remove(path, { recursive: true, force: true }).pipe(Effect.ignore),
+    );
+
+  const makeTempDirectoryScoped = ((tempOptions) =>
+    scoped(makeTempDirectory(tempOptions))) satisfies FileSystem["makeTempDirectoryScoped"];
+
+  const makeTempFileScoped = ((tempOptions) =>
+    scoped(makeTempFile(tempOptions))) satisfies FileSystem["makeTempFileScoped"];
+
   // The mount's file write is `open("w")`: it always creates or truncates and
   // leaves the mode to the process umask, so any other flag or an explicit mode
   // is a request the endpoint cannot honor.
@@ -649,9 +696,6 @@ export const make = Effect.fn("FileSystem.make")(function* (
       }),
     )) satisfies FileSystem["sink"];
 
-  const fails = (method: string): Effect.Effect<never, FileSystemError> =>
-    Effect.fail(unsupported(method));
-
   return FileSystem.of({
     access,
     chmod,
@@ -661,10 +705,10 @@ export const make = Effect.fn("FileSystem.make")(function* (
     exists,
     symlink,
     makeDirectory,
-    makeTempDirectory: () => fails("makeTempDirectory"),
-    makeTempDirectoryScoped: () => fails("makeTempDirectoryScoped"),
-    makeTempFile: () => fails("makeTempFile"),
-    makeTempFileScoped: () => fails("makeTempFileScoped"),
+    makeTempDirectory,
+    makeTempDirectoryScoped,
+    makeTempFile,
+    makeTempFileScoped,
     readDirectory,
     readFile,
     readLines,

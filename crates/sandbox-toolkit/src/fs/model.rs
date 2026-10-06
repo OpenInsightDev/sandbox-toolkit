@@ -95,6 +95,29 @@ pub struct SymlinkRequest {
 
 #[derive(Debug, Deserialize, JsonSchema, TS)]
 #[ts(export)]
+pub struct TempRequest {
+    pub kind: TempKind,
+    pub directory: Option<String>,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum TempKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct TempPath {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, TS)]
+#[ts(export)]
 pub struct MetadataRequest {
     pub path: String,
     pub mode: Option<String>,
