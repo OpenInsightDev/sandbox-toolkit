@@ -2,7 +2,7 @@
 
 ## 概览
 
-FileSystem 挂载在 `/fs`，在工作区内提供文件与目录操作：读取元数据、内容、目录与通配匹配，写入文件与创建目录、符号链接，修改元数据、应用补丁、截断，复制、移动与删除。
+FileSystem 挂载在 `/fs`，在工作区内提供文件与目录操作：读取元数据、内容、目录、链接目标与通配匹配，写入文件与创建目录、符号链接，修改元数据、应用补丁、截断，复制、移动与删除。
 
 端点固定，操作由方法与查询串里的 `type` 共同决定；参数通过 JSON 请求体传入。文件上传一律走 `/tus`（见 [Tus 设计](./Tus.md)）。写操作成功只报结果：回 `204`，不带响应体。
 
@@ -39,6 +39,7 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 | `QUERY` | `list` | 列目录 | `path`、`depth`、`offset`、`limit` |
 | `QUERY` | `glob` | 通配匹配 | `path`、`pattern`、`exclude`、`offset`、`limit` |
 | `QUERY` | `realpath` | 解析真实路径 | `path` |
+| `QUERY` | `readlink` | 读取符号链接目标 | `path` |
 | `QUERY` | `access` | 探测访问权限 | `path` |
 | `QUERY` | `lines` | 按行读取文件 | `path`、`offset`、`limit` |
 | `QUERY` | `watch` | 监听变更 | `path`、`recursive` |
@@ -61,7 +62,7 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 | 403 | 拒绝 | 权限不足 |
 | 404 | 未找到 | 目标路径不存在 |
 | 409 | 冲突 | 目标已存在，或目录非空且未 `recursive`，或上传未完成 |
-| 422 | 无法处理 | 内容不是合法 UTF-8 |
+| 422 | 无法处理 | 内容不是合法 UTF-8，或 `readlink` 的目标不是符号链接 |
 
 ### 测试
 
@@ -222,6 +223,31 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 ### 测试
 
 - `realpath::resolves`：解析符号链接后回绝对路径。
+
+## `QUERY ?type=readlink`
+
+读取符号链接自身指向的目标。
+
+输入（JSON body）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `path` | string | 必填，链接自身的路径 |
+
+输出：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `target` | string | 链接里存的原始目标串 |
+
+- `target` 原样返回，既不解析也不按寻址模式重写：相对目标仍是相对目标，绝对目标仍是绝对目标；
+- `target` 不必存在；
+- `path` 不是符号链接时报 `422`。
+
+### 测试
+
+- `readlink::targets`：相对与绝对目标都按原样读回，悬空目标照样返回。
+- `readlink::not_a_link`：`path` 是普通文件时返回 `422`。
 
 ## `QUERY ?type=access`
 

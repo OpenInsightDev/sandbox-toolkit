@@ -522,6 +522,68 @@ mod realpath {
     }
 }
 
+mod readlink {
+    use super::*;
+
+    #[tokio::test]
+    async fn targets() {
+        let home = Dir::new("readlink-targets-home");
+        let root = Dir::new("readlink-targets-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+        std::os::unix::fs::symlink("notes.txt", root.path().join("link.txt"))
+            .expect("seed the relative link");
+        let missing = root.path().join("missing.txt");
+        std::os::unix::fs::symlink(&missing, root.path().join("dangling.txt"))
+            .expect("seed the dangling link");
+
+        let relative = query(
+            &server,
+            "/workspaces/w/fs",
+            "readlink",
+            json!({ "path": "link.txt" }),
+        )
+        .await;
+        assert_eq!(relative.status(), reqwest::StatusCode::OK);
+        let relative = relative.json::<Value>().await.expect("decode the link");
+        assert_eq!(relative["target"].as_str(), Some("notes.txt"));
+
+        let absolute = query(
+            &server,
+            "/workspaces/w/fs",
+            "readlink",
+            json!({ "path": "dangling.txt" }),
+        )
+        .await;
+        assert_eq!(absolute.status(), reqwest::StatusCode::OK);
+        let absolute = absolute.json::<Value>().await.expect("decode the link");
+        assert_eq!(
+            absolute["target"].as_str(),
+            Some(missing.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn not_a_link() {
+        let home = Dir::new("readlink-not-a-link-home");
+        let root = Dir::new("readlink-not-a-link-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "hello\n").expect("seed the file");
+
+        let response = query(
+            &server,
+            "/workspaces/w/fs",
+            "readlink",
+            json!({ "path": "notes.txt" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+}
+
 mod access {
     use super::*;
 
