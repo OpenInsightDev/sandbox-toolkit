@@ -22,7 +22,7 @@ use crate::http::{ExtractWorkspace, app_state};
 
 use super::model::{
     AccessRequest, Change, Content, Depth, Entries, FsError, GlobRequest, Infinite, Lines,
-    LinesRequest, ListRequest, PathRequest, RealPath, Stat, WatchRequest,
+    LinesRequest, ListRequest, PathRequest, ReadLink, RealPath, Stat, WatchRequest,
 };
 use super::{create, modify, paths};
 
@@ -134,6 +134,7 @@ async fn dispatch(
         "list" => list(target, decode(body)?, res).await,
         "glob" => glob(target, decode(body)?, res).await,
         "realpath" => realpath(target, decode(body)?, res).await,
+        "readlink" => readlink(target, decode(body)?, res).await,
         "access" => access(target, decode(body)?, res).await,
         "lines" => lines(target, decode(body)?, res).await,
         "watch" => watch(target, decode(body)?, res).await,
@@ -257,6 +258,31 @@ async fn realpath(
 
     res.render(Json(RealPath {
         path: resolved.to_string_lossy().into_owned(),
+    }));
+
+    Ok(())
+}
+
+async fn readlink(
+    target: &Target,
+    request: PathRequest,
+    res: &mut Response,
+) -> Result<(), StatusError> {
+    let path = target.resolve(&request.path);
+    let link = match tokio::fs::read_link(&path).await {
+        Ok(link) => link,
+        // `readlink(2)` reports `EINVAL` for a path that is not a link, which is
+        // a fact about the resource rather than a failure of the mirror.
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+            return Err(FsError::NotASymlink(target.render(&path)).into());
+        }
+        Err(error) => return Err(io_error(&target.render(&path), error).into()),
+    };
+
+    // A link stores a string, so its target comes back as it was written: a
+    // relative target names the link's own directory and is left alone.
+    res.render(Json(ReadLink {
+        target: link.to_string_lossy().into_owned(),
     }));
 
     Ok(())
@@ -519,7 +545,7 @@ impl From<FsError> for StatusError {
             FsError::NotFound(_) => StatusCode::NOT_FOUND,
             FsError::PermissionDenied(_) => StatusCode::FORBIDDEN,
             FsError::Conflict(_) => StatusCode::CONFLICT,
-            FsError::NotUtf8(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            FsError::NotUtf8(_) | FsError::NotASymlink(_) => StatusCode::UNPROCESSABLE_ENTITY,
             FsError::Invalid(_) => StatusCode::BAD_REQUEST,
             FsError::Io(_) | FsError::Watch(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };

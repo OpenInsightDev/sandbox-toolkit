@@ -238,6 +238,12 @@ pub struct RealPath {
     pub path: String,
 }
 
+#[derive(Debug, Serialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct ReadLink {
+    pub target: String,
+}
+
 /// One line of a `watch` response; `event` is `create`, `update` or `remove`.
 #[derive(Debug, Serialize, JsonSchema, TS)]
 #[ts(export)]
@@ -256,6 +262,8 @@ pub enum FsError {
     Conflict(String),
     #[error("`{0}` is not valid UTF-8")]
     NotUtf8(String),
+    #[error("`{0}` is not a symbolic link")]
+    NotASymlink(String),
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]

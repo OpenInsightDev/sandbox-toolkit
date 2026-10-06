@@ -22,6 +22,7 @@ import type { LinesRequest } from "./generated/LinesRequest.ts";
 import type { ListRequest } from "./generated/ListRequest.ts";
 import type { MakeDirectoryRequest } from "./generated/MakeDirectoryRequest.ts";
 import type { MetadataRequest } from "./generated/MetadataRequest.ts";
+import type { ReadLink } from "./generated/ReadLink.ts";
 import type { RealPath } from "./generated/RealPath.ts";
 import type { RemoveRequest } from "./generated/RemoveRequest.ts";
 import type { Stat } from "./generated/Stat.ts";
@@ -436,6 +437,11 @@ export const make = Effect.fn("FileSystem.make")(function* (
       Effect.map((resolved) => resolved.path),
     )) satisfies FileSystem["realPath"];
 
+  const readLink = ((path: string) =>
+    queryJson<ReadLink>({ operation: "readLink", type: "readlink", body: { path } }).pipe(
+      Effect.map((link) => link.target),
+    )) satisfies FileSystem["readLink"];
+
   const watch = ((path: string, watchOptions) => {
     const body: WatchRequest = {
       path,
@@ -663,7 +669,7 @@ export const make = Effect.fn("FileSystem.make")(function* (
     readFile,
     readLines,
     readFileString,
-    readLink: () => fails("readLink"),
+    readLink,
     realPath,
     remove,
     rename,
