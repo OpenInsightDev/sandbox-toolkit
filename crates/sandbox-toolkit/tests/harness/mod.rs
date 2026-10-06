@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::fs::File;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
@@ -140,6 +141,35 @@ impl Server {
         response.json().await.expect("decode GET body")
     }
 
+    /// Opens the SSE stream at `path`, without reading it yet. A test that wants
+    /// two streams observes one event on both can open each with this and then
+    /// read them with [`collect`].
+    pub async fn stream(&self, path: &str) -> reqwest::Response {
+        let response = reqwest::Client::new()
+            .get(self.url(path))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("open the events stream");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
+
+        response
+    }
+
+    /// Opens the SSE stream at `path`, awaits `mutate`, and collects the events
+    /// the stream reports within `window`.
+    pub async fn events(
+        &self,
+        path: &str,
+        window: Duration,
+        mutate: impl Future<Output = ()>,
+    ) -> Vec<(String, Value)> {
+        let mut response = self.stream(path).await;
+        mutate.await;
+
+        collect(&mut response, window).await
+    }
+
     pub async fn exec(&self, body: Value) -> reqwest::Response {
         self.post("/exec", body).await
     }
@@ -234,6 +264,47 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The events `response` reports within `window`, as `event:` name and `data:`
+/// object pairs. A blank line ends an event.
+pub async fn collect(response: &mut reqwest::Response, window: Duration) -> Vec<(String, Value)> {
+    let mut buffer = String::new();
+    let mut collected = Vec::new();
+    let deadline = Instant::now() + window;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return collected;
+        }
+        match tokio::time::timeout(remaining, response.chunk()).await {
+            Ok(Ok(Some(chunk))) => buffer.push_str(&String::from_utf8_lossy(&chunk)),
+            Ok(_) | Err(_) => return collected,
+        }
+
+        // A blank line ends an event, so complete blocks are drained first.
+        while let Some(end) = buffer.find("\n\n") {
+            let raw: String = buffer.drain(..end + 2).collect();
+            if let Some(event) = parse_event(&raw) {
+                collected.push(event);
+            }
+        }
+    }
+}
+
+/// The `event:` name and `data:` object of one SSE event block.
+fn parse_event(raw: &str) -> Option<(String, Value)> {
+    let mut name = None;
+    let mut data = None;
+    for line in raw.lines() {
+        if let Some(value) = line.strip_prefix("event:") {
+            name = Some(value.trim().to_owned());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data = Some(value.trim().to_owned());
+        }
+    }
+
+    Some((name?, serde_json::from_str(&data?).expect("decode event data")))
 }
 
 /// The tus protocol version every upload request carries.

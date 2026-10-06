@@ -75,3 +75,41 @@ MCP 是 Workspace 持有的资源之一，其构造与丢弃由 [Workspace 设�
 - `query::manifest`：`GET /mcps` 返回的文档中每个条目都被改写为 `streamable-http`，指向 `/mcps/{mcp_id}`。
 - `query::workspace`：`GET /workspaces/global/mcps` 的条目地址带 workspace 前缀。
 - `query::unknown_workspace`：访问不存在的 workspace 返回 `404`。
+
+## 监听
+
+`GET /mcps`（工作区挂载为 `GET /workspaces/{workspace_id}/mcps`）带 `Accept: text/event-stream` 时不返回文档，而打开一条 SSE 流，推送该挂载点 scope 的 mcp 条目生命周期事件；不带该头时照常返回 [查询](#查询)。
+
+scope 的 `.agents/mcp.json` 与它全部 plugin 的 `mcp.json` 由同一观察者监听，即 [加载](#加载) 的重载范围，事件合并在同一条流上。
+
+| 事件 | 触发条件 |
+| --- | --- |
+| `register` | 一个 mcp id 新进入该 scope 的发现集合 |
+| `unregister` | 一个 id 离开发现集合 |
+| `update` | 一个仍在集合中的 id，其来源 `mcp.json` 发生变动 |
+
+`id` 与 [查询](#查询) 一致：scope 自身取 server 名，plugin 提供者取 `{plugin_id}.{server_name}`。条目没有目录那样的稳定身份，改掉 server 名即旧 id `unregister`、新 id `register`。只有 `mcp.json` 触发 `update`，其他文件（如 `plugin.json`）自身的变动不发事件。
+
+[加载](#加载) 失败使集合视为空，原有 id 逐个 `unregister`；恢复后逐个 `register`。plugin 一侧的失败由资源集合整体承担，同样落到空集合。
+
+流以 `text/event-stream` 承载，每个事件由一行 `event:`（事件名）、一行 `data:`（`{"id": "<mcp_id>"}`）与一个空行结束：
+
+```
+event: register
+data: {"id":"alpha"}
+
+```
+
+流自订阅时刻起只推后续事件，不回放当前集合；调用方断开即停止监听。
+
+### 测试
+
+- `events::register`：`.agents/mcp.json` 新增一个条目后流上出现 `register`，`id` 为 server 名，且不出现 `update`。
+- `events::unregister`：删除一个条目后流上出现 `unregister`。
+- `events::update`：改动仍在集合中的条目的配置后流上出现 `update`。
+- `events::rename`：改掉 server 名后旧 id `unregister`、新 id `register`，且不出现 `update`。
+- `events::broken`：`.agents/mcp.json` 变为非法使集合为空，流上对原有 id 出现 `unregister`，且不出现 `update`。
+- `events::plugin`：plugin 的 `mcp.json` 变动后流上对其条目出现 `update`，`id` 带 `{plugin_id}.` 前缀。
+- `events::ignores_other_files`：改动 plugin 目录内的其他文件不产生事件。
+- `events::workspace`：`GET /workspaces/{id}/mcps` 的流报该 scope 的事件。
+- `events::negotiation`：不带 `Accept: text/event-stream` 时该端点返回文档，带该头时以 `text/event-stream` 应答。

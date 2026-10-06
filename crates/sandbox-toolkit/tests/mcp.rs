@@ -405,13 +405,13 @@ mod merge {
         let local = start_upstream(&["workspace-tool"]).await;
 
         let home = Dir::new("merge-plugin-prefix");
-        let plugin = write_plugin(home.path(), "global", manifest("deploy-kit"));
+        let plugin = write_plugin(home.path(), "deploy-kit", manifest("deploy-kit"));
         write_plugin_mcp(
             &plugin,
             json!({ "echo": { "type": "streamable-http", "url": global } }),
         );
         let root = workspace_root(&home);
-        let plugin = write_plugin(&root, "local", manifest("deploy-kit"));
+        let plugin = write_plugin(&root, "deploy-kit", manifest("deploy-kit"));
         write_plugin_mcp(
             &plugin,
             json!({ "echo": { "type": "streamable-http", "url": local } }),
@@ -498,5 +498,236 @@ mod merge {
         let root = home.path().join("ws");
         std::fs::create_dir_all(&root).expect("create the workspace root");
         root
+    }
+}
+
+mod events {
+    use super::*;
+
+    /// How long each case listens before it stops expecting more events. Longer
+    /// than the watcher's debounce, so a silent case has really stayed silent.
+    const WINDOW: Duration = Duration::from_secs(3);
+
+    #[tokio::test]
+    async fn register() {
+        let home = Dir::new("mcp-events-register");
+        write_mcp_json(home.path(), json!({}));
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                write_mcp_json(
+                    home.path(),
+                    json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+                );
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("register".to_owned(), json!({ "id": "alpha" }))),
+            "a new entry is registered, got {reported:?}"
+        );
+        assert!(
+            !reported.iter().any(|(name, _)| name == "update"),
+            "registering an entry sends no update, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister() {
+        let home = Dir::new("mcp-events-unregister");
+        write_mcp_json(
+            home.path(),
+            json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+        );
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                write_mcp_json(home.path(), json!({}));
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("unregister".to_owned(), json!({ "id": "alpha" }))),
+            "a removed entry is unregistered, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update() {
+        let home = Dir::new("mcp-events-update");
+        write_mcp_json(
+            home.path(),
+            json!({ "alpha": { "type": "stdio", "command": "old" } }),
+        );
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                write_mcp_json(
+                    home.path(),
+                    json!({ "alpha": { "type": "stdio", "command": "new" } }),
+                );
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("update".to_owned(), json!({ "id": "alpha" }))),
+            "an edited entry is an update, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename() {
+        let home = Dir::new("mcp-events-rename");
+        write_mcp_json(
+            home.path(),
+            json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+        );
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                write_mcp_json(
+                    home.path(),
+                    json!({ "beta": { "type": "stdio", "command": "beta" } }),
+                );
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("unregister".to_owned(), json!({ "id": "alpha" }))),
+            "the old id leaves, got {reported:?}"
+        );
+        assert!(
+            reported.contains(&("register".to_owned(), json!({ "id": "beta" }))),
+            "the new id enters, got {reported:?}"
+        );
+        assert!(
+            !reported.iter().any(|(name, _)| name == "update"),
+            "a renamed server is not an update, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn broken() {
+        let home = Dir::new("mcp-events-broken");
+        write_mcp_json(
+            home.path(),
+            json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+        );
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                std::fs::write(home.path().join(".agents/mcp.json"), "{ not json")
+                    .expect("break mcp.json");
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("unregister".to_owned(), json!({ "id": "alpha" }))),
+            "a broken mcp.json empties the set, got {reported:?}"
+        );
+        assert!(
+            !reported.iter().any(|(name, _)| name == "update"),
+            "an entry that left the set is not updated, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin() {
+        let home = Dir::new("mcp-events-plugin");
+        let plugin = write_plugin(home.path(), "deploy-kit", manifest("deploy-kit"));
+        write_plugin_mcp(
+            &plugin,
+            json!({ "validator": { "type": "stdio", "command": "old" } }),
+        );
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                write_plugin_mcp(
+                    &plugin,
+                    json!({ "validator": { "type": "stdio", "command": "new" } }),
+                );
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("update".to_owned(), json!({ "id": "deploy-kit.validator" }))),
+            "a plugin entry is watched under its prefixed id, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ignores_other_files() {
+        let home = Dir::new("mcp-events-other-files");
+        let plugin = write_plugin(home.path(), "deploy-kit", manifest("deploy-kit"));
+        write_plugin_mcp(
+            &plugin,
+            json!({ "validator": { "type": "stdio", "command": "validator" } }),
+        );
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/mcps", WINDOW, async {
+                std::fs::write(plugin.join("notes.txt"), "hi\n").expect("write another file");
+            })
+            .await;
+
+        assert!(
+            reported.is_empty(),
+            "another file reports nothing, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace() {
+        let home = Dir::new("mcp-events-workspace-home");
+        let root = Dir::new("mcp-events-workspace-root");
+        write_mcp_json(root.path(), json!({}));
+        let server = Server::start(&home).await;
+        server.register("ws", root.path()).await;
+
+        let reported = server
+            .events("/workspaces/ws/mcps", WINDOW, async {
+                write_mcp_json(
+                    root.path(),
+                    json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+                );
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("register".to_owned(), json!({ "id": "alpha" }))),
+            "the workspace mount streams its own scope, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiation() {
+        let home = Dir::new("mcp-events-negotiation");
+        write_mcp_json(
+            home.path(),
+            json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+        );
+        let server = Server::start(&home).await;
+
+        // Without the header the mount answers the document.
+        assert!(ids(&server.get_json("/mcps").await).contains("alpha"));
+
+        let response = reqwest::Client::new()
+            .get(server.url("/mcps"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("open the events stream");
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(content_type, Some("text/event-stream"));
     }
 }

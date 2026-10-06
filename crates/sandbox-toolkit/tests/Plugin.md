@@ -8,7 +8,7 @@ Plugin 是 Workspace 持有的资源之一（见 [Workspace 设计](./Workspace.
 
 ## 加载
 
-`.agents/plugins` 的直接子目录逐个交给 `agent-plugins` 加载。目录名只是容器：plugin id 取清单的 `name`，`root` 是该目录的规范绝对路径。
+`.agents/plugins` 的直接子目录逐个交给 `agent-plugins` 加载。plugin 的身份是它的目录：`id` 取目录名，`root` 是该目录的规范绝对路径；清单的 `name` 只是可读名称，不改动 id。
 
 `agent-plugins` 报出的失败让整个资源集合失效，该挂载的 `/plugins`、`/mcps`、`/skills` 一律回答 `404`：
 
@@ -16,18 +16,17 @@ Plugin 是 Workspace 持有的资源之一（见 [Workspace 设计](./Workspace.
 | --- | --- |
 | `plugin.json` 缺失、不是普通文件、逃逸出包根，或不符合清单规范 | 加载被拒 |
 | `mcp.json` 顶层不合法，或 `$schema` 与清单的版本不一致 | MCP 组件被禁用 |
-| 同一工作区内两个目录的清单 `name` 相同 | 本设计 |
 
-非致命的问题按规范记录并忽略，不使构造失败：未知顶层字段、非对象的 `extensions`、不可用的组件位置、被跳过的单个 skill 与 server 条目。
+非致命的问题按规范记录并忽略，不使构造失败：未知顶层字段、非对象的 `extensions`、不可用的组件位置、被跳过的单个 skill 与 server 条目。清单 `name` 不要求唯一，两个目录可以取同一个 `name`，各自以目录名为 id。
 
 ### 测试
 
 - `load::discovers`：每个含合法 `plugin.json` 的直接子目录都出现在 `GET /plugins` 中。
-- `load::id`：id 取清单的 `name`；子目录名与之不同时 id 仍是 `name`，`root` 仍是该目录。
+- `load::id`：id 取目录名；与清单 `name` 不同时 id 仍是目录名，`root` 仍是该目录。
 - `load::rescans`：新增或删除 plugin 目录后，下一次 `GET /plugins` 反映新的集合。
 - `load::rejected`：`plugin.json` 缺失、非法 JSON 或 `$schema` 不识别时，`GET /plugins`、`GET /mcps`、`GET /skills` 都返回 `404`。
 - `load::disabled_mcp`：`mcp.json` 顶层不合法时 `GET /plugins`、`GET /mcps`、`GET /skills` 同样都返回 `404`。
-- `load::duplicate`：两个目录的 `name` 相同时 `GET /plugins`、`GET /mcps`、`GET /skills` 都返回 `404`。
+- `load::same_name`：两个目录的清单 `name` 相同时都按各自的目录名加载，`GET /plugins` 返回 `200`。
 - `load::ignored`：未知顶层字段、非对象 `extensions`、`skills/` 下的坏 skill 与 `mcp.json` 里的坏条目都不影响 `GET /plugins` 的 `200`。
 
 ## 查询
@@ -52,7 +51,7 @@ Plugin 是 Workspace 持有的资源之一（见 [Workspace 设计](./Workspace.
 
 | 字段 | 来源 |
 | --- | --- |
-| `id` | 清单的 `name` |
+| `id` | plugin 目录名 |
 | `root` | plugin 目录的规范绝对路径 |
 | `uri` | 该挂载点下本条的地址，即 `/plugins/{id}`，不带 origin；工作区挂载带 workspace 前缀 |
 | `manifest` | 校验后的 `plugin.json`：`$schema`、`name`，以及写了的 `version`、`description`、`author`、`homepage`、`repository`、`license`、`keywords`、`extensions` |
@@ -124,7 +123,7 @@ plugin 的 `mcp.json` 按[插件变量](https://agent-plugins.org/plugin-authors
 - 出现在 `GET /workspaces/{workspace_id}`，不出现在 `GET /workspaces`；
 - `PATCH` 与 `DELETE` 回答 `403`。
 
-plugin 名与反向域名都允许 `.`，因此这些 id 不按分隔符切分，而是按当前发现结果查表解析。
+plugin 目录名与反向域名都允许 `.`，因此这些 id 不按分隔符切分，而是按当前发现结果查表解析。
 
 ### 测试
 
@@ -132,3 +131,38 @@ plugin 名与反向域名都允许 `.`，因此这些 id 不按分隔符切分�
 - `extension::not_listed`：`GET /workspaces` 不含派生工作区。
 - `extension::mutate_denied`：对派生工作区的 `PATCH` 与 `DELETE` 回答 `403`。
 - `extension::unknown`：未被声明或未被发现的 `plugin.{scope}.{id}.{ns}` 回答 `404`。
+
+## 监听
+
+`GET /plugins`（工作区挂载为 `GET /workspaces/{workspace_id}/plugins`）带 `Accept: text/event-stream` 时不返回清单，而打开一条 SSE 流，推送该挂载点 scope 的 plugin 生命周期事件；不带该头时照常返回 [查询](#查询)。
+
+scope 的 `.agents/plugins` 由观察者监听。流按目录标识一个 plugin，事件的 `data` 为 `{"id": "<目录名>"}`。
+
+| 事件 | 触发条件 |
+| --- | --- |
+| `register` | 一个 plugin 目录新进入该 scope 的发现集合 |
+| `unregister` | 一个目录离开发现集合 |
+| `update` | 一个仍在集合中的目录，其 `plugin.json` 发生变动 |
+
+[加载](#加载) 失败使整个集合视为空，此时对原有的每个 id 发 `unregister`；恢复后逐个 `register`。清单改了 `name` 也是 `update`——`id` 是目录，不变。只有 `plugin.json` 触发 `update`，`mcp.json`、`skills/`、`.data` 等文件自身的变动不发事件。
+
+流以 `text/event-stream` 承载，每个事件由一行 `event:`（事件名）、一行 `data:`（`{"id": "<目录名>"}`）与一个空行结束：
+
+```
+event: register
+data: {"id":"deploy-kit"}
+
+```
+
+流自订阅时刻起只推后续事件，不回放当前集合；调用方断开即停止监听。
+
+### 测试
+
+- `events::register`：新建含合法 `plugin.json` 的目录后流上出现 `register`，`id` 为目录名，且不出现 `update`。
+- `events::unregister`：删除已发现的 plugin 目录后流上出现 `unregister`。
+- `events::update`：改动已发现 plugin 的 `plugin.json` 后流上出现 `update`。
+- `events::rename`：只改清单 `name` 仍是 `update`，`id` 不变，且不出现 `register`/`unregister`。
+- `events::failure`：`plugin.json` 变为非法使集合为空，流上对原有 id 出现 `unregister`，且不出现 `update`。
+- `events::ignores_other_files`：改动 plugin 目录内的其他文件不产生事件。
+- `events::workspace`：`GET /workspaces/{id}/plugins` 的流报该 scope 的事件。
+- `events::negotiation`：不带 `Accept: text/event-stream` 时该端点返回清单，带该头时以 `text/event-stream` 应答。

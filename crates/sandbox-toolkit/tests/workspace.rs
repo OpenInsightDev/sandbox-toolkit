@@ -2,10 +2,11 @@ mod harness;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use harness::{Dir, Server, manifest, write_mcp_json, write_plugin};
+use harness::{Dir, Server, collect, manifest, write_mcp_json, write_plugin};
 
 const SKILL: &str = "---\nname: deploy\ndescription: Deploy.\n---\n\nShip it.\n";
 
@@ -402,5 +403,237 @@ mod resources {
                 "{path}"
             );
         }
+    }
+}
+
+mod events {
+    use super::*;
+
+    /// How long each case listens before it stops expecting more events.
+    const WINDOW: Duration = Duration::from_secs(3);
+
+    #[tokio::test]
+    async fn register() {
+        let home = Dir::new("workspace-events-register");
+        let server = Server::start(&home).await;
+        let root = dir(&home.path().join("work"));
+
+        let reported = server
+            .events("/workspaces", WINDOW, async {
+                let response = server
+                    .post("/workspaces", json!({ "id": "work", "root": root }))
+                    .await;
+                assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("register".to_owned(), json!({ "id": "work" }))),
+            "a new workspace is registered, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister() {
+        let home = Dir::new("workspace-events-unregister");
+        let work = home.path().join("work");
+        dir(&work);
+        let server = Server::start(&home).await;
+        server.register("work", &work).await;
+
+        let reported = server
+            .events("/workspaces", WINDOW, async {
+                let response = server.delete("/workspaces/work").await;
+                assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("unregister".to_owned(), json!({ "id": "work" }))),
+            "a removed workspace is unregistered, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update() {
+        let home = Dir::new("workspace-events-update");
+        let work = home.path().join("work");
+        dir(&work);
+        let server = Server::start(&home).await;
+        server.register("work", &work).await;
+
+        let reported = server
+            .events("/workspaces", WINDOW, async {
+                let response = server
+                    .patch("/workspaces/work", json!({ "access": "read-only" }))
+                    .await;
+                assert_eq!(response.status(), reqwest::StatusCode::OK);
+            })
+            .await;
+
+        assert!(
+            reported.contains(&("update".to_owned(), json!({ "id": "work" }))),
+            "a changed workspace is updated, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiation() {
+        let home = Dir::new("workspace-events-negotiation");
+        let server = Server::start(&home).await;
+
+        // Without the header the mount answers the array.
+        assert!(server.get_json("/workspaces").await.is_array());
+
+        let response = reqwest::Client::new()
+            .get(server.url("/workspaces"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("open the events stream");
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(content_type, Some("text/event-stream"));
+    }
+}
+
+mod summary {
+    use super::*;
+
+    /// How long each case listens before it stops expecting more events.
+    const WINDOW: Duration = Duration::from_secs(3);
+
+    #[tokio::test]
+    async fn covers() {
+        let home = Dir::new("summary-covers-home");
+        let root = Dir::new("summary-covers-root");
+        let agents = root.path().join(".agents");
+        write_mcp_json(root.path(), json!({}));
+        std::fs::create_dir_all(agents.join("skills")).expect("create the skills directory");
+        std::fs::create_dir_all(agents.join("plugins")).expect("create the plugins directory");
+        let server = Server::start(&home).await;
+        server.register("ws", root.path()).await;
+
+        let reported = server
+            .events("/workspaces/ws", WINDOW, async {
+                write_skill(root.path());
+                write_plugin(root.path(), "deploy-kit", manifest("deploy-kit"));
+                write_mcp_json(
+                    root.path(),
+                    json!({ "alpha": { "type": "stdio", "command": "alpha" } }),
+                );
+            })
+            .await;
+
+        for (resource, id) in [("skill", "deploy"), ("plugin", "deploy-kit"), ("mcp", "alpha")] {
+            assert!(
+                reported.contains(&("register".to_owned(), json!({ "resource": resource, "id": id }))),
+                "the summary carries the {resource} event, got {reported:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn shares() {
+        let home = Dir::new("summary-shares-home");
+        let root = Dir::new("summary-shares-root");
+        std::fs::create_dir_all(root.path().join(".agents/skills"))
+            .expect("create the skills directory");
+        let server = Server::start(&home).await;
+        server.register("ws", root.path()).await;
+
+        // Both streams are open before the change, so each reports the same event.
+        let mut summary = server.stream("/workspaces/ws").await;
+        let mut skills = server.stream("/workspaces/ws/skills").await;
+
+        write_skill(root.path());
+
+        let from_summary = collect(&mut summary, WINDOW).await;
+        let from_skills = collect(&mut skills, WINDOW).await;
+
+        assert!(
+            from_summary.contains(&(
+                "register".to_owned(),
+                json!({ "resource": "skill", "id": "deploy" }),
+            )),
+            "the summary reports the skill event, got {from_summary:?}"
+        );
+        assert!(
+            from_skills.contains(&("register".to_owned(), json!({ "id": "deploy" }))),
+            "the skill mount reports the same event, got {from_skills:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn excludes_registry() {
+        let home = Dir::new("summary-excludes-home");
+        let root = Dir::new("summary-excludes-root");
+        write_mcp_json(root.path(), json!({}));
+        let server = Server::start(&home).await;
+        server.register("ws", root.path()).await;
+        let other = dir(&home.path().join("other"));
+
+        let reported = server
+            .events("/workspaces/ws", WINDOW, async {
+                // Another workspace's registration, and this one's access change,
+                // are registry events rather than workspace content.
+                let created = server
+                    .post("/workspaces", json!({ "id": "other", "root": other }))
+                    .await;
+                assert_eq!(created.status(), reqwest::StatusCode::CREATED);
+                let patched = server
+                    .patch("/workspaces/ws", json!({ "access": "read-only" }))
+                    .await;
+                assert_eq!(patched.status(), reqwest::StatusCode::OK);
+            })
+            .await;
+
+        assert!(
+            reported.is_empty(),
+            "registry events stay off the summary, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn global() {
+        let home = Dir::new("summary-global");
+        std::fs::create_dir_all(home.path().join(".agents/skills"))
+            .expect("create the skills directory");
+        let server = Server::start(&home).await;
+
+        let reported = server
+            .events("/workspaces/global", WINDOW, async {
+                write_skill(home.path());
+            })
+            .await;
+
+        assert!(
+            reported.contains(&(
+                "register".to_owned(),
+                json!({ "resource": "skill", "id": "deploy" }),
+            )),
+            "the global summary streams its own scope, got {reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiation() {
+        let home = Dir::new("summary-negotiation");
+        let server = Server::start(&home).await;
+
+        // Without the header the mount answers the workspace object.
+        assert_eq!(
+            server.get_json("/workspaces/global").await["id"],
+            json!("global")
+        );
+
+        let response = server.stream("/workspaces/global").await;
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(content_type, Some("text/event-stream"));
     }
 }
