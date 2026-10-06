@@ -38,3 +38,7 @@
 - `process::ready`：服务开始接受请求时 socket 已在监听。
 - `process::exits`：服务收到 `SIGTERM` 退出后，socket 不再可连。
 - `process::unreachable`：上游不可达时 `/tus` 返回 `502`。
+
+## 待定
+
+未认领上传的回收：没人用 [FileSystem 设计](./FileSystem.md) 的 `POST ?type=commit` 搬走上传时，字节一直留在 `-upload-dir` 里，直到显式 `DELETE /tus/{id}`；tusd 自身没有过期机制。回收策略待定。

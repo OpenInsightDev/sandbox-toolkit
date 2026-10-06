@@ -50,6 +50,7 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 | `PATCH` | `truncate` | 截断文件 | `path`、`length` |
 | `POST` | `copy` | 复制 | `path`、`destination` |
 | `POST` | `move` | 移动 / 重命名 | `path`、`destination` |
+| `POST` | `commit` | 放置上传的文件 | `upload`、`path` |
 | `DELETE` | — | 删除 | `path`、`recursive`、`force` |
 
 | 状态码 | 语义 | 触发条件 |
@@ -59,7 +60,7 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 | 400 | 请求错误 | `type` 未知，或字段非法 |
 | 403 | 拒绝 | 权限不足 |
 | 404 | 未找到 | 目标路径不存在 |
-| 409 | 冲突 | 目标已存在，或目录非空且未 `recursive` |
+| 409 | 冲突 | 目标已存在，或目录非空且未 `recursive`，或上传未完成 |
 | 422 | 无法处理 | 内容不是合法 UTF-8 |
 
 ### 测试
@@ -463,6 +464,32 @@ fs 与 exec、pty 同一挂载规则（见 [Exec 设计](./Exec.md)），两种�
 ### 测试
 
 - `move::renames`：移动后源路径不存在，目标可取。
+
+## `POST ?type=commit`
+
+把 `/tus` 暂存的上传放到目标路径（见 [Tus 设计](./Tus.md)）。
+
+输入（JSON body）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `upload` | string | 必填，上传的 id，即 `/tus` 建传响应 `Location` 里的 `{id}` |
+| `path` | string | 必填，目标路径 |
+
+输出：无内容（`204`）。
+
+- 字节从暂存目录搬到 `path`，随后该上传被终止，`HEAD /tus/{id}` 报 `404`；
+- 目标已存在时覆盖，跨设备时报错，搬运规则同 `POST ?type=move`；
+- 上传未完成时报 `409`，暂存内容不变，传完后可以再 `commit`；
+- 未知或已被消费的 `upload` 报 `404`。
+
+### 测试
+
+- `commit::places`：上传后 `commit`，目标路径上出现上传的原始字节。
+- `commit::consumes`：`commit` 之后 `HEAD /tus/{id}` 报 `404`，再次 `commit` 也报 `404`。
+- `commit::incomplete`：上传未完成时 `409` 且暂存不动，传完后 `commit` 成功。
+- `commit::unknown`：未知的 `upload` 报 `404`。
+- `commit::overwrites`：目标已存在时被覆盖。
 
 ## `DELETE`
 

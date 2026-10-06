@@ -5,7 +5,7 @@ use std::time::Duration;
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use harness::{Dir, Server};
+use harness::{Dir, Server, Upload};
 
 fn query_method() -> Method {
     Method::from_bytes(b"QUERY").expect("QUERY is a valid method")
@@ -990,6 +990,151 @@ mod r#move {
         let content =
             std::fs::read_to_string(root.path().join("moved.txt")).expect("read the target");
         assert_eq!(content, "hello\n");
+    }
+}
+
+mod commit {
+    use super::*;
+
+    #[tokio::test]
+    async fn places() {
+        let home = Dir::new("commit-places-home");
+        let root = Dir::new("commit-places-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let bytes = b"\x00\xff binary\n";
+        let upload = server.upload(bytes).await;
+
+        let response = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": upload.id, "path": "placed.bin" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        let placed = std::fs::read(root.path().join("placed.bin")).expect("read the placed file");
+        assert_eq!(placed, bytes);
+    }
+
+    #[tokio::test]
+    async fn consumes() {
+        let home = Dir::new("commit-consumes-home");
+        let root = Dir::new("commit-consumes-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let upload = server.upload(b"payload").await;
+
+        let committed = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": upload.id, "path": "placed.bin" }),
+        )
+        .await;
+        assert_eq!(committed.status(), reqwest::StatusCode::NO_CONTENT);
+
+        assert_eq!(
+            upload.head().await.status(),
+            reqwest::StatusCode::NOT_FOUND,
+            "the upload is terminated"
+        );
+        let again = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": upload.id, "path": "again.bin" }),
+        )
+        .await;
+        assert_eq!(
+            again.status(),
+            reqwest::StatusCode::NOT_FOUND,
+            "an upload is placed once"
+        );
+        assert!(
+            !root.path().join("again.bin").exists(),
+            "the second commit places nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete() {
+        let home = Dir::new("commit-incomplete-home");
+        let root = Dir::new("commit-incomplete-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        let upload = Upload::open(&server, 8).await;
+
+        let refused = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": upload.id, "path": "placed.bin" }),
+        )
+        .await;
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT);
+        assert!(!root.path().join("placed.bin").exists(), "nothing is placed");
+
+        // The refusal leaves the upload alone, so its remaining bytes still go in.
+        assert_eq!(
+            upload.patch(0, b"abcd").await.status(),
+            reqwest::StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            upload.patch(4, b"efgh").await.status(),
+            reqwest::StatusCode::NO_CONTENT
+        );
+
+        let committed = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": upload.id, "path": "placed.bin" }),
+        )
+        .await;
+        assert_eq!(committed.status(), reqwest::StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn unknown() {
+        let home = Dir::new("commit-unknown-home");
+        let root = Dir::new("commit-unknown-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+
+        let response = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": "missing", "path": "placed.bin" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn overwrites() {
+        let home = Dir::new("commit-overwrites-home");
+        let root = Dir::new("commit-overwrites-root");
+        let server = Server::start(&home).await;
+        server.register("w", root.path()).await;
+        std::fs::write(root.path().join("notes.txt"), "old\n").expect("seed the target");
+        let bytes = b"\x00\xff binary\n";
+        let upload = server.upload(bytes).await;
+
+        let response = write(
+            &server,
+            Method::POST,
+            "commit",
+            json!({ "upload": upload.id, "path": "notes.txt" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        let placed = std::fs::read(root.path().join("notes.txt")).expect("read the target");
+        assert_eq!(placed, bytes);
     }
 }
 

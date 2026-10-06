@@ -236,6 +236,120 @@ impl Drop for Server {
     }
 }
 
+/// The tus protocol version every upload request carries.
+pub const TUS_VERSION: &str = "1.0.0";
+
+/// Opens an upload of `length` bytes, the way a tus client does.
+pub async fn create(server: &Server, length: usize) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(server.url("/tus"))
+        .header("tus-resumable", TUS_VERSION)
+        .header("upload-length", length.to_string())
+        .send()
+        .await
+        .expect("POST /tus")
+}
+
+/// A tus upload, addressed by the URL the server assigned it.
+pub struct Upload {
+    /// The `{id}` the upload is addressed by: the URL's last segment.
+    pub id: String,
+    pub url: String,
+}
+
+impl Upload {
+    /// Opens an upload of `length` bytes.
+    pub async fn open(server: &Server, length: usize) -> Self {
+        let response = create(server, length).await;
+        assert_eq!(response.status(), reqwest::StatusCode::CREATED, "POST /tus");
+        let url = response
+            .headers()
+            .get("location")
+            .expect("a Location header")
+            .to_str()
+            .expect("a readable Location")
+            .to_owned();
+
+        Self {
+            id: url.rsplit('/').next().expect("an id in the URL").to_owned(),
+            url,
+        }
+    }
+
+    /// Appends `bytes` at `offset`.
+    pub async fn patch(&self, offset: usize, bytes: &[u8]) -> reqwest::Response {
+        reqwest::Client::new()
+            .patch(&self.url)
+            .header("tus-resumable", TUS_VERSION)
+            .header("upload-offset", offset.to_string())
+            .header("content-type", "application/offset+octet-stream")
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .expect("PATCH an upload")
+    }
+
+    /// The upload's state, as its own endpoint reports it.
+    pub async fn head(&self) -> reqwest::Response {
+        reqwest::Client::new()
+            .head(&self.url)
+            .header("tus-resumable", TUS_VERSION)
+            .send()
+            .await
+            .expect("HEAD an upload")
+    }
+
+    /// The bytes the upload holds.
+    pub async fn get(&self) -> reqwest::Response {
+        reqwest::get(&self.url).await.expect("GET an upload")
+    }
+
+    /// Terminates the upload.
+    pub async fn delete(&self) -> reqwest::Response {
+        reqwest::Client::new()
+            .delete(&self.url)
+            .header("tus-resumable", TUS_VERSION)
+            .send()
+            .await
+            .expect("DELETE an upload")
+    }
+
+    /// The bytes received so far, as `HEAD` reports them.
+    pub async fn offset(&self) -> usize {
+        let response = self.head().await;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "HEAD {}",
+            self.url
+        );
+
+        response
+            .headers()
+            .get("upload-offset")
+            .expect("an Upload-Offset header")
+            .to_str()
+            .expect("a readable Upload-Offset")
+            .parse()
+            .expect("a numeric Upload-Offset")
+    }
+}
+
+impl Server {
+    /// Opens an upload of `bytes` and fills it.
+    pub async fn upload(&self, bytes: &[u8]) -> Upload {
+        let upload = Upload::open(self, bytes.len()).await;
+        let response = upload.patch(0, bytes).await;
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::NO_CONTENT,
+            "PATCH an upload"
+        );
+
+        upload
+    }
+}
+
 pub fn decode_frames(mut bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
     let mut frames = Vec::new();
 
