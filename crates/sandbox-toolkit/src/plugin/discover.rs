@@ -80,7 +80,6 @@ impl Source for Recorded {
 }
 
 impl Plugin {
-    /// The extension namespaces the manifest declares.
     pub fn namespaces(&self) -> impl Iterator<Item = &str> {
         self.manifest.extensions.iter().map(|(name, _)| name)
     }
@@ -143,7 +142,6 @@ impl Plugins {
         })
     }
 
-    /// Reads the same directory again, as it is now.
     pub fn rescan(&self) -> Result<Self, Error> {
         Self::load(self.root.clone())
     }

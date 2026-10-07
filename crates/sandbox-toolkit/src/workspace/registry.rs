@@ -202,8 +202,6 @@ async fn sync_resources(metadata: &Metadata, resources: &RwLock<Option<Arc<Resou
     }
 }
 
-/// A derived workspace: its own id, the directory it points at, and the access
-/// of the scope that derives it.
 fn derived(id: &str, root: PathBuf, scope: &Metadata) -> Resolved {
     Resolved::Derived(Metadata {
         id: id.to_owned(),

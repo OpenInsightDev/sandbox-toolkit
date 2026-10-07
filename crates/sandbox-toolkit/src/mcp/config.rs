@@ -99,7 +99,6 @@ async fn scope_entries(root: &Path) -> Result<Vec<Entry>, Error> {
     Ok(entries)
 }
 
-/// Whether this service runs the entry's transport.
 fn supported(server: &PluginMcpServer) -> Result<(), UnsupportedReason> {
     match server {
         PluginMcpServer::Stdio(_) | PluginMcpServer::StreamableHttp(_) => Ok(()),

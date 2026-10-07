@@ -74,7 +74,6 @@ fn metadata(
     Ok(())
 }
 
-/// Reads the file's text, applies a unified patch and writes it back.
 async fn patch(
     target: &Target,
     request: TextPatchRequest,

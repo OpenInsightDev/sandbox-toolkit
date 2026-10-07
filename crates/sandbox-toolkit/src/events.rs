@@ -55,7 +55,6 @@ impl Resource {
     }
 }
 
-/// What happened to a resource's id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Register,
@@ -219,7 +218,6 @@ struct Affected {
 }
 
 impl Affected {
-    /// A change no set is discovered from.
     fn nothing() -> Self {
         Self {
             plugins: false,

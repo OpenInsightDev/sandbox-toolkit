@@ -1,6 +1,5 @@
 const DERIVED_PREFIX: &str = "skill.";
 
-/// The workspace id a scope's skill derives.
 pub fn derived_workspace_id(scope: &str, skill_id: &str) -> String {
     format!("{DERIVED_PREFIX}{scope}.{skill_id}")
 }
