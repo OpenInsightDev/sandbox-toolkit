@@ -72,6 +72,24 @@ export default defineConfig({
         input: ["Cargo.toml", "Cargo.lock", ".cargo/**", "crates/**", "!crates/**/target/**"],
         output: ["target/debug/sbxtkt"],
       },
+      // The SDK integration tests spawn a Linux server, whatever host compiles
+      // them: a Linux host builds one directly, any other host cross-compiles
+      // one. The release profile is what they serve, so a difference that only
+      // shows under optimization cannot pass here. The task caches the binary it
+      // copies into the repository, so an unchanged tree replays it and compiles
+      // nothing.
+      "rust:build:linux": {
+        command: "sh tools/test/sandbox.sh build",
+        input: [
+          "Cargo.toml",
+          "Cargo.lock",
+          ".cargo/**",
+          "crates/**",
+          "!crates/**/target/**",
+          "tools/test/**",
+        ],
+        output: ["target/linux/sbxtkt"],
+      },
       "rust:bindings": {
         command:
           "cargo test --manifest-path crates/sandbox-toolkit/Cargo.toml export_bindings",

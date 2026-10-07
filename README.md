@@ -102,6 +102,17 @@ in `${XDG_CACHE_HOME:-$HOME/.cache}/sandbox-toolkit`, overridable with
 for a full compile. `cargo test` runs the suite by hand, and needs the same
 container.
 
+The SDK integration tests drive that server over HTTP, from a container. Only
+the compilation differs by host: a Linux one builds natively, any other cannot
+execute a Linux binary and cross-compiles one for the release's glibc floor.
+That second path needs:
+
+```bash
+brew install zig
+cargo install cargo-zigbuild
+rustup target add aarch64-unknown-linux-gnu
+```
+
 With [`sccache`](https://github.com/mozilla/sccache) on `PATH`, every checkout
 compiles into one shared cache, so a new git worktree no longer pays for the
 dependency graph again; without it the build falls back to plain `rustc`.
