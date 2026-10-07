@@ -4,7 +4,8 @@
 //! [`mcp`] parses an `mcp.json`, [`skill`] parses a `SKILL.md`, and [`plugin`]
 //! composes both while loading a whole package. Each resource is available in
 //! two forms: a pure `parse` over bytes, and an async `load` that reads the
-//! file through `tokio::fs`.
+//! file through `tokio::fs`. [`watch`] reloads a live package and reports what
+//! changed in the same resource terms.
 //!
 //! The models and the parsing rules mirror the reference implementation,
 //! [agent-plugin-rs], with two deliberate differences: every model is
@@ -37,6 +38,7 @@ mod template;
 pub mod mcp;
 pub mod plugin;
 pub mod skill;
+pub mod watch;
 
 pub use diag::{Diagnostic, Origin, Rule};
 pub use name::{InvalidName, PluginName};

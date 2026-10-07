@@ -9,6 +9,9 @@ async `load` over `tokio::fs`.
 let plugin = dotagents::plugin::load(".agents").await?;
 ```
 
+`watch` keeps that package live: it reloads on change and reports what moved in
+the same resource terms, as `watch::Event::{Plugin, Skill, Mcp}`.
+
 ## Acknowledgements
 
 Ported from [**agent-plugin-rs**](https://github.com/Toasterson/agent-plugin-rs)

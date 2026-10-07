@@ -600,6 +600,8 @@ dependencies = [
 name = "dotagents"
 version = "0.1.0"
 dependencies = [
+ "notify",
+ "sandbox-toolkit-utils",
  "serde_json",
  "tokio",
  "yaml-rust2",
