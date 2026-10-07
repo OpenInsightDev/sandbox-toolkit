@@ -591,6 +591,8 @@ async fn confined(path: &Path, canonical_root: &Path) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     fn parse(json: &str) -> Result<(Manifest, Vec<Diagnostic>), ManifestRejection> {
@@ -724,12 +726,11 @@ mod tests {
 
     impl TempDir {
         async fn new() -> Self {
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("the clock is past the epoch")
-                .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("dotagents-test-{}-{unique}", std::process::id()));
+            // A counter, not the clock: two tests starting in the same tick must
+            // not share a path, or one's cleanup deletes the other's tree.
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("dotagents-test-{}-{id}", std::process::id()));
             tokio::fs::create_dir_all(&path).await.unwrap();
             Self(path)
         }
