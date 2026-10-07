@@ -1,11 +1,8 @@
-use std::sync::Arc;
-
 use salvo::extract::JsonBody;
 use salvo::http::StatusCode;
 use salvo::prelude::*;
 
-use crate::events;
-use crate::http::{app_state, respond_events, wants_events};
+use crate::http::app_state;
 use crate::workspace::{
     CreateWorkspaceRequest, Metadata, UpdateWorkspaceRequest, Workspace, WorkspaceError,
     WorkspaceList,
@@ -38,48 +35,21 @@ async fn create(
 }
 
 #[handler]
-async fn list(
-    req: &mut Request,
-    depot: &mut Depot,
-    res: &mut Response,
-) -> Result<(), StatusError> {
+async fn list(depot: &mut Depot) -> Result<Json<WorkspaceList>, StatusError> {
     let state = app_state(depot)?;
-    if wants_events(req) {
-        respond_events(res, state.registry.subscribe(), events::resource_frame);
 
-        return Ok(());
-    }
-
-    res.render(Json(WorkspaceList::new(state.registry.list().await)));
-
-    Ok(())
+    Ok(Json(WorkspaceList::new(state.registry.list().await)))
 }
 
 #[handler]
-async fn one(
-    req: &mut Request,
-    depot: &mut Depot,
-    res: &mut Response,
-) -> Result<(), StatusError> {
+async fn one(req: &mut Request, depot: &mut Depot) -> Result<Json<Metadata>, StatusError> {
     let state = app_state(depot)?;
     let id = workspace_id(req)?;
     let Some(workspace) = state.registry.resolve(&id).await else {
         return Err(StatusError::not_found());
     };
 
-    if wants_events(req) {
-        let observer = workspace
-            .resources()
-            .await
-            .map(|resources| Arc::clone(&resources.events));
-        respond_events(res, events::subscribe(observer.as_deref()), events::summary_frame);
-
-        return Ok(());
-    }
-
-    res.render(Json(workspace.metadata().await));
-
-    Ok(())
+    Ok(Json(workspace.metadata().await))
 }
 
 #[handler]

@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use salvo::http::{HeaderValue, header};
 use salvo::prelude::*;
-use tokio::sync::broadcast;
 
-use crate::events::{self, Event};
-use crate::http::{origin, respond_events, wants_events};
+use crate::http::origin;
 
 use super::discover::{Skill, Skills};
 use super::model::{SkillList, SkillMetadata};
@@ -14,26 +11,11 @@ use super::model::{SkillList, SkillMetadata};
 pub struct ExtractSkills {
     global: Option<Skills>,
     scoped: Option<Skills>,
-    events: Option<Arc<events::Observer>>,
 }
 
 impl ExtractSkills {
-    pub fn new(
-        global: Option<Skills>,
-        scoped: Option<Skills>,
-        events: Option<Arc<events::Observer>>,
-    ) -> Self {
-        Self {
-            global,
-            scoped,
-            events,
-        }
-    }
-
-    /// The events the mount's scope reports; a scope that holds no resources
-    /// reports none.
-    pub fn stream(&self) -> broadcast::Receiver<Event> {
-        events::subscribe(self.events.as_deref())
+    pub fn new(global: Option<Skills>, scoped: Option<Skills>) -> Self {
+        Self { global, scoped }
     }
 
     pub async fn get(&self, id: &str) -> Option<Skill> {
@@ -82,27 +64,16 @@ pub fn routes() -> Router {
 }
 
 #[handler]
-async fn list(
-    skills: ExtractSkills,
-    req: &mut Request,
-    res: &mut Response,
-) -> Result<(), StatusError> {
-    if wants_events(req) {
-        respond_events(res, skills.stream(), events::resource_frame);
-
-        return Ok(());
-    }
-
+async fn list(skills: ExtractSkills, req: &mut Request) -> Result<Json<SkillList>, StatusError> {
     let base = format!("{}{}", origin(req.uri(), req.headers()), req.uri().path());
-    let document = skills
+    let skills = skills
         .merged()
         .await
         .into_iter()
         .map(|scoped| SkillMetadata::new(&scoped.scope, &scoped.skill, &base))
         .collect();
-    res.render(Json(SkillList { skills: document }));
 
-    Ok(())
+    Ok(Json(SkillList { skills }))
 }
 
 #[handler]

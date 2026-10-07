@@ -3,9 +3,8 @@ use std::path::PathBuf;
 
 use agent_plugins::{SkillMeta, parse_skill_md};
 
-use crate::events::{self, Digest};
 use crate::path::{AGENTS_DIR, SKILL_MD, SKILLS_DIR};
-use crate::plugin::{self, Plugins};
+use crate::plugin::Plugins;
 
 #[derive(Clone)]
 pub struct Skill {
@@ -14,8 +13,6 @@ pub struct Skill {
     pub id: String,
     /// The skill directory, canonical.
     pub root: PathBuf,
-    /// The `SKILL.md` it was discovered from, as content.
-    pub digest: Digest,
     /// The validated `SKILL.md` frontmatter.
     pub meta: SkillMeta,
     /// The `SKILL.md` text after the frontmatter, as written.
@@ -81,15 +78,6 @@ impl Skills {
         self.list().await.into_iter().find(|skill| skill.id == id)
     }
 
-    /// The same scope, with the plugins it holds now.
-    pub fn rescan(&self) -> Result<Self, plugin::Error> {
-        Ok(Self {
-            scope: self.scope.clone(),
-            root: self.root.clone(),
-            plugins: self.plugins.rescan()?,
-        })
-    }
-
     fn directory(&self) -> PathBuf {
         self.root.join(AGENTS_DIR).join(SKILLS_DIR)
     }
@@ -104,7 +92,6 @@ async fn discover(directory: PathBuf, id: &str) -> Option<Skill> {
     Some(Skill {
         id: id.to_owned(),
         root,
-        digest: events::digest(&document),
         meta,
         body: body.source().to_owned(),
     })

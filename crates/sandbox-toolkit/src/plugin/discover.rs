@@ -1,16 +1,13 @@
-use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_plugins::{
-    DirSource, DirEntry, FileKind, LoadedPlugin, Manifest, McpDisabledReason, McpOutcome,
-    PackagePath, Rejection, ServerEntry, Source,
+    LoadedPlugin, Manifest, McpDisabledReason, McpOutcome, Rejection, ServerEntry,
 };
 use thiserror::Error;
 
-use crate::events::{self, Digest};
-use crate::path::{AGENTS_DIR, MCP_JSON, PLUGINS_DIR, PLUGIN_JSON, SKILL_MD};
+use crate::path::{AGENTS_DIR, PLUGINS_DIR};
 use crate::skill::Skill;
 
 /// One package found in a scope's `.agents/plugins`, already loaded by
@@ -20,63 +17,11 @@ pub struct Plugin {
     pub id: String,
     /// The plugin directory, canonical.
     pub root: PathBuf,
-    /// The `plugin.json` it was loaded from, as content.
-    pub digest: Digest,
-    /// The package's `mcp.json` as content, [`events::ABSENT`] when it ships
-    /// none.
-    pub mcp_digest: Digest,
     pub manifest: Manifest,
     /// The plugin's skills, each id prefixed with the plugin id.
     pub skills: Vec<Skill>,
     /// The `mcp.json` entries that survived their own validation.
     pub servers: Vec<ServerEntry>,
-}
-
-/// A plugin package directory whose reads are remembered, so every source the
-/// loader read has an identity without being read a second time.
-struct Recorded {
-    directory: DirSource,
-    read: BTreeMap<String, Vec<u8>>,
-}
-
-impl Recorded {
-    fn open(directory: &Path) -> io::Result<Self> {
-        Ok(Self {
-            directory: DirSource::open(directory)?,
-            read: BTreeMap::new(),
-        })
-    }
-
-    /// What `path` held when the loader read it.
-    fn digest(&self, path: &str) -> Digest {
-        match self.read.get(path) {
-            Some(bytes) => events::digest(bytes),
-            None => events::ABSENT,
-        }
-    }
-}
-
-impl Source for Recorded {
-    type Error = io::Error;
-
-    fn kind(&mut self, path: &PackagePath) -> Result<Option<FileKind>, io::Error> {
-        self.directory.kind(path)
-    }
-
-    fn confined(&mut self, path: &PackagePath) -> Result<bool, io::Error> {
-        self.directory.confined(path)
-    }
-
-    fn read(&mut self, path: &PackagePath) -> Result<Vec<u8>, io::Error> {
-        let bytes = self.directory.read(path)?;
-        self.read.insert(path.as_str().to_owned(), bytes.clone());
-
-        Ok(bytes)
-    }
-
-    fn list(&mut self, path: &PackagePath) -> Result<Vec<DirEntry>, io::Error> {
-        self.directory.list(path)
-    }
 }
 
 impl Plugin {
@@ -172,14 +117,13 @@ pub enum Error {
 }
 
 fn discover(directory: &Path, id: String) -> Result<Plugin, Error> {
-    let mut source = Recorded::open(directory)?;
     let LoadedPlugin {
         manifest,
         skills,
         mcp,
         diagnostics,
         ..
-    } = agent_plugins::load(&mut source).map_err(|rejection| Error::Rejected {
+    } = agent_plugins::load_dir(directory).map_err(|rejection| Error::Rejected {
         directory: directory.to_path_buf(),
         rejection,
     })?;
@@ -196,7 +140,6 @@ fn discover(directory: &Path, id: String) -> Result<Plugin, Error> {
             Ok(Skill {
                 id: format!("{id}.{}", skill.meta.name),
                 root: std::fs::canonicalize(skill.path.to_native(&root))?,
-                digest: source.digest(&format!("{}/{SKILL_MD}", skill.path.as_str())),
                 meta: skill.meta.clone(),
                 body: skill.body.source().to_owned(),
             })
@@ -214,8 +157,6 @@ fn discover(directory: &Path, id: String) -> Result<Plugin, Error> {
     Ok(Plugin {
         id,
         root,
-        digest: source.digest(PLUGIN_JSON),
-        mcp_digest: source.digest(MCP_JSON),
         manifest,
         skills,
         servers,

@@ -1,11 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use salvo::prelude::*;
-use tokio::sync::broadcast;
-
-use crate::events::{self, Event};
-use crate::http::{respond_events, wants_events};
 
 use super::discover::{Plugin, Plugins};
 use super::model::PluginMetadata;
@@ -13,26 +8,11 @@ use super::model::PluginMetadata;
 pub struct ExtractPlugins {
     global: Option<Plugins>,
     scoped: Option<Plugins>,
-    events: Option<Arc<events::Observer>>,
 }
 
 impl ExtractPlugins {
-    pub fn new(
-        global: Option<Plugins>,
-        scoped: Option<Plugins>,
-        events: Option<Arc<events::Observer>>,
-    ) -> Self {
-        Self {
-            global,
-            scoped,
-            events,
-        }
-    }
-
-    /// The events the mount's scope reports; a scope that holds no resources
-    /// reports none.
-    pub fn stream(&self) -> broadcast::Receiver<Event> {
-        events::subscribe(self.events.as_deref())
+    pub fn new(global: Option<Plugins>, scoped: Option<Plugins>) -> Self {
+        Self { global, scoped }
     }
 
     pub fn get(&self, id: &str) -> Option<&Plugin> {
@@ -72,31 +52,20 @@ pub fn routes() -> Router {
 }
 
 #[handler]
-async fn list(
-    plugins: ExtractPlugins,
-    req: &mut Request,
-    res: &mut Response,
-) -> Result<(), StatusError> {
-    if wants_events(req) {
-        respond_events(res, plugins.stream(), events::resource_frame);
-
-        return Ok(());
-    }
-
+async fn list(plugins: ExtractPlugins, req: &mut Request) -> Result<Json<Vec<PluginMetadata>>, StatusError> {
     let base = mount(req.uri().path());
     let offset = req.query::<usize>("offset").unwrap_or(0);
     let limit = req.query::<usize>("limit").unwrap_or(usize::MAX);
 
-    let document: Vec<PluginMetadata> = plugins
+    let document = plugins
         .merged()
         .into_iter()
         .skip(offset)
         .take(limit)
         .map(|plugin| PluginMetadata::new(plugin, format!("{base}/{}", plugin.id)))
         .collect();
-    res.render(Json(document));
 
-    Ok(())
+    Ok(Json(document))
 }
 
 #[handler]

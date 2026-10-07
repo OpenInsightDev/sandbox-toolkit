@@ -2,11 +2,9 @@ use notify::EventKind;
 use sandbox_toolkit_utils::watch::Watch;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::binary::path;
-use crate::events::{self, Event, Kind, Resource};
 use crate::path::AGENTS_DIR;
 use crate::plugin::extension_workspace_id;
 use crate::skill::derived_workspace_id;
@@ -212,7 +210,6 @@ fn derived(id: &str, root: PathBuf, scope: &Metadata) -> Resolved {
 
 pub struct Registry {
     workspaces: RwLock<HashMap<String, Arc<Workspace>>>,
-    events: broadcast::Sender<Event>,
 }
 
 impl Registry {
@@ -223,15 +220,7 @@ impl Registry {
 
         let workspaces = HashMap::from([(GLOBAL_WORKSPACE_ID.to_owned(), Arc::new(global))]);
         let workspaces = RwLock::new(workspaces);
-        Ok(Self {
-            workspaces,
-            events: events::channel(),
-        })
-    }
-
-    /// The registry's own events, which `/workspaces` streams.
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.events.subscribe()
+        Ok(Self { workspaces })
     }
 
     pub async fn register(&self, workspace: Workspace) -> Result<(), WorkspaceError> {
@@ -242,9 +231,7 @@ impl Registry {
             return Err(WorkspaceError::AlreadyExists { id });
         }
 
-        workspaces.insert(id.clone(), Arc::new(workspace));
-        drop(workspaces);
-        self.publish(Kind::Register, id);
+        workspaces.insert(id, Arc::new(workspace));
 
         Ok(())
     }
@@ -332,11 +319,7 @@ impl Registry {
         access: WorkspaceAccess,
     ) -> Result<Metadata, WorkspaceError> {
         let workspace = self.mutable(id).await?;
-        if workspace.metadata().await.access != access {
-            workspace.set_access(access).await;
-            self.publish(Kind::Update, id.to_owned());
-        }
-
+        workspace.set_access(access).await;
         Ok(workspace.metadata().await)
     }
 
@@ -344,13 +327,7 @@ impl Registry {
         self.mutable(id).await?;
 
         self.workspaces.write().await.remove(id);
-        self.publish(Kind::Unregister, id.to_owned());
-
         Ok(())
-    }
-
-    fn publish(&self, kind: Kind, id: String) {
-        let _ = self.events.send(Event::new(Resource::Workspace, kind, id));
     }
 
     /// Resolves a workspace the caller may mutate. Only a registered workspace

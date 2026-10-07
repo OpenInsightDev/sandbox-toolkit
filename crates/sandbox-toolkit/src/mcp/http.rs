@@ -3,10 +3,8 @@ use std::sync::Arc;
 
 use salvo::http::ReqBody;
 use salvo::prelude::*;
-use tokio::sync::broadcast;
 
-use crate::events::{self, Event};
-use crate::http::{origin, respond_events, wants_events};
+use crate::http::origin;
 
 use super::model::{StreamableHttpMcpServer, StreamableHttpServerMcpConfig};
 use super::proxy::Service;
@@ -15,59 +13,27 @@ use super::runtime::Runtime;
 pub struct ExtractRuntime {
     global: Option<Arc<Runtime>>,
     workspace: Option<Arc<Runtime>>,
-    events: Option<Arc<events::Observer>>,
 }
 
 impl ExtractRuntime {
-    pub fn new(
-        global: Option<Arc<Runtime>>,
-        workspace: Option<Arc<Runtime>>,
-        events: Option<Arc<events::Observer>>,
-    ) -> Self {
-        Self {
-            global,
-            workspace,
-            events,
-        }
+    pub fn new(global: Option<Arc<Runtime>>, workspace: Option<Arc<Runtime>>) -> Self {
+        Self { global, workspace }
     }
 
-    /// The events the mount's scope reports; a scope that holds no resources
-    /// reports none.
-    pub fn stream(&self) -> broadcast::Receiver<Event> {
-        events::subscribe(self.events.as_deref())
-    }
-
-    /// Whether any scope the mount presents stopped parsing its `mcp.json`.
-    async fn broken(&self) -> bool {
-        for runtime in [self.global.as_ref(), self.workspace.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            if runtime.broken().await {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// The ids the mount presents, or `None` while a scope it presents stopped
-    /// parsing its `mcp.json`.
-    pub async fn ids(&self) -> Option<Vec<String>> {
+    /// The ids the mount presents, global's and the workspace's merged.
+    pub async fn ids(&self) -> Vec<String> {
         let mut ids = BTreeSet::new();
         if let Some(global) = &self.global {
-            ids.extend(global.ids().await?);
+            ids.extend(global.ids().await);
         }
         if let Some(workspace) = &self.workspace {
-            ids.extend(workspace.ids().await?);
+            ids.extend(workspace.ids().await);
         }
-        Some(ids.into_iter().collect())
+
+        ids.into_iter().collect()
     }
 
     pub async fn get(&self, id: &str) -> Option<super::proxy::Service> {
-        if self.broken().await {
-            return None;
-        }
-
         if let Some(workspace) = &self.workspace {
             if let Some(service) = workspace.get(id).await {
                 return Some(service);
@@ -87,33 +53,19 @@ pub fn routes() -> Router {
 }
 
 #[handler]
-async fn list(
-    runtime: ExtractRuntime,
-    req: &mut Request,
-    res: &mut Response,
-) -> Result<(), StatusError> {
-    if wants_events(req) {
-        respond_events(res, runtime.stream(), events::resource_frame);
-
-        return Ok(());
-    }
-
+async fn list(runtime: ExtractRuntime, req: &mut Request) -> Result<Json<StreamableHttpServerMcpConfig>, StatusError> {
     let base = format!("{}{}", origin(req.uri(), req.headers()), req.uri().path());
-    // A scope that stopped parsing its `mcp.json` presents nothing.
-    let Some(ids) = runtime.ids().await else {
-        return Err(StatusError::not_found());
-    };
-
-    let servers = ids
+    let servers = runtime
+        .ids()
+        .await
         .into_iter()
         .map(|id| {
             let url = format!("{base}/{id}");
             (id, StreamableHttpMcpServer::new(url))
         })
         .collect();
-    res.render(Json(StreamableHttpServerMcpConfig::new(servers)));
 
-    Ok(())
+    Ok(Json(StreamableHttpServerMcpConfig::new(servers)))
 }
 
 #[handler]
