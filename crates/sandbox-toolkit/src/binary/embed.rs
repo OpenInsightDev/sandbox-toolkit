@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Read as _};
 
 pub struct Tool {
     pub name: &'static str,
@@ -8,7 +8,9 @@ pub struct Tool {
 
 impl Tool {
     pub fn bytes(&self) -> io::Result<Vec<u8>> {
-        zstd::stream::decode_all(self.payload)
+        let mut bytes = Vec::new();
+        liblzma::read::XzDecoder::new(self.payload).read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
 }
 
@@ -17,37 +19,37 @@ impl Tool {
 pub static TOOLS: [Tool; 7] = [
     Tool {
         name: "fd",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/fd.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/fd.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/fd.blake3")),
     },
     Tool {
         name: "rg",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/rg.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/rg.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/rg.blake3")),
     },
     Tool {
         name: "curl",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/curl.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/curl.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/curl.blake3")),
     },
     Tool {
         name: "uv",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/uv.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/uv.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/uv.blake3")),
     },
     Tool {
         name: "uvx",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/uvx.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/uvx.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/uvx.blake3")),
     },
     Tool {
         name: "deno",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/deno.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/deno.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/deno.blake3")),
     },
     Tool {
         name: "tusd",
-        payload: include_bytes!(concat!(env!("OUT_DIR"), "/tusd.zst")),
+        payload: include_bytes!(concat!(env!("OUT_DIR"), "/tusd.xz")),
         digest: include_bytes!(concat!(env!("OUT_DIR"), "/tusd.blake3")),
     },
 ];

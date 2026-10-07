@@ -16,13 +16,23 @@ thiserror = "2.0.21"
 incremental = false
 
 # The build script inflates the upstream archives, hashes their payloads and
-# compresses them for embedding; at the dev profile's `opt-level = 0` the crates doing
-# that work run several times slower, which dominated every build.
-[profile.dev.package.zstd-sys]
+# compresses them for embedding. Build dependencies default to the profile's
+# unoptimized build, where the crates doing that work run several times slower,
+# which dominated every build; `release` needs this as much as `dev` does.
+[profile.dev.package.liblzma-sys]
 opt-level = 3
 
 [profile.dev.package.blake3]
 opt-level = 3
 
 [profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.release.package.liblzma-sys]
+opt-level = 3
+
+[profile.release.package.blake3]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
 opt-level = 3

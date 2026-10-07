@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -15,6 +15,9 @@ const UV: (&str, &str) = ("0.12.16", "uv");
 const DENO: (&str, &str) = ("2.9.7", "deno");
 const TUSD: (&str, &str) = ("2.10.1", "tusd");
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The xz preset the payloads are embedded at.
+const PRESET: u32 = 6;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -51,13 +54,20 @@ impl Source {
         for name in self.names.iter().copied() {
             let bytes = extract(&archive, name);
             let hash = blake3::hash(&bytes);
-            // The embedded digest is taken over the raw bytes, so the level only
-            // trades payload size against build time: 19 is ~12% smaller than 9 for
-            // ~14x the time.
-            let compressed = zstd::stream::encode_all(bytes.as_slice(), 9)
+            // The digest is taken over the raw bytes, so the preset only trades
+            // payload size against build and decode cost. `-6` keeps the decoder's
+            // 8 MiB dictionary at what the zstd window cost here and is 10% smaller
+            // than zstd level 19; `-7` and up spend a 2-8x larger dictionary for
+            // under 2% more.
+            let mut encoder = liblzma::write::XzEncoder::new(Vec::new(), PRESET);
+            encoder
+                .write_all(&bytes)
                 .unwrap_or_else(|error| panic!("failed to compress {name}: {error}"));
-            fs::write(out.join(format!("{name}.zst")), compressed)
-                .unwrap_or_else(|error| panic!("failed to write {name}.zst: {error}"));
+            let compressed = encoder
+                .finish()
+                .unwrap_or_else(|error| panic!("failed to compress {name}: {error}"));
+            fs::write(out.join(format!("{name}.xz")), compressed)
+                .unwrap_or_else(|error| panic!("failed to write {name}.xz: {error}"));
             // The digest is embedded next to the payload so the two cannot drift apart.
             fs::write(out.join(format!("{name}.blake3")), hash.as_bytes())
                 .unwrap_or_else(|error| panic!("failed to write {name}.blake3: {error}"));
