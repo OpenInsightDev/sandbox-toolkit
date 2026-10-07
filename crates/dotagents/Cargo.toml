@@ -1,0 +1,15 @@
+[package]
+name = "dotagents"
+version = "0.1.0"
+edition = "2024"
+description = "Parse the .agents/ resources of the Agent Plugins format"
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+# `preserve_order` keeps `mcpServers` in declaration order, which is the order
+# clients surface the servers in; without it serde_json sorts members.
+serde_json = { version = "1", features = ["preserve_order"] }
+yaml-rust2 = "0.10"

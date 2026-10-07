@@ -597,6 +597,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotagents"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "yaml-rust2",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
