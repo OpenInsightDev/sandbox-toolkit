@@ -1,5 +1,3 @@
-//! The skill body as a *typed document*, not a blob of text.
-//!
 //! Agent Skills load progressively: metadata first, the `SKILL.md` body on
 //! activation, referenced files only when needed. A client that can address
 //! *part* of a body — "the Rollback section", "everything under Deploy" —
@@ -19,22 +17,18 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
-/// A heading depth: 1–6, as Markdown defines and no more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HeadingLevel(u8);
 
 impl HeadingLevel {
     /// `#`, the shallowest heading.
     pub const H1: Self = Self(1);
-    /// `##`.
     pub const H2: Self = Self(2);
 
-    /// Construct a level, or `None` outside 1–6.
     pub const fn new(level: u8) -> Option<Self> {
         if level >= 1 && level <= 6 { Some(Self(level)) } else { None }
     }
 
-    /// The depth as a number.
     pub const fn get(self) -> u8 {
         self.0
     }
@@ -51,7 +45,6 @@ impl fmt::Display for HeadingLevel {
 pub struct Slug(String);
 
 impl Slug {
-    /// The slug text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -100,9 +93,7 @@ impl LinkTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Link {
-    /// The link text.
     pub text: String,
-    /// Where it points.
     pub target: LinkTarget,
 }
 
@@ -124,32 +115,27 @@ pub struct Section {
 }
 
 impl Section {
-    /// The heading depth.
     pub fn level(&self) -> HeadingLevel {
         self.level
     }
 
-    /// The heading text, without `#` markers.
+    /// Without `#` markers.
     pub fn heading(&self) -> &str {
         &self.heading
     }
 
-    /// The document-unique slug.
     pub fn slug(&self) -> &Slug {
         &self.slug
     }
 
-    /// Immediate subsections.
     pub fn children(&self) -> &[Section] {
         &self.children
     }
 
-    /// Whether this section has no subsections.
     pub fn is_leaf(&self) -> bool {
         self.children.is_empty()
     }
 
-    /// Byte range of the whole section within the document source.
     pub fn span(&self) -> Range<usize> {
         self.span.clone()
     }
@@ -171,7 +157,6 @@ impl Section {
         Walk { stack: vec![(0, self)] }
     }
 
-    /// Inline links appearing anywhere within this section.
     pub fn links(&self) -> Vec<Link> {
         collect_links(self.content())
     }
@@ -221,8 +206,7 @@ pub struct Document {
 }
 
 impl Document {
-    /// Parse Markdown into a navigable document. Always succeeds: text with no
-    /// headings is simply all preamble.
+    /// Always succeeds: text with no headings is simply all preamble.
     pub fn parse(source: impl AsRef<str>) -> Self {
         let source: Arc<str> = Arc::from(source.as_ref());
         let headings = scan_headings(&source);
@@ -231,40 +215,34 @@ impl Document {
         Self { source, preamble: 0..preamble_end, sections }
     }
 
-    /// The document text exactly as given.
     pub fn source(&self) -> &str {
         &self.source
     }
 
-    /// Content before the first heading.
     pub fn preamble(&self) -> &str {
         &self.source[self.preamble.clone()]
     }
 
-    /// Top-level sections, in document order.
     pub fn sections(&self) -> &[Section] {
         &self.sections
     }
 
-    /// Whether the document has no headings at all.
     pub fn is_flat(&self) -> bool {
         self.sections.is_empty()
     }
 
-    /// Every section, depth-first, paired with its nesting depth (0 at the
-    /// top) — the shape of a table of contents.
+    /// Depth-first, each section paired with its nesting depth (0 at the top).
     pub fn outline(&self) -> impl Iterator<Item = (usize, &Section)> {
         Walk { stack: self.sections.iter().rev().map(|s| (0, s)).collect() }
     }
 
-    /// Find a section by slug, at any depth.
     pub fn find(&self, slug: &str) -> Option<&Section> {
         self.outline().map(|(_, s)| s).find(|s| s.slug == *slug)
     }
 
-    /// Follow a path of heading texts from the top: `["Deploy", "Rollback"]`
-    /// finds `Rollback` nested under `Deploy`. Matching ignores case and
-    /// surrounding whitespace.
+    /// Follow a path of heading texts from the top, ignoring case and
+    /// surrounding whitespace: `["Deploy", "Rollback"]` finds `Rollback`
+    /// nested under `Deploy`.
     pub fn section<'a>(&self, path: impl IntoIterator<Item = &'a str>) -> Option<&Section> {
         let mut level = &self.sections;
         let mut found = None;
@@ -277,8 +255,8 @@ impl Document {
         found
     }
 
-    /// Every inline link in the document, in order. Targets classified as
-    /// [`LinkTarget::InPackage`] are the skill's on-demand resources.
+    /// Targets classified as [`LinkTarget::InPackage`] are the skill's on-demand
+    /// resources.
     pub fn links(&self) -> Vec<Link> {
         collect_links(&self.source)
     }
@@ -404,8 +382,6 @@ fn scan_headings(source: &str) -> Vec<RawHeading> {
     headings
 }
 
-/// Assemble a section tree from the flat heading list.
-///
 /// A stack holds the currently open sections. Each new heading closes every
 /// open section at its level or deeper — that closing point is exactly where
 /// the closed section's span ends.
@@ -492,7 +468,6 @@ fn slugify(text: &str, taken: &[String]) -> String {
         .expect("an unused suffix always exists")
 }
 
-/// Collect inline `[text](target)` links outside fenced code and code spans.
 fn collect_links(source: &str) -> Vec<Link> {
     let mut links = Vec::new();
     let mut fence: Option<(char, usize)> = None;

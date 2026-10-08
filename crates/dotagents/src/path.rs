@@ -1,15 +1,7 @@
-//! Paths *inside* a package.
-//!
-//! The specification talks about two kinds of paths, and each gets its own
-//! type so the distinction cannot be lost in a `String`:
-//!
-//! * [`PackagePath`] — where a file lives inside the package
-//!   (`plugin.json`, `skills/deploy/SKILL.md`). Always relative to the package
-//!   root, always `/`-separated, never escaping. Only this crate constructs
-//!   them, from the fixed component locations and from directory listings.
-//! * [`RelativePath`] — a *configured* package-relative path: user input that
-//!   must begin with `./` and must stay inside the package root. Parsing one
-//!   is fallible; holding one is proof it passed.
+//! The specification talks about two kinds of path, and each gets its own type
+//! so the distinction cannot be lost in a `String`: a [`PackagePath`] only this
+//! crate constructs, and a fallible [`RelativePath`] parsed from configured
+//! input.
 
 use std::fmt;
 
@@ -31,13 +23,10 @@ impl PackagePath {
         Self(format!("{}/{}", self.0, name))
     }
 
-    /// The path as its canonical `/`-separated string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Join onto a native root directory, converting `/` to the platform
-    /// separator component by component.
     pub fn to_native(&self, root: &std::path::Path) -> std::path::PathBuf {
         let mut out = root.to_path_buf();
         for segment in self.0.split('/') {
@@ -62,10 +51,6 @@ impl AsRef<str> for PackagePath {
 /// A configured package-relative path: begins with `./` and, resolved purely
 /// lexically, never leaves the package root.
 ///
-/// This is the type for values a package *author* wrote — an MCP `command` of
-/// `./bin/server`, a `cwd` of `./data`. Successful parsing is the containment
-/// proof; APIs that need a safe path ask for a `RelativePath`, not a string.
-///
 /// Lexical containment is necessary but not sufficient: symlinks can still
 /// escape at the filesystem level, which is why loading also checks whether
 /// the *resolved* path stays confined.
@@ -75,9 +60,7 @@ pub struct RelativePath(String);
 /// Why a string was refused as a package-relative path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelativePathError {
-    /// The path does not begin with `./`.
     MissingDotSlash,
-    /// Traversal (`..`) would resolve outside the package root.
     EscapesRoot,
 }
 
@@ -93,7 +76,6 @@ impl fmt::Display for RelativePathError {
 impl std::error::Error for RelativePathError {}
 
 impl RelativePath {
-    /// Parse a configured value as a package-relative path.
     pub fn parse(raw: &str) -> Result<Self, RelativePathError> {
         let Some(rest) = raw.strip_prefix("./") else {
             return Err(RelativePathError::MissingDotSlash);
@@ -109,7 +91,6 @@ impl RelativePath {
         &self.0
     }
 
-    /// Resolve against a native package root.
     pub fn resolve(&self, root: &std::path::Path) -> std::path::PathBuf {
         let mut out = root.to_path_buf();
         for segment in self.0[2..].split('/').filter(|s| !s.is_empty() && *s != ".") {
@@ -137,8 +118,6 @@ impl std::str::FromStr for RelativePath {
     }
 }
 
-/// Would this `/`-separated path, resolved lexically, stay at or below its
-/// starting directory? (`a/../b` yes, `..` no, `a/../../b` no.)
 pub(crate) fn lexically_contained(path: &str) -> bool {
     let mut depth: i32 = 0;
     for segment in path.split('/') {

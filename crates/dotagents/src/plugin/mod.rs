@@ -1,15 +1,7 @@
-//! The `plugin.json` manifest and the package-level loader.
-//!
 //! The manifest's failure taxonomy is exact: an **unknown top-level field**
 //! and a **non-object `extensions`** are reported and ignored — the package
 //! still loads; *every other* schema violation is fatal, and no component may
-//! be discovered or executed. [`Manifest::parse`] returns that line as its
-//! type.
-//!
-//! [`load`] composes the [`crate::skill`] and [`crate::mcp`] parsers over a
-//! package directory and applies each resource's failure boundary: a bad
-//! manifest rejects the package, a bad `mcp.json` disables that component, and
-//! a bad skill or server entry skips only itself.
+//! be discovered or executed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -25,44 +17,33 @@ use crate::path::PackagePath;
 use crate::skill;
 use crate::spec::SpecVersion;
 
-/// The canonical `$schema` identifier for Agent Plugins 1.0.0 manifests.
 pub const PLUGIN_SCHEMA_1_0_0: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
 
-/// A validated plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Manifest {
-    /// The Agent Plugins version declared by `$schema`.
     pub spec: SpecVersion,
-    /// The validated plugin name.
     pub name: PluginName,
-    /// Version string; Semantic Versioning recommended, not enforced.
+    /// Semantic Versioning recommended, not enforced.
     pub version: Option<String>,
-    /// Short description of plugin purpose.
     pub description: Option<String>,
-    /// Author metadata.
     pub author: Option<Author>,
-    /// Documentation or homepage URL. Opaque.
+    /// Opaque.
     pub homepage: Option<String>,
-    /// Source repository URL. Opaque.
+    /// Opaque.
     pub repository: Option<String>,
-    /// License identifier; SPDX recommended, not enforced.
+    /// SPDX recommended, not enforced.
     pub license: Option<String>,
-    /// Search and discovery tags.
     pub keywords: Vec<String>,
-    /// Client-specific manifest data, keyed by extension namespace.
     pub extensions: Extensions,
 }
 
-/// Author metadata: a closed object of three optional strings.
+/// A closed object of three optional strings.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub struct Author {
-    /// Author name.
     pub name: Option<String>,
-    /// Author email address. Opaque.
     pub email: Option<String>,
-    /// Author URL. Opaque.
     pub url: Option<String>,
 }
 
@@ -79,17 +60,14 @@ pub struct Extensions {
 }
 
 impl Extensions {
-    /// The JSON text of a namespace's data object, if the manifest carries one.
     pub fn raw(&self, ns: &str) -> Option<&str> {
         self.entries.get(ns).map(String::as_str)
     }
 
-    /// All declared namespaces and their JSON text, in manifest order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.entries.iter().map(|(ns, data)| (ns.as_str(), data.as_str()))
     }
 
-    /// Whether no extension data was declared.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -100,31 +78,17 @@ impl Extensions {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ManifestRejection {
-    /// `plugin.json` is not valid JSON.
-    NotJson {
-        /// The JSON parser's explanation.
-        detail: String,
-    },
-    /// The document is valid JSON but not an object.
+    NotJson { detail: String },
     NotAnObject,
-    /// The required `$schema` field is missing or not a string.
     MissingSchema,
-    /// `$schema` declares an Agent Plugins version this client does not
-    /// support. The package may be valid for a future client.
-    UnsupportedSchema {
-        /// The `$schema` value the manifest declared.
-        declared: String,
-    },
-    /// The required `name` field is missing or not a string.
+    /// The package may be valid for a future client.
+    UnsupportedSchema { declared: String },
     MissingName,
-    /// The `name` field violates the name constraints.
     InvalidName(InvalidName),
-    /// A permitted field has the wrong shape — the fatal remainder of the
-    /// manifest schema.
+    /// The fatal remainder of the manifest schema.
     SchemaViolation {
-        /// The offending field, dotted for nested fields.
+        /// Dotted for nested fields.
         field: String,
-        /// What the specification requires there.
         expected: &'static str,
     },
 }
@@ -155,11 +119,6 @@ impl fmt::Display for ManifestRejection {
 impl std::error::Error for ManifestRejection {}
 
 impl Manifest {
-    /// Parse and validate a `plugin.json` document.
-    ///
-    /// On success, the accompanying diagnostics record any unknown top-level
-    /// fields and a non-object `extensions` — reported and ignored. Every
-    /// other schema violation rejects the manifest outright.
     pub fn parse(bytes: &[u8]) -> Result<(Self, Vec<Diagnostic>), ManifestRejection> {
         let document: Value = serde_json::from_slice(bytes)
             .map_err(|e| ManifestRejection::NotJson { detail: e.to_string() })?;
@@ -286,28 +245,20 @@ fn parse_keywords(value: &Value) -> Result<Vec<String>, ManifestRejection> {
     items.iter().map(|item| expect_string("keywords[]", item)).collect()
 }
 
-/// One plugin: a directory holding a `plugin.json`, and everything it declares.
-///
 /// The specification fixes the identity as the directory: the id is the
 /// directory's name and the root is that directory, canonical.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Plugin {
-    /// The plugin root's name, which the specification fixes as the id.
     pub id: String,
-    /// The plugin root, canonical.
     pub root: PathBuf,
-    /// The validated manifest.
     pub manifest: Manifest,
-    /// Valid skills, in discovery order.
+    /// In discovery order.
     pub skills: Vec<skill::Skill>,
-    /// The MCP component's fate.
     pub mcp: McpOutcome,
-    /// Everything non-fatal the loader decided along the way.
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// What became of the MCP component type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum McpOutcome {
@@ -325,19 +276,11 @@ pub enum McpOutcome {
 pub enum Rejection {
     /// The plugin root's directory name is not text, so it has no id.
     IdNotText,
-    /// No `plugin.json` at the package root.
     ManifestMissing,
-    /// `plugin.json` is not a regular file.
     ManifestNotAFile,
-    /// `plugin.json` resolves outside the package root.
     ManifestEscapes,
-    /// The manifest failed validation fatally.
     Manifest(ManifestRejection),
-    /// The IO layer failed while the manifest was still in question.
-    Source {
-        /// The IO layer's explanation.
-        detail: String,
-    },
+    Source { detail: String },
 }
 
 impl fmt::Display for Rejection {
@@ -357,8 +300,6 @@ impl fmt::Display for Rejection {
 
 impl std::error::Error for Rejection {}
 
-/// Load the plugin rooted at `root` from the filesystem.
-///
 /// The package root is the directory the specification calls a plugin root —
 /// the `.agents/` directory by convention. The manifest is read first; only
 /// once it validates are `skills/` and `mcp.json` discovered.
@@ -562,7 +503,6 @@ pub(crate) async fn load_mcp(
     }
 }
 
-/// MCP is disabled for the package: the outcome, and the report that says so.
 fn disabled(reason: mcp::DisabledReason) -> (McpOutcome, Vec<Diagnostic>) {
     let diagnostic = Diagnostic::new(Rule::McpDisabled, Origin::Mcp, reason.to_string());
     (McpOutcome::Disabled(reason), vec![diagnostic])
@@ -739,7 +679,6 @@ mod tests {
         "name": "demo"
     }"#;
 
-    /// A scratch directory removed when the test ends.
     struct TempDir(PathBuf);
 
     impl TempDir {

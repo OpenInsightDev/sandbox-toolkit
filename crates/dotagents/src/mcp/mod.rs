@@ -1,5 +1,3 @@
-//! The `mcp.json` configuration: a closed union of transports.
-//!
 //! The specification models each server entry as "exactly one of a closed set
 //! of variants" — which is to say, a Rust enum. [`Server`] carries only the
 //! fields its transport defines, so an entry mixing stdio and HTTP fields is
@@ -20,8 +18,6 @@ use crate::path::{RelativePath, lexically_contained};
 use crate::spec::SpecVersion;
 use crate::template::{Placeholder, Segment, Template};
 
-/// The canonical `$schema` identifier for Agent Plugins 1.0.0 MCP
-/// configuration.
 pub const MCP_SCHEMA_1_0_0: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
 /// A validated `mcp.json`: the servers that survived per-entry validation, in
@@ -29,22 +25,14 @@ pub const MCP_SCHEMA_1_0_0: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Config {
-    /// Valid server entries, in `mcpServers` declaration order.
     pub servers: Vec<ServerEntry>,
 }
 
 impl Config {
-    /// Look up a surviving server by its `mcpServers` member name.
     pub fn server(&self, name: &str) -> Option<&Server> {
         self.servers.iter().find(|entry| entry.name == name).map(|entry| &entry.server)
     }
 
-    /// Parse and validate an `mcp.json` document against the version declared
-    /// by `plugin.json`.
-    ///
-    /// A top-level problem disables MCP entirely (`Err`); per-entry problems
-    /// skip only that server and are returned as diagnostics alongside the
-    /// surviving configuration.
     pub fn parse(
         bytes: &[u8],
         manifest_spec: SpecVersion,
@@ -94,11 +82,6 @@ impl Config {
     }
 }
 
-/// Read and validate the `mcp.json` at `path`.
-///
-/// `bytes`-level validation is [`Config::parse`]; this reads the file
-/// through `tokio::fs` and distinguishes "not a regular file" from "could not
-/// be read".
 pub async fn load(
     path: impl AsRef<Path>,
     manifest_spec: SpecVersion,
@@ -117,30 +100,25 @@ pub async fn load(
     Config::parse(&bytes, manifest_spec)
 }
 
-/// One named server from `mcpServers`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ServerEntry {
-    /// The `mcpServers` member name identifying this server.
     pub name: String,
-    /// Its validated configuration.
     pub server: Server,
 }
 
-/// The closed union of server variants, discriminated by `type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Server {
-    /// `"type": "stdio"` — a local subprocess speaking MCP over stdio.
+    /// `"type": "stdio"`
     Stdio(StdioServer),
-    /// `"type": "streamable-http"` — the current MCP Streamable HTTP transport.
+    /// `"type": "streamable-http"`
     StreamableHttp(RemoteServer),
-    /// `"type": "sse"` — the deprecated HTTP+SSE transport.
+    /// `"type": "sse"`, deprecated in MCP.
     Sse(RemoteServer),
 }
 
 impl Server {
-    /// The transport this entry declares.
     pub fn transport(&self) -> Transport {
         match self {
             Self::Stdio(_) => Transport::Stdio,
@@ -153,11 +131,8 @@ impl Server {
 /// The three declared transports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Transport {
-    /// Local subprocess over stdio.
     Stdio,
-    /// MCP Streamable HTTP.
     StreamableHttp,
-    /// Deprecated HTTP+SSE.
     Sse,
 }
 
@@ -171,18 +146,16 @@ impl fmt::Display for Transport {
     }
 }
 
-/// A stdio server: how to launch the subprocess.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct StdioServer {
-    /// The single executable token to launch.
     pub command: Command,
-    /// Arguments, each subject to placeholder expansion.
+    /// Each subject to placeholder expansion.
     pub args: Vec<Template>,
-    /// Environment overlay, values subject to placeholder expansion. The names
-    /// `PLUGIN_ROOT` and `PLUGIN_DATA` are reserved and rejected at parse time.
+    /// Values subject to placeholder expansion. The names `PLUGIN_ROOT` and
+    /// `PLUGIN_DATA` are reserved and rejected at parse time.
     pub env: Vec<(String, Template)>,
-    /// Working directory; defaults to the package root when omitted.
+    /// Defaults to the package root when omitted.
     pub cwd: Cwd,
 }
 
@@ -190,7 +163,6 @@ pub struct StdioServer {
 /// expanded.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Command {
-    /// A bare executable name, resolved by the platform's search rules.
     /// Contains no path separators — a bare name is a *name*.
     Bare(String),
     /// A package-relative path to an executable bundled in the package.
@@ -198,7 +170,6 @@ pub enum Command {
 }
 
 impl Command {
-    /// The token exactly as configured.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Bare(name) => name,
@@ -221,11 +192,9 @@ pub enum Cwd {
     DataAnchored(String),
 }
 
-/// A remote server: Streamable HTTP or legacy SSE.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct RemoteServer {
-    /// The validated MCP endpoint URL.
     pub url: Url,
     /// Fixed literal headers, in declaration order. Never expanded, never a
     /// secret mechanism.
@@ -242,7 +211,6 @@ pub struct Url {
 }
 
 impl Url {
-    /// Validate an endpoint URL.
     pub fn parse(raw: &str) -> Result<Self, UrlInvalid> {
         if raw.contains('#') {
             return Err(UrlInvalid::HasFragment);
@@ -267,17 +235,14 @@ impl Url {
         Ok(Self { raw: raw.to_owned(), https, loopback })
     }
 
-    /// The URL exactly as configured.
     pub fn as_str(&self) -> &str {
         &self.raw
     }
 
-    /// Whether the scheme is `https`.
     pub fn is_https(&self) -> bool {
         self.https
     }
 
-    /// Whether the host is `localhost` or a loopback IP literal.
     pub fn is_loopback(&self) -> bool {
         self.loopback
     }
@@ -294,8 +259,6 @@ fn strip_scheme<'a>(raw: &'a str, scheme: &str) -> Option<&'a str> {
         .then(|| &raw[scheme.len()..])
 }
 
-/// Extract the host from an authority, honoring IPv6 bracket syntax.
-/// Returns `None` for an empty or malformed host.
 fn host_of(authority: &str) -> Option<String> {
     if let Some(rest) = authority.strip_prefix('[') {
         let end = rest.find(']')?;
@@ -326,19 +289,14 @@ fn is_loopback_host(host: &str) -> bool {
     bare.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Why a URL failed URL validation.
+/// Why a URL failed validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum UrlInvalid {
-    /// Not an absolute `http`/`https` URL.
     NotHttp,
-    /// The URL carries user information.
     HasUserInfo,
-    /// The URL carries a fragment.
     HasFragment,
-    /// The URL has no usable host.
     NoHost,
-    /// Plain `http` toward a non-loopback host.
     PlainHttpBeyondLoopback,
 }
 
@@ -362,36 +320,14 @@ impl std::error::Error for UrlInvalid {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DisabledReason {
-    /// `mcp.json` exists but is not a regular file.
     NotAFile,
-    /// `mcp.json` resolves outside the package root.
     LocationEscapes,
-    /// The file could not be read.
-    Unavailable {
-        /// The IO layer's explanation.
-        detail: String,
-    },
-    /// `mcp.json` is not valid JSON.
-    NotJson {
-        /// The JSON parser's explanation.
-        detail: String,
-    },
-    /// The document is valid JSON but not an object.
+    Unavailable { detail: String },
+    NotJson { detail: String },
     NotAnObject,
-    /// The required `$schema` field is missing or not a string.
     MissingSchema,
-    /// `$schema` declares an unsupported version, or one that does not match
-    /// the version declared by `plugin.json`.
-    SchemaMismatch {
-        /// The `$schema` value `mcp.json` declared.
-        declared: String,
-    },
-    /// A field other than `$schema` and `mcpServers` appears at the top level.
-    UnexpectedField {
-        /// The unexpected field.
-        field: String,
-    },
-    /// The required `mcpServers` field is missing or not an object.
+    SchemaMismatch { declared: String },
+    UnexpectedField { field: String },
     MissingServers,
 }
 
@@ -423,60 +359,23 @@ impl std::error::Error for DisabledReason {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ServerInvalid {
-    /// The entry is not a JSON object.
     NotAnObject,
-    /// The `type` field is missing or not a string.
     MissingType,
-    /// The `type` value is not a variant this specification defines.
-    UnknownType {
-        /// The declared `type` value.
-        declared: String,
-    },
-    /// A field outside the declared variant's closed set appears.
-    ForeignField {
-        /// The foreign field.
-        field: String,
-    },
-    /// A field has the wrong JSON type.
+    UnknownType { declared: String },
+    ForeignField { field: String },
     WrongType {
         /// The offending field.
         field: &'static str,
         /// What the specification requires there.
         expected: &'static str,
     },
-    /// `command` is empty, or a bare name containing path separators.
-    NotAToken {
-        /// The configured command.
-        command: String,
-    },
-    /// A package-relative `command` escapes the package root.
+    NotAToken { command: String },
     CommandEscapes,
-    /// `cwd` matches none of the three permitted forms, or escapes its anchor.
-    BadCwd {
-        /// The configured working directory.
-        cwd: String,
-    },
-    /// `env` names a reserved variable.
-    ReservedEnv {
-        /// The reserved name: `PLUGIN_ROOT` or `PLUGIN_DATA`.
-        name: String,
-    },
-    /// A header name is not a valid HTTP field name.
-    BadHeaderName {
-        /// The offending header name.
-        name: String,
-    },
-    /// A header value is not a valid HTTP field value.
-    BadHeaderValue {
-        /// The header whose value is invalid.
-        name: String,
-    },
-    /// The same header name appears more than once under different casing.
-    DuplicateHeader {
-        /// The duplicated header name (first spelling seen).
-        name: String,
-    },
-    /// The endpoint URL failed validation.
+    BadCwd { cwd: String },
+    ReservedEnv { name: String },
+    BadHeaderName { name: String },
+    BadHeaderValue { name: String },
+    DuplicateHeader { name: String },
     BadUrl(UrlInvalid),
 }
 
@@ -587,8 +486,6 @@ fn parse_stdio(fields: &Map<String, Value>) -> Result<StdioServer, ServerInvalid
     Ok(StdioServer { command, args, env, cwd })
 }
 
-/// `command` is one executable token — a bare name (no separators) or a
-/// package-relative `./` path. Never a shell string, never expanded.
 fn parse_command(raw: &str) -> Result<Command, ServerInvalid> {
     if raw.starts_with("./") {
         return RelativePath::parse(raw)
@@ -601,8 +498,8 @@ fn parse_command(raw: &str) -> Result<Command, ServerInvalid> {
     Ok(Command::Bare(raw.to_owned()))
 }
 
-/// `cwd` has exactly three permitted forms. A placeholder anywhere but the
-/// very start is none of them.
+/// A placeholder anywhere but the very start is none of the three permitted
+/// forms.
 fn parse_cwd(raw: &str) -> Result<Cwd, ServerInvalid> {
     let bad = || ServerInvalid::BadCwd { cwd: raw.to_owned() };
     let template = Template::parse(raw);

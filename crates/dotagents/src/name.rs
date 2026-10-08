@@ -1,5 +1,3 @@
-//! The plugin name, as constrained by the specification.
-//!
 //! `PluginName` follows *parse, don't validate*: the only way to obtain one is
 //! through a parse that enforces every constraint, so any function receiving a
 //! `PluginName` may treat validity as settled.
@@ -14,23 +12,17 @@ pub struct PluginName(String);
 /// Exactly which constraint a candidate name broke.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InvalidName {
-    /// The name is empty.
     Empty,
-    /// The name exceeds 64 characters.
     TooLong {
         /// The offending length, in characters.
         length: usize,
     },
-    /// A character outside `a-z`, `0-9`, `-`, `.` appears at `at`.
     ForbiddenCharacter {
-        /// The forbidden character.
         character: char,
-        /// Its byte offset in the candidate.
+        /// Byte offset in the candidate.
         at: usize,
     },
-    /// The first or last character is not alphanumeric.
     EdgeNotAlphanumeric,
-    /// The name contains `--` or `..`.
     DoubledSeparator {
         /// The repeated separator: `-` or `.`.
         separator: char,
@@ -61,7 +53,6 @@ impl fmt::Display for InvalidName {
 impl std::error::Error for InvalidName {}
 
 impl PluginName {
-    /// Parse a candidate against every name constraint.
     pub fn parse(candidate: &str) -> Result<Self, InvalidName> {
         if candidate.is_empty() {
             return Err(InvalidName::Empty);
@@ -94,7 +85,6 @@ impl PluginName {
         Ok(Self(candidate.to_owned()))
     }
 
-    /// The validated name.
     pub fn as_str(&self) -> &str {
         &self.0
     }

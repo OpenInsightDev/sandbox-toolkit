@@ -1,5 +1,3 @@
-//! `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` placeholder expansion.
-//!
 //! The specification demands "a single, non-recursive textual replacement" in
 //! which text introduced by a replacement is never rescanned. Rather than
 //! policing that with careful string code at expansion time, a [`Template`] is
@@ -21,7 +19,6 @@ pub struct Anchors {
 }
 
 impl Anchors {
-    /// Pair a package root with its persistent data directory.
     pub fn new(plugin_root: impl Into<PathBuf>, plugin_data: impl Into<PathBuf>) -> Self {
         Self { plugin_root: plugin_root.into(), plugin_data: plugin_data.into() }
     }
@@ -38,9 +35,7 @@ impl Anchors {
 /// permits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Placeholder {
-    /// `${PLUGIN_ROOT}`
     PluginRoot,
-    /// `${PLUGIN_DATA}`
     PluginData,
 }
 
@@ -66,7 +61,6 @@ pub enum Segment {
     /// Literal text, preserved exactly — including any placeholder-*like* text
     /// that is not one of the two recognized placeholders.
     Literal(String),
-    /// A recognized placeholder to be replaced at expansion time.
     Anchor(Placeholder),
 }
 
@@ -82,7 +76,6 @@ pub struct Template {
 }
 
 impl Template {
-    /// Parse a configured string into literal and placeholder segments.
     pub fn parse(raw: &str) -> Self {
         let mut segments = Vec::new();
         let mut literal = String::new();
@@ -115,24 +108,20 @@ impl Template {
         Self { raw: raw.to_owned(), segments }
     }
 
-    /// The configured string exactly as written.
     pub fn as_raw(&self) -> &str {
         &self.raw
     }
 
-    /// The parsed segments, in order.
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
 
-    /// Whether any recognized placeholder appears.
     pub fn has_anchors(&self) -> bool {
         self.segments.iter().any(|s| matches!(s, Segment::Anchor(_)))
     }
 
-    /// Expand against the given anchors: each placeholder becomes its anchor
-    /// path, each literal passes through untouched. Because replacement text
-    /// lives in its own segment, it is never rescanned.
+    /// Because replacement text lives in its own segment, it is never
+    /// rescanned.
     pub fn expand(&self, anchors: &Anchors) -> String {
         let mut out = String::with_capacity(self.raw.len());
         for segment in &self.segments {

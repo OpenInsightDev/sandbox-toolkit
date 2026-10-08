@@ -1,10 +1,7 @@
-//! Diagnostics: the specification's "SHOULD report" made concrete.
-//!
 //! Agent Plugins is deliberately forgiving — most failures narrow to the
-//! smallest boundary and loading continues. What must not happen is
-//! *silence*. Every non-fatal decision the loader takes on the package's
-//! behalf is recorded as a [`Diagnostic`]: which [`Rule`] fired, where
-//! ([`Origin`]), and a human-readable why.
+//! smallest boundary and loading continues — but never silent: every non-fatal
+//! decision the loader takes on the package's behalf is recorded as a
+//! [`Diagnostic`].
 
 use std::fmt;
 
@@ -12,17 +9,11 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Rule {
-    /// An unknown top-level manifest field was reported and ignored.
     UnknownManifestField,
-    /// A non-object `extensions` field was reported and ignored.
     ExtensionsIgnored,
-    /// A fixed component location exists but is unusable.
     ComponentInvalid,
-    /// A discovered skill was skipped.
     SkillSkipped,
-    /// An individual MCP server entry was skipped.
     ServerSkipped,
-    /// MCP was disabled for the whole package.
     McpDisabled,
 }
 
@@ -39,7 +30,6 @@ impl Rule {
         }
     }
 
-    /// The specification section that defines this report condition.
     pub fn section(self) -> &'static str {
         match self {
             Self::UnknownManifestField => "§5.2",
@@ -61,15 +51,12 @@ impl fmt::Display for Rule {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Origin {
-    /// The `plugin.json` manifest.
     Manifest,
-    /// The `skills/` component location.
     Skills,
-    /// One skill directory under `skills/`, by directory name.
+    /// By directory name.
     Skill(String),
-    /// The `mcp.json` component location.
     Mcp,
-    /// One MCP server entry, by its `mcpServers` member name.
+    /// By `mcpServers` member name.
     Server(String),
 }
 
@@ -89,11 +76,8 @@ impl fmt::Display for Origin {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Diagnostic {
-    /// Which report condition fired.
     pub rule: Rule,
-    /// Where in the package it fired.
     pub origin: Origin,
-    /// Human-readable explanation.
     pub message: String,
 }
 

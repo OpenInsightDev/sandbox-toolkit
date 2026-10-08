@@ -1,10 +1,7 @@
-//! Agent Skills, as the specification discovers them.
-//!
 //! The plugin specification defers the skill *format* to the Agent Skills
-//! specification; this module implements that format's validation, so a
-//! discovered skill can be accepted or skipped with a precise reason.
-//! Skipping is per-skill and non-fatal: the reason travels in a diagnostic and
-//! loading continues.
+//! specification, so this module implements that format's validation. Skipping
+//! is per-skill and non-fatal: the reason travels in a diagnostic and loading
+//! continues.
 
 mod markdown;
 
@@ -23,17 +20,14 @@ use crate::path::PackagePath;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Skill {
-    /// The immediate child directory of `skills/` this skill lives in.
-    /// Always equal to `meta.name` — the Agent Skills specification requires
-    /// the frontmatter name to match the directory name.
+    /// The immediate child directory of `skills/` this skill lives in; always
+    /// equal to `meta.name`, as the Agent Skills specification requires the
+    /// frontmatter name to match the directory name.
     pub directory: String,
-    /// Package path of the skill directory (`skills/<directory>`).
     pub path: PackagePath,
-    /// Validated frontmatter.
     pub meta: Meta,
-    /// The instructions after the frontmatter, parsed into a navigable
-    /// [`Document`] so a client can address one section instead of the whole
-    /// body. [`Document::source`] returns the original Markdown.
+    /// Parsed into a navigable [`Document`] so a client can address one section
+    /// instead of the whole body.
     pub body: Document,
 }
 
@@ -41,8 +35,8 @@ pub struct Skill {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Meta {
-    /// Skill name: 1–64 lowercase alphanumeric characters and hyphens,
-    /// matching the parent directory name.
+    /// 1–64 lowercase alphanumeric characters and hyphens, matching the parent
+    /// directory name.
     pub name: String,
     /// What the skill does and when to use it (1–1024 characters).
     pub description: String,
@@ -52,7 +46,6 @@ pub struct Meta {
     pub compatibility: Option<String>,
     /// Space-separated pre-approved tools (experimental).
     pub allowed_tools: Option<String>,
-    /// Arbitrary string-to-string metadata.
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -60,58 +53,25 @@ pub struct Meta {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Invalid {
-    /// `SKILL.md` is not UTF-8 text.
     NotUtf8,
-    /// The file does not begin with a `---` frontmatter fence.
     NoFrontmatter,
-    /// The opening fence is never closed by a `---` line.
     UnterminatedFrontmatter,
-    /// The frontmatter is not parseable YAML.
-    BadYaml {
-        /// The YAML parser's explanation.
-        detail: String,
-    },
-    /// The frontmatter is valid YAML but not a mapping.
+    BadYaml { detail: String },
     NotAMapping,
-    /// A frontmatter key outside the Agent Skills specification.
-    UnknownField {
-        /// The unexpected key.
-        field: String,
-    },
-    /// A required field is missing.
+    UnknownField { field: String },
     MissingField {
-        /// The missing key: `name` or `description`.
+        /// `name` or `description`.
         field: &'static str,
     },
-    /// A field has the wrong YAML type.
     WrongType {
-        /// The offending key.
         field: String,
         /// What the Agent Skills specification requires there.
         expected: &'static str,
     },
-    /// The `name` field breaks a naming constraint.
-    BadName {
-        /// Which constraint broke.
-        reason: String,
-    },
-    /// The frontmatter name does not match the directory name.
-    NameMismatch {
-        /// The name declared in frontmatter.
-        name: String,
-        /// The directory the skill was discovered in.
-        directory: String,
-    },
-    /// The `description` is empty or over 1024 characters.
-    BadDescription {
-        /// Which constraint broke.
-        reason: String,
-    },
-    /// The `compatibility` field is empty or over 500 characters.
-    BadCompatibility {
-        /// Which constraint broke.
-        reason: String,
-    },
+    BadName { reason: String },
+    NameMismatch { name: String, directory: String },
+    BadDescription { reason: String },
+    BadCompatibility { reason: String },
 }
 
 impl fmt::Display for Invalid {
@@ -149,14 +109,9 @@ impl std::error::Error for Invalid {}
 pub enum LoadError {
     /// No `SKILL.md`, or it is not a regular file: simply not a skill.
     Missing,
-    /// `SKILL.md` could not be read.
-    Unavailable {
-        /// The IO layer's explanation.
-        detail: String,
-    },
+    Unavailable { detail: String },
     /// The path has no usable directory name to match the frontmatter against.
     Unnamed,
-    /// `SKILL.md` is present but invalid.
     Skipped(Invalid),
 }
 
@@ -173,10 +128,6 @@ impl fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
-/// Read the `SKILL.md` in the skill directory at `dir`.
-///
-/// The directory name is the skill's name, and `path` is reported at the fixed
-/// package location `skills/<name>`.
 pub async fn load(dir: impl AsRef<Path>) -> Result<Skill, LoadError> {
     let dir = dir.as_ref();
     let Some(directory) = dir.file_name().and_then(|name| name.to_str()) else {
@@ -201,8 +152,6 @@ pub async fn load(dir: impl AsRef<Path>) -> Result<Skill, LoadError> {
     })
 }
 
-/// Parse and validate the contents of a `SKILL.md` found at
-/// `skills/<directory>/SKILL.md`.
 pub fn parse_skill_md(
     directory: &str,
     bytes: &[u8],
@@ -281,7 +230,6 @@ pub fn parse_skill_md(
     ))
 }
 
-/// Split `---`-fenced YAML frontmatter from the Markdown body.
 fn split_frontmatter(text: &str) -> Result<(&str, &str), Invalid> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split_inclusive('\n');
@@ -321,8 +269,6 @@ fn scalar_to_string(value: &Yaml) -> Option<String> {
     }
 }
 
-/// Agent Skills name rules: 1–64 characters, lowercase letters/digits/hyphens,
-/// alphanumeric at the edges, no `--`.
 fn validate_name(name: &str) -> Result<(), Invalid> {
     let bad = |reason: &str| Invalid::BadName { reason: reason.to_owned() };
     if name.trim().is_empty() {
