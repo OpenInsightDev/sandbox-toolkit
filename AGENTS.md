@@ -32,6 +32,22 @@ The workspace entry points that pair cargo with the TypeScript toolchain are
 `vite.config.ts` tasks, not `package.json` scripts: run `vp run check`,
 `vp run test`, `vp run build`, and `vp run bindings`. 
 
+# Tests
+
+Running tests costs time and machine resources: a run must have a reason, not
+be habitual. No "just to be safe" runs, never more scope than the change needs,
+and when unsure whether a run is warranted, ask instead of running.
+
+- Nothing to run: docs, comments, or prose that cannot affect execution.
+- Reason to run: changed behavior, a bug fix, reproducing a failure, or a claim
+  only a test can establish.
+- Narrow the scope to the file, module, or package that covers the change;
+  reserve the full suite for cross-cutting changes or explicitly requested
+  release and pre-merge validation.
+
+This narrows the `vp test` item in the Review Checklist above to
+behavior-affecting changes, and applies as well to `vp run test`.
+
 # Platform
 
 The project only needs to run inside Linux containers.
