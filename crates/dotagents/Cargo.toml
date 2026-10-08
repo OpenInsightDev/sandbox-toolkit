@@ -13,6 +13,3 @@ tokio = { workspace = true }
 # clients surface the servers in; without it serde_json sorts members.
 serde_json = { version = "1", features = ["preserve_order"] }
 yaml-rust2 = "0.10"
-# `watch` reuses the shared async debouncer and speaks its `notify` vocabulary.
-sandbox-toolkit-utils = { path = "../utils" }
-notify = "8.2.0"
