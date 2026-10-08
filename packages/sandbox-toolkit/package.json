@@ -1,6 +1,6 @@
 {
   "name": "sandbox-toolkit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Effect client for the Sandbox Toolkit HTTP and MCP server.",
   "homepage": "https://github.com/OpenInsightDev/sandbox-toolkit#readme",
   "bugs": {
