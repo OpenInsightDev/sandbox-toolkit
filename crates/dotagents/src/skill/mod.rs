@@ -30,7 +30,7 @@ pub struct Skill {
     /// Package path of the skill directory (`skills/<directory>`).
     pub path: PackagePath,
     /// Validated frontmatter.
-    pub meta: SkillMeta,
+    pub meta: Meta,
     /// The instructions after the frontmatter, parsed into a navigable
     /// [`Document`] so a client can address one section instead of the whole
     /// body. [`Document::source`] returns the original Markdown.
@@ -40,7 +40,7 @@ pub struct Skill {
 /// Validated `SKILL.md` frontmatter per the Agent Skills specification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct SkillMeta {
+pub struct Meta {
     /// Skill name: 1–64 lowercase alphanumeric characters and hyphens,
     /// matching the parent directory name.
     pub name: String,
@@ -59,7 +59,7 @@ pub struct SkillMeta {
 /// Why a discovered skill was skipped.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum SkillInvalid {
+pub enum Invalid {
     /// `SKILL.md` is not UTF-8 text.
     NotUtf8,
     /// The file does not begin with a `---` frontmatter fence.
@@ -114,7 +114,7 @@ pub enum SkillInvalid {
     },
 }
 
-impl fmt::Display for SkillInvalid {
+impl fmt::Display for Invalid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotUtf8 => f.write_str("SKILL.md is not UTF-8 text"),
@@ -141,12 +141,12 @@ impl fmt::Display for SkillInvalid {
     }
 }
 
-impl std::error::Error for SkillInvalid {}
+impl std::error::Error for Invalid {}
 
 /// Why a skill directory could not be loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum SkillLoadError {
+pub enum LoadError {
     /// No `SKILL.md`, or it is not a regular file: simply not a skill.
     Missing,
     /// `SKILL.md` could not be read.
@@ -157,42 +157,42 @@ pub enum SkillLoadError {
     /// The path has no usable directory name to match the frontmatter against.
     Unnamed,
     /// `SKILL.md` is present but invalid.
-    Invalid(SkillInvalid),
+    Skipped(Invalid),
 }
 
-impl fmt::Display for SkillLoadError {
+impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Missing => f.write_str("no SKILL.md in the skill directory"),
             Self::Unavailable { detail } => write!(f, "SKILL.md could not be read: {detail}"),
             Self::Unnamed => f.write_str("skill directory has no usable name"),
-            Self::Invalid(why) => write!(f, "{why}"),
+            Self::Skipped(why) => write!(f, "{why}"),
         }
     }
 }
 
-impl std::error::Error for SkillLoadError {}
+impl std::error::Error for LoadError {}
 
 /// Read the `SKILL.md` in the skill directory at `dir`.
 ///
 /// The directory name is the skill's name, and `path` is reported at the fixed
 /// package location `skills/<name>`.
-pub async fn load(dir: impl AsRef<Path>) -> Result<Skill, SkillLoadError> {
+pub async fn load(dir: impl AsRef<Path>) -> Result<Skill, LoadError> {
     let dir = dir.as_ref();
     let Some(directory) = dir.file_name().and_then(|name| name.to_str()) else {
-        return Err(SkillLoadError::Unnamed);
+        return Err(LoadError::Unnamed);
     };
     let file = dir.join("SKILL.md");
     match tokio::fs::metadata(&file).await {
         Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Err(SkillLoadError::Missing),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(SkillLoadError::Missing),
-        Err(error) => return Err(SkillLoadError::Unavailable { detail: error.to_string() }),
+        Ok(_) => return Err(LoadError::Missing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(LoadError::Missing),
+        Err(error) => return Err(LoadError::Unavailable { detail: error.to_string() }),
     }
     let bytes = tokio::fs::read(&file)
         .await
-        .map_err(|error| SkillLoadError::Unavailable { detail: error.to_string() })?;
-    let (meta, body) = parse_skill_md(directory, &bytes).map_err(SkillLoadError::Invalid)?;
+        .map_err(|error| LoadError::Unavailable { detail: error.to_string() })?;
+    let (meta, body) = parse_skill_md(directory, &bytes).map_err(LoadError::Skipped)?;
     Ok(Skill {
         directory: directory.to_owned(),
         path: PackagePath::new("skills").child(directory),
@@ -206,15 +206,15 @@ pub async fn load(dir: impl AsRef<Path>) -> Result<Skill, SkillLoadError> {
 pub fn parse_skill_md(
     directory: &str,
     bytes: &[u8],
-) -> Result<(SkillMeta, Document), SkillInvalid> {
-    let text = std::str::from_utf8(bytes).map_err(|_| SkillInvalid::NotUtf8)?;
+) -> Result<(Meta, Document), Invalid> {
+    let text = std::str::from_utf8(bytes).map_err(|_| Invalid::NotUtf8)?;
     let (frontmatter, body) = split_frontmatter(text)?;
 
     let docs = YamlLoader::load_from_str(frontmatter)
-        .map_err(|e| SkillInvalid::BadYaml { detail: e.to_string() })?;
+        .map_err(|e| Invalid::BadYaml { detail: e.to_string() })?;
     let mapping = match docs.first() {
         Some(Yaml::Hash(mapping)) => mapping,
-        Some(_) | None => return Err(SkillInvalid::NotAMapping),
+        Some(_) | None => return Err(Invalid::NotAMapping),
     };
 
     let mut name = None;
@@ -226,7 +226,7 @@ pub fn parse_skill_md(
 
     for (key, value) in mapping {
         let Yaml::String(key) = key else {
-            return Err(SkillInvalid::NotAMapping);
+            return Err(Invalid::NotAMapping);
         };
         match key.as_str() {
             "name" => name = Some(expect_str(key, value)?),
@@ -236,14 +236,14 @@ pub fn parse_skill_md(
             "allowed-tools" => allowed_tools = Some(expect_str(key, value)?),
             "metadata" => {
                 let Yaml::Hash(entries) = value else {
-                    return Err(SkillInvalid::WrongType {
+                    return Err(Invalid::WrongType {
                         field: "metadata".to_owned(),
                         expected: "a mapping of strings to strings",
                     });
                 };
                 for (k, v) in entries {
                     let (Some(k), Some(v)) = (scalar_to_string(k), scalar_to_string(v)) else {
-                        return Err(SkillInvalid::WrongType {
+                        return Err(Invalid::WrongType {
                             field: "metadata".to_owned(),
                             expected: "a mapping of strings to strings",
                         });
@@ -251,43 +251,43 @@ pub fn parse_skill_md(
                     metadata.insert(k, v);
                 }
             }
-            unknown => return Err(SkillInvalid::UnknownField { field: unknown.to_owned() }),
+            unknown => return Err(Invalid::UnknownField { field: unknown.to_owned() }),
         }
     }
 
-    let name = name.ok_or(SkillInvalid::MissingField { field: "name" })?;
-    let description = description.ok_or(SkillInvalid::MissingField { field: "description" })?;
+    let name = name.ok_or(Invalid::MissingField { field: "name" })?;
+    let description = description.ok_or(Invalid::MissingField { field: "description" })?;
 
     validate_name(&name)?;
     if name != directory {
-        return Err(SkillInvalid::NameMismatch { name, directory: directory.to_owned() });
+        return Err(Invalid::NameMismatch { name, directory: directory.to_owned() });
     }
     validate_description(&description)?;
     if let Some(compat) = &compatibility {
         let count = compat.chars().count();
         if compat.trim().is_empty() {
-            return Err(SkillInvalid::BadCompatibility { reason: "empty".to_owned() });
+            return Err(Invalid::BadCompatibility { reason: "empty".to_owned() });
         }
         if count > 500 {
-            return Err(SkillInvalid::BadCompatibility {
+            return Err(Invalid::BadCompatibility {
                 reason: format!("{count} characters; the limit is 500"),
             });
         }
     }
 
     Ok((
-        SkillMeta { name, description, license, compatibility, allowed_tools, metadata },
+        Meta { name, description, license, compatibility, allowed_tools, metadata },
         Document::parse(body),
     ))
 }
 
 /// Split `---`-fenced YAML frontmatter from the Markdown body.
-fn split_frontmatter(text: &str) -> Result<(&str, &str), SkillInvalid> {
+fn split_frontmatter(text: &str) -> Result<(&str, &str), Invalid> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split_inclusive('\n');
     let first = lines.next().unwrap_or("");
     if first.trim_end() != "---" {
-        return Err(SkillInvalid::NoFrontmatter);
+        return Err(Invalid::NoFrontmatter);
     }
     let after_open = &text[first.len()..];
     let mut offset = 0;
@@ -299,13 +299,13 @@ fn split_frontmatter(text: &str) -> Result<(&str, &str), SkillInvalid> {
         }
         offset += line.len();
     }
-    Err(SkillInvalid::UnterminatedFrontmatter)
+    Err(Invalid::UnterminatedFrontmatter)
 }
 
-fn expect_str(field: &str, value: &Yaml) -> Result<String, SkillInvalid> {
+fn expect_str(field: &str, value: &Yaml) -> Result<String, Invalid> {
     match value {
         Yaml::String(s) => Ok(s.clone()),
-        _ => Err(SkillInvalid::WrongType { field: field.to_owned(), expected: "a string" }),
+        _ => Err(Invalid::WrongType { field: field.to_owned(), expected: "a string" }),
     }
 }
 
@@ -323,8 +323,8 @@ fn scalar_to_string(value: &Yaml) -> Option<String> {
 
 /// Agent Skills name rules: 1–64 characters, lowercase letters/digits/hyphens,
 /// alphanumeric at the edges, no `--`.
-fn validate_name(name: &str) -> Result<(), SkillInvalid> {
-    let bad = |reason: &str| SkillInvalid::BadName { reason: reason.to_owned() };
+fn validate_name(name: &str) -> Result<(), Invalid> {
+    let bad = |reason: &str| Invalid::BadName { reason: reason.to_owned() };
     if name.trim().is_empty() {
         return Err(bad("empty"));
     }
@@ -346,13 +346,13 @@ fn validate_name(name: &str) -> Result<(), SkillInvalid> {
     Ok(())
 }
 
-fn validate_description(description: &str) -> Result<(), SkillInvalid> {
+fn validate_description(description: &str) -> Result<(), Invalid> {
     if description.trim().is_empty() {
-        return Err(SkillInvalid::BadDescription { reason: "empty".to_owned() });
+        return Err(Invalid::BadDescription { reason: "empty".to_owned() });
     }
     let count = description.chars().count();
     if count > 1024 {
-        return Err(SkillInvalid::BadDescription {
+        return Err(Invalid::BadDescription {
             reason: format!("{count} characters; the limit is 1024"),
         });
     }
@@ -376,15 +376,15 @@ mod tests {
     #[test]
     fn name_must_match_directory() {
         let err = parse_skill_md("other", VALID.as_bytes()).unwrap_err();
-        assert!(matches!(err, SkillInvalid::NameMismatch { .. }));
+        assert!(matches!(err, Invalid::NameMismatch { .. }));
     }
 
     #[test]
     fn frontmatter_is_required() {
-        assert_eq!(parse_skill_md("x", b"# Just markdown"), Err(SkillInvalid::NoFrontmatter));
+        assert_eq!(parse_skill_md("x", b"# Just markdown"), Err(Invalid::NoFrontmatter));
         assert_eq!(
             parse_skill_md("x", b"---\nname: x\n"),
-            Err(SkillInvalid::UnterminatedFrontmatter)
+            Err(Invalid::UnterminatedFrontmatter)
         );
     }
 
@@ -393,7 +393,7 @@ mod tests {
         let text = "---\nname: x\ndescription: d\nversion: 1.0\n---\n";
         assert_eq!(
             parse_skill_md("x", text.as_bytes()),
-            Err(SkillInvalid::UnknownField { field: "version".to_owned() })
+            Err(Invalid::UnknownField { field: "version".to_owned() })
         );
     }
 
@@ -419,7 +419,7 @@ mod tests {
         tokio::fs::create_dir_all(&directory).await.unwrap();
 
         // A directory without a `SKILL.md` is simply not a skill.
-        assert_eq!(load(&directory).await, Err(SkillLoadError::Missing));
+        assert_eq!(load(&directory).await, Err(LoadError::Missing));
 
         tokio::fs::write(
             directory.join("SKILL.md"),

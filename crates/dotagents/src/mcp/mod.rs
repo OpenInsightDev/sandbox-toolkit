@@ -1,12 +1,12 @@
 //! The `mcp.json` configuration: a closed union of transports.
 //!
 //! The specification models each server entry as "exactly one of a closed set
-//! of variants" — which is to say, a Rust enum. [`McpServer`] carries only the
+//! of variants" — which is to say, a Rust enum. [`Server`] carries only the
 //! fields its transport defines, so an entry mixing stdio and HTTP fields is
 //! unrepresentable here and is rejected during parsing.
 //!
 //! Failure boundaries follow the specification: a top-level problem disables
-//! MCP for the package ([`McpDisabledReason`]); a per-entry problem skips that
+//! MCP for the package ([`DisabledReason`]); a per-entry problem skips that
 //! one server ([`ServerInvalid`]) and the rest keep loading.
 
 use std::fmt;
@@ -28,14 +28,14 @@ pub const MCP_SCHEMA_1_0_0: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.
 /// declaration order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct McpConfig {
+pub struct Config {
     /// Valid server entries, in `mcpServers` declaration order.
     pub servers: Vec<ServerEntry>,
 }
 
-impl McpConfig {
+impl Config {
     /// Look up a surviving server by its `mcpServers` member name.
-    pub fn server(&self, name: &str) -> Option<&McpServer> {
+    pub fn server(&self, name: &str) -> Option<&Server> {
         self.servers.iter().find(|entry| entry.name == name).map(|entry| &entry.server)
     }
 
@@ -48,11 +48,11 @@ impl McpConfig {
     pub fn parse(
         bytes: &[u8],
         manifest_spec: SpecVersion,
-    ) -> Result<(Self, Vec<Diagnostic>), McpDisabledReason> {
+    ) -> Result<(Self, Vec<Diagnostic>), DisabledReason> {
         let document: Value = serde_json::from_slice(bytes)
-            .map_err(|e| McpDisabledReason::NotJson { detail: e.to_string() })?;
+            .map_err(|e| DisabledReason::NotJson { detail: e.to_string() })?;
         let Value::Object(object) = document else {
-            return Err(McpDisabledReason::NotAnObject);
+            return Err(DisabledReason::NotAnObject);
         };
 
         match object.get("$schema") {
@@ -64,18 +64,18 @@ impl McpConfig {
                     SpecVersion::V1_0_0 => id == MCP_SCHEMA_1_0_0,
                 };
                 if !matches {
-                    return Err(McpDisabledReason::SchemaMismatch { declared: id.clone() });
+                    return Err(DisabledReason::SchemaMismatch { declared: id.clone() });
                 }
             }
-            _ => return Err(McpDisabledReason::MissingSchema),
+            _ => return Err(DisabledReason::MissingSchema),
         }
 
         if let Some(field) = object.keys().find(|k| *k != "$schema" && *k != "mcpServers") {
-            return Err(McpDisabledReason::UnexpectedField { field: field.clone() });
+            return Err(DisabledReason::UnexpectedField { field: field.clone() });
         }
 
         let Some(Value::Object(members)) = object.get("mcpServers") else {
-            return Err(McpDisabledReason::MissingServers);
+            return Err(DisabledReason::MissingServers);
         };
 
         let mut servers = Vec::new();
@@ -96,25 +96,25 @@ impl McpConfig {
 
 /// Read and validate the `mcp.json` at `path`.
 ///
-/// `bytes`-level validation is [`McpConfig::parse`]; this reads the file
+/// `bytes`-level validation is [`Config::parse`]; this reads the file
 /// through `tokio::fs` and distinguishes "not a regular file" from "could not
 /// be read".
 pub async fn load(
     path: impl AsRef<Path>,
     manifest_spec: SpecVersion,
-) -> Result<(McpConfig, Vec<Diagnostic>), McpDisabledReason> {
+) -> Result<(Config, Vec<Diagnostic>), DisabledReason> {
     let path = path.as_ref();
     match tokio::fs::metadata(path).await {
-        Ok(meta) if !meta.is_file() => return Err(McpDisabledReason::NotAFile),
+        Ok(meta) if !meta.is_file() => return Err(DisabledReason::NotAFile),
         Ok(_) => {}
         Err(error) => {
-            return Err(McpDisabledReason::Unavailable { detail: error.to_string() });
+            return Err(DisabledReason::Unavailable { detail: error.to_string() });
         }
     }
     let bytes = tokio::fs::read(path)
         .await
-        .map_err(|error| McpDisabledReason::Unavailable { detail: error.to_string() })?;
-    McpConfig::parse(&bytes, manifest_spec)
+        .map_err(|error| DisabledReason::Unavailable { detail: error.to_string() })?;
+    Config::parse(&bytes, manifest_spec)
 }
 
 /// One named server from `mcpServers`.
@@ -124,13 +124,13 @@ pub struct ServerEntry {
     /// The `mcpServers` member name identifying this server.
     pub name: String,
     /// Its validated configuration.
-    pub server: McpServer,
+    pub server: Server,
 }
 
 /// The closed union of server variants, discriminated by `type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum McpServer {
+pub enum Server {
     /// `"type": "stdio"` — a local subprocess speaking MCP over stdio.
     Stdio(StdioServer),
     /// `"type": "streamable-http"` — the current MCP Streamable HTTP transport.
@@ -139,7 +139,7 @@ pub enum McpServer {
     Sse(RemoteServer),
 }
 
-impl McpServer {
+impl Server {
     /// The transport this entry declares.
     pub fn transport(&self) -> Transport {
         match self {
@@ -226,7 +226,7 @@ pub enum Cwd {
 #[non_exhaustive]
 pub struct RemoteServer {
     /// The validated MCP endpoint URL.
-    pub url: McpUrl,
+    pub url: Url,
     /// Fixed literal headers, in declaration order. Never expanded, never a
     /// secret mechanism.
     pub headers: Vec<(String, String)>,
@@ -235,13 +235,13 @@ pub struct RemoteServer {
 /// An MCP endpoint URL: absolute `http`/`https`, no user information, no
 /// fragment, and `http` only toward loopback.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct McpUrl {
+pub struct Url {
     raw: String,
     https: bool,
     loopback: bool,
 }
 
-impl McpUrl {
+impl Url {
     /// Validate an endpoint URL.
     pub fn parse(raw: &str) -> Result<Self, UrlInvalid> {
         if raw.contains('#') {
@@ -283,7 +283,7 @@ impl McpUrl {
     }
 }
 
-impl fmt::Display for McpUrl {
+impl fmt::Display for Url {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.raw)
     }
@@ -361,7 +361,7 @@ impl std::error::Error for UrlInvalid {}
 /// Why MCP was disabled for the whole package.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum McpDisabledReason {
+pub enum DisabledReason {
     /// `mcp.json` exists but is not a regular file.
     NotAFile,
     /// `mcp.json` resolves outside the package root.
@@ -395,7 +395,7 @@ pub enum McpDisabledReason {
     MissingServers,
 }
 
-impl fmt::Display for McpDisabledReason {
+impl fmt::Display for DisabledReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAFile => f.write_str("mcp.json is not a regular file"),
@@ -417,7 +417,7 @@ impl fmt::Display for McpDisabledReason {
     }
 }
 
-impl std::error::Error for McpDisabledReason {}
+impl std::error::Error for DisabledReason {}
 
 /// Why one server entry was skipped.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -515,7 +515,7 @@ impl fmt::Display for ServerInvalid {
 
 impl std::error::Error for ServerInvalid {}
 
-fn parse_server(value: &Value) -> Result<McpServer, ServerInvalid> {
+fn parse_server(value: &Value) -> Result<Server, ServerInvalid> {
     let Value::Object(fields) = value else {
         return Err(ServerInvalid::NotAnObject);
     };
@@ -525,9 +525,9 @@ fn parse_server(value: &Value) -> Result<McpServer, ServerInvalid> {
         None => return Err(ServerInvalid::MissingType),
     };
     match declared {
-        "stdio" => parse_stdio(fields).map(McpServer::Stdio),
-        "streamable-http" => parse_remote(fields).map(McpServer::StreamableHttp),
-        "sse" => parse_remote(fields).map(McpServer::Sse),
+        "stdio" => parse_stdio(fields).map(Server::Stdio),
+        "streamable-http" => parse_remote(fields).map(Server::StreamableHttp),
+        "sse" => parse_remote(fields).map(Server::Sse),
         other => Err(ServerInvalid::UnknownType { declared: other.to_owned() }),
     }
 }
@@ -631,7 +631,7 @@ fn parse_remote(fields: &Map<String, Value>) -> Result<RemoteServer, ServerInval
         }
     }
     let url = match fields.get("url") {
-        Some(Value::String(raw)) => McpUrl::parse(raw).map_err(ServerInvalid::BadUrl)?,
+        Some(Value::String(raw)) => Url::parse(raw).map_err(ServerInvalid::BadUrl)?,
         Some(_) => return Err(ServerInvalid::WrongType { field: "url", expected: "a string" }),
         None => return Err(ServerInvalid::WrongType { field: "url", expected: "present" }),
     };
@@ -705,19 +705,19 @@ mod tests {
 
     #[test]
     fn url_rules() {
-        assert!(McpUrl::parse("https://deploy.example.com/mcp").is_ok());
-        assert!(McpUrl::parse("http://localhost:8080/mcp").unwrap().is_loopback());
-        assert!(McpUrl::parse("http://127.0.0.1/mcp").unwrap().is_loopback());
-        assert!(McpUrl::parse("http://[::1]:9000/sse").unwrap().is_loopback());
+        assert!(Url::parse("https://deploy.example.com/mcp").is_ok());
+        assert!(Url::parse("http://localhost:8080/mcp").unwrap().is_loopback());
+        assert!(Url::parse("http://127.0.0.1/mcp").unwrap().is_loopback());
+        assert!(Url::parse("http://[::1]:9000/sse").unwrap().is_loopback());
         assert_eq!(
-            McpUrl::parse("http://mcp.example.com/api"),
+            Url::parse("http://mcp.example.com/api"),
             Err(UrlInvalid::PlainHttpBeyondLoopback)
         );
-        assert_eq!(McpUrl::parse("https://a:b@example.com/"), Err(UrlInvalid::HasUserInfo));
-        assert_eq!(McpUrl::parse("https://example.com/api#frag"), Err(UrlInvalid::HasFragment));
-        assert_eq!(McpUrl::parse("ftp://example.com/"), Err(UrlInvalid::NotHttp));
-        assert_eq!(McpUrl::parse("https:///path"), Err(UrlInvalid::NoHost));
-        assert!(McpUrl::parse("http://127.8.9.1/x").unwrap().is_loopback());
+        assert_eq!(Url::parse("https://a:b@example.com/"), Err(UrlInvalid::HasUserInfo));
+        assert_eq!(Url::parse("https://example.com/api#frag"), Err(UrlInvalid::HasFragment));
+        assert_eq!(Url::parse("ftp://example.com/"), Err(UrlInvalid::NotHttp));
+        assert_eq!(Url::parse("https:///path"), Err(UrlInvalid::NoHost));
+        assert!(Url::parse("http://127.8.9.1/x").unwrap().is_loopback());
     }
 
     #[test]
@@ -754,7 +754,7 @@ mod tests {
                    "bad": {{"type": "stdio"}}
                  }}}}"#
         );
-        let (config, diagnostics) = McpConfig::parse(doc.as_bytes(), SpecVersion::V1_0_0).unwrap();
+        let (config, diagnostics) = Config::parse(doc.as_bytes(), SpecVersion::V1_0_0).unwrap();
         assert_eq!(config.servers.len(), 1);
         assert_eq!(config.servers[0].name, "good");
         assert_eq!(diagnostics.len(), 1);
@@ -763,8 +763,8 @@ mod tests {
 
     #[test]
     fn a_bad_top_level_disables_mcp() {
-        let err = McpConfig::parse(b"not json", SpecVersion::V1_0_0).unwrap_err();
-        assert!(matches!(err, McpDisabledReason::NotJson { .. }));
+        let err = Config::parse(b"not json", SpecVersion::V1_0_0).unwrap_err();
+        assert!(matches!(err, DisabledReason::NotJson { .. }));
     }
 
     #[tokio::test]

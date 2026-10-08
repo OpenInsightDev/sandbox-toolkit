@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::diag::{Diagnostic, Origin, Rule};
-use crate::mcp::{McpConfig, McpDisabledReason};
+use crate::mcp;
 use crate::name::{InvalidName, PluginName};
 use crate::path::PackagePath;
-use crate::skill::{Skill, parse_skill_md};
+use crate::skill;
 use crate::spec::SpecVersion;
 
 /// The canonical `$schema` identifier for Agent Plugins 1.0.0 manifests.
@@ -286,14 +286,21 @@ fn parse_keywords(value: &Value) -> Result<Vec<String>, ManifestRejection> {
     items.iter().map(|item| expect_string("keywords[]", item)).collect()
 }
 
-/// A fully loaded package: the conformance outcome of loading a directory.
+/// One plugin: a directory holding a `plugin.json`, and everything it declares.
+///
+/// The specification fixes the identity as the directory: the id is the
+/// directory's name and the root is that directory, canonical.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub struct LoadedPlugin {
+pub struct Plugin {
+    /// The plugin root's name, which the specification fixes as the id.
+    pub id: String,
+    /// The plugin root, canonical.
+    pub root: PathBuf,
     /// The validated manifest.
     pub manifest: Manifest,
     /// Valid skills, in discovery order.
-    pub skills: Vec<Skill>,
+    pub skills: Vec<skill::Skill>,
     /// The MCP component's fate.
     pub mcp: McpOutcome,
     /// Everything non-fatal the loader decided along the way.
@@ -307,15 +314,17 @@ pub enum McpOutcome {
     /// No `mcp.json` — expressly not an error.
     Absent,
     /// MCP is disabled for this package; other components loaded on.
-    Disabled(McpDisabledReason),
+    Disabled(mcp::DisabledReason),
     /// Valid configuration; individually invalid entries were skipped.
-    Configured(McpConfig),
+    Configured(mcp::Config),
 }
 
 /// The package was rejected outright — nothing may be discovered or executed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Rejection {
+    /// The plugin root's directory name is not text, so it has no id.
+    IdNotText,
     /// No `plugin.json` at the package root.
     ManifestMissing,
     /// `plugin.json` is not a regular file.
@@ -334,6 +343,7 @@ pub enum Rejection {
 impl fmt::Display for Rejection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::IdNotText => f.write_str("the plugin root's name is not text"),
             Self::ManifestMissing => f.write_str("no plugin.json at the package root (§5.1)"),
             Self::ManifestNotAFile => f.write_str("plugin.json is not a regular file"),
             Self::ManifestEscapes => {
@@ -347,25 +357,32 @@ impl fmt::Display for Rejection {
 
 impl std::error::Error for Rejection {}
 
-/// Load the package rooted at `root` from the filesystem.
+/// Load the plugin rooted at `root` from the filesystem.
 ///
 /// The package root is the directory the specification calls a plugin root —
 /// the `.agents/` directory by convention. The manifest is read first; only
 /// once it validates are `skills/` and `mcp.json` discovered.
-pub async fn load(root: impl AsRef<Path>) -> Result<LoadedPlugin, Rejection> {
+pub async fn load(root: impl AsRef<Path>) -> Result<Plugin, Rejection> {
     let root = root.as_ref();
+    // The id is the root's own name, so a root that has none, or one that is
+    // not text, cannot be the plugin the caller is asking for.
+    let id = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(Rejection::IdNotText)?
+        .to_owned();
     let canonical_root = tokio::fs::canonicalize(root).await.map_err(|error| Rejection::Source {
         detail: format!("cannot open package root: {error}"),
     })?;
 
-    let mut diagnostics = Vec::new();
-    let (manifest, mut manifest_diagnostics) = load_manifest(root, &canonical_root).await?;
-    diagnostics.append(&mut manifest_diagnostics);
+    let (manifest, mut diagnostics) = load_manifest(root, &canonical_root).await?;
 
-    let skills = load_skills(root, &canonical_root, &mut diagnostics).await;
-    let mcp = load_mcp(root, &canonical_root, manifest.spec, &mut diagnostics).await;
+    let (skills, skill_diagnostics) = load_skills(root, &canonical_root).await;
+    let (mcp, mcp_diagnostics) = load_mcp(root, &canonical_root, manifest.spec).await;
+    diagnostics.extend(skill_diagnostics);
+    diagnostics.extend(mcp_diagnostics);
 
-    Ok(LoadedPlugin { manifest, skills, mcp, diagnostics })
+    Ok(Plugin { id, root: canonical_root, manifest, skills, mcp, diagnostics })
 }
 
 async fn load_manifest(root: &Path, canonical_root: &Path) -> Result<(Manifest, Vec<Diagnostic>), Rejection> {
@@ -388,22 +405,26 @@ async fn load_manifest(root: &Path, canonical_root: &Path) -> Result<(Manifest, 
     Ok((manifest, diagnostics))
 }
 
-async fn load_skills(root: &Path, canonical_root: &Path, diagnostics: &mut Vec<Diagnostic>) -> Vec<Skill> {
+pub(crate) async fn load_skills(
+    root: &Path,
+    canonical_root: &Path,
+) -> (Vec<skill::Skill>, Vec<Diagnostic>) {
+    let mut diagnostics = Vec::new();
     let dir = root.join("skills");
     match file_kind(&dir).await {
         Ok(Some(FileKind::Directory)) => {}
         // An absent component location is not an error.
-        Ok(None) => return Vec::new(),
+        Ok(None) => return (Vec::new(), diagnostics),
         Ok(Some(_)) => {
             diagnostics.push(component_invalid(
                 Origin::Skills,
                 "`skills` exists but is not a directory (§6.2)",
             ));
-            return Vec::new();
+            return (Vec::new(), diagnostics);
         }
         Err(error) => {
             diagnostics.push(component_invalid(Origin::Skills, error.to_string()));
-            return Vec::new();
+            return (Vec::new(), diagnostics);
         }
     }
     match confined(&dir, canonical_root).await {
@@ -413,11 +434,11 @@ async fn load_skills(root: &Path, canonical_root: &Path, diagnostics: &mut Vec<D
                 Origin::Skills,
                 "`skills` resolves outside the package root (§4.1)",
             ));
-            return Vec::new();
+            return (Vec::new(), diagnostics);
         }
         Err(error) => {
             diagnostics.push(component_invalid(Origin::Skills, error.to_string()));
-            return Vec::new();
+            return (Vec::new(), diagnostics);
         }
     }
 
@@ -425,7 +446,7 @@ async fn load_skills(root: &Path, canonical_root: &Path, diagnostics: &mut Vec<D
         Ok(entries) => entries,
         Err(error) => {
             diagnostics.push(component_invalid(Origin::Skills, error.to_string()));
-            return Vec::new();
+            return (Vec::new(), diagnostics);
         }
     };
     // Only an immediate child *directory* may hold a skill; files and deeper
@@ -483,8 +504,8 @@ async fn load_skills(root: &Path, canonical_root: &Path, diagnostics: &mut Vec<D
                 continue;
             }
         };
-        match parse_skill_md(&name, &bytes) {
-            Ok((meta, body)) => skills.push(Skill {
+        match skill::parse_skill_md(&name, &bytes) {
+            Ok((meta, body)) => skills.push(skill::Skill {
                 directory: name.clone(),
                 path: PackagePath::new("skills").child(&name),
                 meta,
@@ -493,61 +514,58 @@ async fn load_skills(root: &Path, canonical_root: &Path, diagnostics: &mut Vec<D
             Err(why) => diagnostics.push(skill_skipped(&name, why.to_string())),
         }
     }
-    skills
+    (skills, diagnostics)
 }
 
-async fn load_mcp(
+pub(crate) async fn load_mcp(
     root: &Path,
     canonical_root: &Path,
     spec: SpecVersion,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> McpOutcome {
+) -> (McpOutcome, Vec<Diagnostic>) {
     let path = root.join("mcp.json");
     match file_kind(&path).await {
         Ok(Some(FileKind::File)) => {}
-        Ok(None) => return McpOutcome::Absent,
+        Ok(None) => return (McpOutcome::Absent, Vec::new()),
         Ok(Some(_)) => {
-            diagnostics.push(component_invalid(
+            let diagnostic = component_invalid(
                 Origin::Mcp,
                 "`mcp.json` exists but is not a regular file (§6.2)",
-            ));
-            return McpOutcome::Disabled(McpDisabledReason::NotAFile);
+            );
+            return (McpOutcome::Disabled(mcp::DisabledReason::NotAFile), vec![diagnostic]);
         }
         Err(error) => {
-            return disabled_by_io(diagnostics, error.to_string());
+            return disabled(mcp::DisabledReason::Unavailable { detail: error.to_string() });
         }
     }
     match confined(&path, canonical_root).await {
         Ok(true) => {}
         Ok(false) => {
-            diagnostics.push(component_invalid(
+            let diagnostic = component_invalid(
                 Origin::Mcp,
                 "`mcp.json` resolves outside the package root (§4.1)",
-            ));
-            return McpOutcome::Disabled(McpDisabledReason::LocationEscapes);
+            );
+            return (McpOutcome::Disabled(mcp::DisabledReason::LocationEscapes), vec![diagnostic]);
         }
-        Err(error) => return disabled_by_io(diagnostics, error.to_string()),
+        Err(error) => {
+            return disabled(mcp::DisabledReason::Unavailable { detail: error.to_string() });
+        }
     }
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
-        Err(error) => return disabled_by_io(diagnostics, error.to_string()),
+        Err(error) => {
+            return disabled(mcp::DisabledReason::Unavailable { detail: error.to_string() });
+        }
     };
-    match McpConfig::parse(&bytes, spec) {
-        Ok((config, mut server_diagnostics)) => {
-            diagnostics.append(&mut server_diagnostics);
-            McpOutcome::Configured(config)
-        }
-        Err(reason) => {
-            diagnostics.push(Diagnostic::new(Rule::McpDisabled, Origin::Mcp, reason.to_string()));
-            McpOutcome::Disabled(reason)
-        }
+    match mcp::Config::parse(&bytes, spec) {
+        Ok((config, server_diagnostics)) => (McpOutcome::Configured(config), server_diagnostics),
+        Err(reason) => disabled(reason),
     }
 }
 
-fn disabled_by_io(diagnostics: &mut Vec<Diagnostic>, detail: String) -> McpOutcome {
-    let reason = McpDisabledReason::Unavailable { detail };
-    diagnostics.push(Diagnostic::new(Rule::McpDisabled, Origin::Mcp, reason.to_string()));
-    McpOutcome::Disabled(reason)
+/// MCP is disabled for the package: the outcome, and the report that says so.
+fn disabled(reason: mcp::DisabledReason) -> (McpOutcome, Vec<Diagnostic>) {
+    let diagnostic = Diagnostic::new(Rule::McpDisabled, Origin::Mcp, reason.to_string());
+    (McpOutcome::Disabled(reason), vec![diagnostic])
 }
 
 fn component_invalid(origin: Origin, message: impl Into<String>) -> Diagnostic {
@@ -696,10 +714,10 @@ mod tests {
         assert_eq!(plugin.skills[0].path.as_str(), "skills/greet");
         assert_eq!(
             plugin.mcp,
-            McpOutcome::Configured(McpConfig {
-                servers: vec![crate::mcp::ServerEntry {
+            McpOutcome::Configured(mcp::Config {
+                servers: vec![mcp::ServerEntry {
                     name: "echo".to_owned(),
-                    server: crate::mcp::McpServer::Stdio(crate::mcp::StdioServer {
+                    server: crate::mcp::Server::Stdio(crate::mcp::StdioServer {
                         command: crate::mcp::Command::Bare("npx".to_owned()),
                         args: Vec::new(),
                         env: Vec::new(),

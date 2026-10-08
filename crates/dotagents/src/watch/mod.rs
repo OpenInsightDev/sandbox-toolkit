@@ -1,408 +1,249 @@
-//! Watch a `.agents/` package and report what changed in its resource terms.
+//! The changes a watched `.agents/` directory produces.
 //!
-//! The watcher degrades the debouncer's raw filesystem events to a single
-//! "something happened" signal, reloads the package, and reports the difference
-//! against the previous state as [`Event`]s. Deriving changes from content
-//! rather than from event kinds is what makes renames, invalid content, and
-//! atomic saves all behave the same.
+//! Each `change` variant carries exactly the content its transition has: the
+//! resource when it is valid, and nothing when it is gone. A directory that
+//! stops holding resources at all — it disappeared, or it stopped loading — is
+//! one [`Event::Invalid`] carrying the reason, rather than a removal per
+//! resource.
 //!
-//! The baseline is established silently: a consumer keeps its own initial load
-//! and the watcher only reports increments.
+//! Changes are derived from the content of two consecutive loads rather than
+//! from filesystem event kinds, so renames, atomic saves, and broken content
+//! all behave the same.
 
-mod event;
-mod snapshot;
+use std::collections::BTreeSet;
+use std::fmt;
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
-use notify::{EventKind, RecursiveMode};
-use tokio::sync::mpsc;
+use crate::agents::{LoadError, Resources, Snapshot};
+use crate::mcp;
+use crate::plugin;
+use crate::skill;
 
-use sandbox_toolkit_utils::watch::AsyncDebouncer;
-
-use snapshot::{Snapshot, diff, observe};
-
-pub use event::{Event, McpChange, PluginChange, SkillChange};
 pub use sandbox_toolkit_utils::watch::Error;
 
-const DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const EVENT_CAPACITY: usize = 256;
 
-const EVENT_CAPACITY: usize = 256;
-
-/// A running watch over one `.agents/` package.
+/// One change inside a watched `.agents/` directory.
 ///
-/// Dropping the watcher stops it on the next batch.
-pub struct Watcher {
-    events: mpsc::Receiver<Event>,
+/// A plugin carries its own skills and servers, so they change with it, as
+/// [`PluginChange`]. [`Event::Skill`] and [`Event::Mcp`] are the directory's
+/// own `skills/` and `mcp.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Event {
+    /// The directory as a whole holds no resources — it is missing, or it does
+    /// not load — so everything a subscriber held is gone.
+    Invalid(LoadError),
+    /// One plugin under `plugins/`, by its directory name.
+    Plugin {
+        /// The plugin's directory name.
+        id: String,
+        /// How it changed.
+        change: PluginChange,
+    },
+    /// One skill under `skills/`, by its directory name.
+    Skill {
+        /// The skill directory's name.
+        id: String,
+        /// How it changed.
+        change: SkillChange,
+    },
+    /// The `mcp.json` server set changed; at least one side is non-empty. A
+    /// server whose configuration changed appears on both sides.
+    Mcp {
+        /// Servers that were not present before.
+        added: Vec<mcp::ServerEntry>,
+        /// Servers that are no longer present.
+        removed: Vec<mcp::ServerEntry>,
+    },
 }
 
-impl Watcher {
-    /// Watch `root` using the default debounce interval.
-    pub async fn new(root: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::with_debounce(root, DEBOUNCE_TIMEOUT).await
-    }
-
-    /// Watch `root`, waiting `timeout` of quiet before each reload.
-    pub async fn with_debounce(root: impl AsRef<Path>, timeout: Duration) -> Result<Self, Error> {
-        let root = root.as_ref().to_path_buf();
-        let debouncer = AsyncDebouncer::new(timeout, None).await?;
-        debouncer.watch(&root, RecursiveMode::Recursive).await?;
-
-        // Establish the baseline after the watch is live, so no change slips
-        // between the two; the reload's own read events are filtered below.
-        let baseline = observe(&root).await;
-
-        let (events, receiver) = mpsc::channel(EVENT_CAPACITY);
-        tokio::spawn(drive(root, debouncer, baseline, events));
-        Ok(Self { events: receiver })
-    }
-
-    /// Await the next change, or `None` once the watch has stopped.
-    pub async fn recv(&mut self) -> Option<Event> {
-        self.events.recv().await
-    }
-
-    /// Take the next change without waiting.
-    pub fn try_recv(&mut self) -> Result<Event, mpsc::error::TryRecvError> {
-        self.events.try_recv()
-    }
+/// How one plugin changed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PluginChange {
+    /// The plugin entered the set.
+    Added(plugin::Plugin),
+    /// A plugin's content changed; its skills and servers came with it.
+    Modified(plugin::Plugin),
+    /// The plugin left the set.
+    Removed,
 }
 
-async fn drive(
-    root: PathBuf,
-    mut debouncer: AsyncDebouncer,
-    mut snapshot: Snapshot,
-    events: mpsc::Sender<Event>,
-) {
-    loop {
-        let batch = tokio::select! {
-            batch = debouncer.recv() => batch,
-            // The receiver is gone; nobody wants the batch.
-            () = events.closed() => return,
-        };
-        let Some(batch) = batch else { return };
-        // Reloading reads the files, and the backend reports those opens as
-        // access events; skipping them is what stops the watcher from
-        // re-triggering itself.
-        let relevant = match &*batch {
-            Ok(events) => events
-                .iter()
-                .any(|debounced| !matches!(debounced.event.kind, EventKind::Access(_))),
-            Err(_) => false,
-        };
-        if !relevant {
-            continue;
-        }
+/// How one skill changed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SkillChange {
+    /// The skill entered the valid set.
+    Added(skill::Skill),
+    /// A valid skill's content changed.
+    Modified(skill::Skill),
+    /// The skill disappeared.
+    Removed,
+}
 
-        let next = observe(&root).await;
-        let changes = diff(&snapshot, &next);
-        snapshot = next;
-        for change in changes {
-            if events.send(change).await.is_err() {
-                return;
-            }
+/// A subscriber's view of the changes after it subscribed.
+pub struct Subscription(broadcast::Receiver<Event>);
+
+impl Subscription {
+    pub(crate) fn new(receiver: broadcast::Receiver<Event>) -> Self {
+        Self(receiver)
+    }
+
+    /// Await the next change.
+    ///
+    /// An error means changes were lost or the watch stopped; either way the
+    /// subscriber resynchronises by reading
+    /// [`DotAgents::state`](crate::DotAgents::state).
+    pub async fn recv(&mut self) -> Result<Event, SubscriptionError> {
+        match self.0.recv().await {
+            Ok(event) => Ok(event),
+            Err(RecvError::Lagged(events)) => Err(SubscriptionError::Lagged { events }),
+            Err(RecvError::Closed) => Err(SubscriptionError::Stopped),
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+/// Why a subscription carried no change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SubscriptionError {
+    /// The subscriber fell behind and lost this many changes.
+    Lagged {
+        /// How many changes were dropped.
+        events: u64,
+    },
+    /// The watched directory is no longer watched.
+    Stopped,
+}
 
-    use super::*;
-    use crate::mcp::MCP_SCHEMA_1_0_0;
-    use crate::name::PluginName;
-    use crate::plugin::PLUGIN_SCHEMA_1_0_0;
-
-    const DEBOUNCE: Duration = Duration::from_millis(150);
-
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new() -> Self {
-            static COUNTER: AtomicU64 = AtomicU64::new(0);
-            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!("dotagents-watch-{}-{id}", std::process::id()));
-            std::fs::create_dir_all(&dir).expect("create temp dir");
-            Self(std::fs::canonicalize(dir).expect("canonicalize temp dir"))
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn write_manifest(root: &Path, name: &str) {
-        let text = format!(r#"{{"$schema":"{PLUGIN_SCHEMA_1_0_0}","name":"{name}"}}"#);
-        std::fs::write(root.join("plugin.json"), text).expect("write plugin.json");
-    }
-
-    fn write_skill(root: &Path, id: &str, description: &str) {
-        let dir = root.join("skills").join(id);
-        std::fs::create_dir_all(&dir).expect("create skill dir");
-        let text = format!("---\nname: {id}\ndescription: {description}\n---\n\n# Body\n");
-        std::fs::write(dir.join("SKILL.md"), text).expect("write SKILL.md");
-    }
-
-    fn write_mcp(root: &Path, servers: &[(&str, &str)]) {
-        let entries: Vec<String> = servers
-            .iter()
-            .map(|(name, url)| {
-                format!(r#""{name}":{{"type":"streamable-http","url":"{url}"}}"#)
-            })
-            .collect();
-        let text = format!(
-            r#"{{"$schema":"{MCP_SCHEMA_1_0_0}","mcpServers":{{{}}}}}"#,
-            entries.join(",")
-        );
-        std::fs::write(root.join("mcp.json"), text).expect("write mcp.json");
-    }
-
-    async fn watcher(root: &Path) -> Watcher {
-        Watcher::with_debounce(root, DEBOUNCE).await.expect("start watcher")
-    }
-
-    async fn wait_for(watcher: &mut Watcher, mut wanted: impl FnMut(&Event) -> bool) -> Event {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let event = watcher.recv().await.expect("watcher stayed open");
-                if wanted(&event) {
-                    return event;
-                }
+impl fmt::Display for SubscriptionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lagged { events } => {
+                write!(f, "subscription fell behind and lost {events} change(s)")
             }
-        })
-        .await
-        .expect("an event arrived before the timeout")
-    }
-
-    #[tokio::test]
-    async fn the_baseline_is_silent() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_skill(root, "greet", "first");
-
-        let mut watcher = watcher(root).await;
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(matches!(watcher.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
-    }
-
-    #[tokio::test]
-    async fn modifying_skill_md_reports_a_modification() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_skill(root, "greet", "first");
-
-        let mut watcher = watcher(root).await;
-        write_skill(root, "greet", "second");
-
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Skill { change: SkillChange::Modified(_), .. })
-        })
-        .await;
-        match event {
-            Event::Skill { id, change: SkillChange::Modified(skill), .. } => {
-                assert_eq!(id, "greet");
-                assert_eq!(skill.meta.description, "second");
-            }
-            other => panic!("unexpected event: {other:?}"),
+            Self::Stopped => f.write_str("the watched directory is no longer watched"),
         }
     }
+}
 
-    #[tokio::test]
-    async fn removing_a_skill_reports_a_removal() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_skill(root, "greet", "first");
+impl std::error::Error for SubscriptionError {}
 
-        let mut watcher = watcher(root).await;
-        std::fs::remove_dir_all(root.join("skills/greet")).expect("remove skill dir");
+/// The events that turn `previous` into `current`.
+pub(crate) fn diff(previous: &Snapshot, current: &Snapshot) -> Vec<Event> {
+    if previous == current {
+        return Vec::new();
+    }
+    match (previous, current) {
+        (Ok(before), Ok(after)) => diff_resources(before, after),
+        // Holding nothing now: the set is void, so one event says so rather
+        // than a removal per resource that used to be there.
+        (_, Err(error)) => vec![Event::Invalid(error.clone())],
+        // Holding resources now: everything arrived.
+        (Err(_), Ok(after)) => diff_resources(&nothing(), after),
+    }
+}
 
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Skill { change: SkillChange::Removed, .. })
-        })
-        .await;
-        match event {
-            Event::Skill { id, .. } => assert_eq!(id, "greet"),
-            other => panic!("unexpected event: {other:?}"),
+/// A resource a `.agents/` directory holds under a name, so two loads can be
+/// compared entry by entry.
+trait Named: PartialEq {
+    /// The name the resource is held under.
+    fn name(&self) -> &str;
+}
+
+impl Named for plugin::Plugin {
+    fn name(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Named for skill::Skill {
+    fn name(&self) -> &str {
+        &self.directory
+    }
+}
+
+/// How one resource differs between two loads.
+enum Difference<'a, T> {
+    /// The resource is new.
+    Added(&'a T),
+    /// The resource is there on both sides, but changed.
+    Modified(&'a T),
+    /// The resource is gone.
+    Removed,
+}
+
+impl From<Difference<'_, plugin::Plugin>> for PluginChange {
+    fn from(difference: Difference<'_, plugin::Plugin>) -> Self {
+        match difference {
+            Difference::Added(plugin) => Self::Added(plugin.clone()),
+            Difference::Modified(plugin) => Self::Modified(plugin.clone()),
+            Difference::Removed => Self::Removed,
         }
     }
+}
 
-    #[tokio::test]
-    async fn an_invalid_skill_is_not_a_removal() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_skill(root, "greet", "first");
-
-        let mut watcher = watcher(root).await;
-        std::fs::write(root.join("skills/greet/SKILL.md"), "not frontmatter").expect("break skill");
-
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Skill { change: SkillChange::Invalid(_), .. })
-        })
-        .await;
-        match event {
-            Event::Skill { change: SkillChange::Invalid(diagnostics), .. } => {
-                assert!(!diagnostics.is_empty());
-            }
-            other => panic!("unexpected event: {other:?}"),
+impl From<Difference<'_, skill::Skill>> for SkillChange {
+    fn from(difference: Difference<'_, skill::Skill>) -> Self {
+        match difference {
+            Difference::Added(skill) => Self::Added(skill.clone()),
+            Difference::Modified(skill) => Self::Modified(skill.clone()),
+            Difference::Removed => Self::Removed,
         }
     }
+}
 
-    #[tokio::test]
-    async fn reloading_mcp_reports_the_server_difference() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_mcp(root, &[("alpha", "https://a.example/mcp")]);
-
-        let mut watcher = watcher(root).await;
-        write_mcp(
-            root,
-            &[("alpha", "https://a.example/mcp"), ("beta", "https://b.example/mcp")],
-        );
-
-        let event = wait_for(&mut watcher, |event| matches!(event, Event::Mcp { .. })).await;
-        match event {
-            Event::Mcp { change: McpChange::Reloaded { added, removed }, .. } => {
-                let added: Vec<&str> = added.iter().map(|entry| entry.name.as_str()).collect();
-                assert_eq!(added, ["beta"]);
-                assert!(removed.is_empty());
-            }
-            other => panic!("unexpected event: {other:?}"),
+/// The resources that differ between two loads, by name, in name order.
+fn differences<'a, T: Named>(
+    before: &'a [T],
+    after: &'a [T],
+) -> impl Iterator<Item = (&'a str, Difference<'a, T>)> {
+    let names: BTreeSet<&str> = before.iter().chain(after).map(|entry| entry.name()).collect();
+    names.into_iter().filter_map(move |name| {
+        let old = before.iter().find(|entry| entry.name() == name);
+        let new = after.iter().find(|entry| entry.name() == name);
+        if old == new {
+            return None;
         }
-    }
-
-    #[tokio::test]
-    async fn an_invalid_mcp_is_reported_as_such() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_mcp(root, &[("alpha", "https://a.example/mcp")]);
-
-        let mut watcher = watcher(root).await;
-        std::fs::write(root.join("mcp.json"), "not json").expect("break mcp.json");
-
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Mcp { change: McpChange::Invalid(_), .. })
-        })
-        .await;
-        match event {
-            Event::Mcp { change: McpChange::Invalid(diagnostics), .. } => {
-                assert!(!diagnostics.is_empty());
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn renaming_the_plugin_is_a_removal_then_an_addition() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "alpha");
-
-        let mut watcher = watcher(root).await;
-        write_manifest(root, "beta");
-
-        let removed = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Plugin { change: PluginChange::Removed { .. }, .. })
-        })
-        .await;
-        let added = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Plugin { change: PluginChange::Added(_), .. })
-        })
-        .await;
-
-        match removed {
-            Event::Plugin { plugin, .. } => assert_eq!(plugin.as_ref().map(PluginName::as_str), Some("alpha")),
-            other => panic!("unexpected event: {other:?}"),
-        }
-        match added {
-            Event::Plugin { plugin, .. } => assert_eq!(plugin.as_ref().map(PluginName::as_str), Some("beta")),
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn a_fatal_manifest_is_reported_as_invalid() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_skill(root, "greet", "first");
-
-        let mut watcher = watcher(root).await;
-        std::fs::write(root.join("plugin.json"), "not json").expect("break manifest");
-
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Plugin { change: PluginChange::Invalid { .. }, .. })
-        })
-        .await;
-        match event {
-            Event::Plugin { plugin, change: PluginChange::Invalid { skills, mcp, .. } } => {
-                assert_eq!(plugin.as_ref().map(PluginName::as_str), Some("demo"));
-                assert!(skills, "the package still held a skill");
-                assert!(!mcp);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn editing_extension_data_is_a_modified_manifest() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        let manifest = |flag: &str| {
-            format!(
-                r#"{{"$schema":"{PLUGIN_SCHEMA_1_0_0}","name":"demo","extensions":{{"com.example.client":{{"on":{flag}}}}}}}"#
-            )
+        let difference = match new {
+            Some(entry) if old.is_none() => Difference::Added(entry),
+            Some(entry) => Difference::Modified(entry),
+            None => Difference::Removed,
         };
-        std::fs::write(root.join("plugin.json"), manifest("true")).expect("write plugin.json");
+        Some((name, difference))
+    })
+}
 
-        let mut watcher = watcher(root).await;
-        std::fs::write(root.join("plugin.json"), manifest("false")).expect("edit plugin.json");
+/// The events that turn one load's resources into the next load's.
+fn diff_resources(before: &Resources, after: &Resources) -> Vec<Event> {
+    let plugins = differences(&before.plugins, &after.plugins)
+        .map(|(id, difference)| Event::Plugin { id: id.to_owned(), change: difference.into() });
+    let skills = differences(&before.skills, &after.skills)
+        .map(|(id, difference)| Event::Skill { id: id.to_owned(), change: difference.into() });
 
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Plugin { change: PluginChange::Modified(_), .. })
-        })
-        .await;
-        match event {
-            Event::Plugin { change: PluginChange::Modified(manifest), .. } => {
-                assert!(manifest.extensions.raw("com.example.client").is_some());
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+    plugins.chain(skills).chain(diff_mcp(&before.mcps, &after.mcps)).collect()
+}
+
+/// The `mcp.json` server set, when it differs. A server whose configuration
+/// changed appears on both sides.
+fn diff_mcp(before: &[mcp::ServerEntry], after: &[mcp::ServerEntry]) -> Option<Event> {
+    let added = only_in(after, before);
+    let removed = only_in(before, after);
+    if added.is_empty() && removed.is_empty() {
+        return None;
     }
+    Some(Event::Mcp { added, removed })
+}
 
-    #[tokio::test]
-    async fn removing_the_manifest_carries_the_components_it_held() {
-        let tmp = TempDir::new();
-        let root = tmp.path();
-        write_manifest(root, "demo");
-        write_skill(root, "greet", "first");
+/// A directory that holds nothing, so diffing against it reports every
+/// resource as arriving.
+fn nothing() -> Resources {
+    Resources { plugins: Vec::new(), skills: Vec::new(), mcps: Vec::new(), diagnostics: Vec::new() }
+}
 
-        let mut watcher = watcher(root).await;
-        std::fs::remove_file(root.join("plugin.json")).expect("remove plugin.json");
-
-        let event = wait_for(&mut watcher, |event| {
-            matches!(event, Event::Plugin { change: PluginChange::Removed { .. }, .. })
-        })
-        .await;
-        match event {
-            Event::Plugin { change: PluginChange::Removed { skills, mcp }, .. } => {
-                assert!(skills, "the package still held a skill");
-                assert!(!mcp, "the package held no mcp.json");
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
+fn only_in(entries: &[mcp::ServerEntry], other: &[mcp::ServerEntry]) -> Vec<mcp::ServerEntry> {
+    entries.iter().filter(|entry| !other.contains(entry)).cloned().collect()
 }
