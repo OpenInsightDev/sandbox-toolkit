@@ -69,6 +69,7 @@ regex = "1.13.1"
 
 pty = { path = "../pty" }
 sandbox-toolkit-utils = { path = "../utils" }
+watch = { path = "../watch" }
 
 [dev-dependencies]
 # Plain HTTP for the end-to-end tests; already in the tree through `rmcp`.

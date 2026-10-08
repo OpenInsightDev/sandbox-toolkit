@@ -292,5 +292,5 @@ pub enum FsError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Watch(#[from] sandbox_toolkit_utils::watch::Error),
+    Watch(#[from] watch::Error),
 }

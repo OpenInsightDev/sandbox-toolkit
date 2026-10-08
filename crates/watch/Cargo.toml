@@ -1,11 +1,13 @@
 [package]
-name = "sandbox-toolkit-utils"
+name = "watch"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 tokio = { workspace = true }
-
+thiserror = { workspace = true }
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
 
 [lints]
 workspace = true

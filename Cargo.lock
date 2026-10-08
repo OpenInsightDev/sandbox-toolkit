@@ -2558,6 +2558,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "url",
+ "watch",
  "zip",
 ]
 
@@ -2565,9 +2566,6 @@ dependencies = [
 name = "sandbox-toolkit-utils"
 version = "0.1.0"
 dependencies = [
- "notify",
- "notify-debouncer-full",
- "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -3554,6 +3552,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "watch"
+version = "0.1.0"
+dependencies = [
+ "notify",
+ "notify-debouncer-full",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

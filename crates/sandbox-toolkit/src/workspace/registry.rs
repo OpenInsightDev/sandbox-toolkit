@@ -1,8 +1,8 @@
 use notify::EventKind;
-use sandbox_toolkit_utils::watch::Watch;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use watch::Watch;
 
 use crate::binary::path;
 use crate::path::AGENTS_DIR;
@@ -43,7 +43,7 @@ pub enum WorkspaceError {
     #[error("workspace `{id}` is read-only")]
     ReadOnly { id: String },
     #[error(transparent)]
-    Watch(#[from] sandbox_toolkit_utils::watch::Error),
+    Watch(#[from] watch::Error),
 }
 
 impl Metadata {

@@ -13,10 +13,10 @@ use salvo::http::body::ResBody;
 use salvo::http::header::HeaderValue;
 use salvo::http::{Method, StatusCode, header};
 use salvo::prelude::*;
-use sandbox_toolkit_utils::watch::{Watch, WatchEvent};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::io::ReaderStream;
+use watch::{Watch, WatchEvent};
 
 use crate::http::{ExtractWorkspace, app_state};
 
